@@ -1,0 +1,36 @@
+// Colours and shared styles. Change anything here and the whole app follows.
+export const C = {
+  bg:     '#FAF9F5',
+  card:   '#FFFFFF',
+  ink:    '#141413',
+  muted:  '#5C5B55',
+  line:   '#E6E3D9',
+  soft:   '#F1EFE8',
+  green:  '#0F7B45',
+  greenD: '#0B5C34',
+  greenL: '#E4F2EA',
+  red:    '#8E3527',
+  redL:   '#FBEDEA',
+  grey:   '#EFEDE6',
+  greyB:  '#E0DDD3',
+  faint:  '#A8A499',
+};
+
+export const S = {
+  screen:   { flex: 1, backgroundColor: C.bg },
+  pad:      { paddingHorizontal: 16 },
+  header:   { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16,
+              paddingTop: 12, paddingBottom: 12, borderBottomWidth: 1.5, borderBottomColor: C.line },
+  h1:       { fontSize: 20, fontWeight: '800', color: C.ink, flex: 1 },
+  label:    { fontSize: 10.5, fontWeight: '800', letterSpacing: 1, color: C.muted },
+  input:    { borderWidth: 1.5, borderColor: C.greyB, backgroundColor: C.card, borderRadius: 14,
+              paddingHorizontal: 14, paddingVertical: 12, fontSize: 17, fontWeight: '700', color: C.ink },
+  btn:      { height: 58, borderRadius: 18, backgroundColor: C.green,
+              alignItems: 'center', justifyContent: 'center' },
+  btnText:  { fontSize: 19, fontWeight: '800', color: '#FFFFFF' },
+  btnGhost: { height: 58, borderRadius: 18, borderWidth: 2, borderColor: C.ink,
+              backgroundColor: C.card, alignItems: 'center', justifyContent: 'center' },
+  ghostText:{ fontSize: 19, fontWeight: '800', color: C.ink },
+  row:      { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  num:      { fontVariant: ['tabular-nums'] },
+};
