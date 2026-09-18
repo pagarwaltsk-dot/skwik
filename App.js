@@ -7,7 +7,8 @@ import { ActivityIndicator, View } from 'react-native';
 import { AppProvider, useApp } from './src/AppContext';
 import { C } from './src/theme';
 
-import LoginScreen   from './src/screens/LoginScreen';
+import WelcomeScreen  from './src/screens/WelcomeScreen';
+import RegisterScreen from './src/screens/RegisterScreen';
 import OnboardScreen from './src/screens/OnboardScreen';
 import HomeScreen    from './src/screens/HomeScreen';
 import BillScreen    from './src/screens/BillScreen';
@@ -22,9 +23,9 @@ import SettingsScreen from './src/screens/SettingsScreen';
 const Stack = createNativeStackNavigator();
 
 function Routes() {
-  const { session, org, loading } = useApp();
+  const { session, org, loading, registering } = useApp();
 
-  if (loading) {
+  if (loading || registering) {
     return (
       <View style={{ flex: 1, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator size="large" color={C.green} />
@@ -35,7 +36,10 @@ function Routes() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       {!session ? (
-        <Stack.Screen name="Login" component={LoginScreen} />
+        <>
+          <Stack.Screen name="Welcome"  component={WelcomeScreen} />
+          <Stack.Screen name="Register" component={RegisterScreen} />
+        </>
       ) : !org ? (
         <Stack.Screen name="Onboard" component={OnboardScreen} />
       ) : (

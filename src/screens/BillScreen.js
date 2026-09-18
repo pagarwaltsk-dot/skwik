@@ -295,33 +295,30 @@ export default function BillScreen({ route, navigation }) {
     <KeyboardAvoidingView style={S.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 
       {/* PINNED HEAD — who it is for, and what it comes to */}
-      <View style={{ backgroundColor: C.ink, paddingTop: 48, paddingHorizontal: 14, paddingBottom: 10 }}>
-        <View style={S.row}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingRight: 6 }}>
-            <Text style={{ fontSize: 24, color: '#fff' }}>‹</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={{ flex: 1 }} onPress={() => setCustOpen(true)}>
-            <Text style={{ fontSize: 10.5, fontWeight: '800', letterSpacing: 1, color: '#9FB3A8' }}>
-              {docName.toUpperCase()}
-            </Text>
-            <Text numberOfLines={1} style={{ fontSize: 17, fontWeight: '800', color: '#fff' }}>
-              {cust ? (isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name)
-                    : 'Tap to choose customer'}
-            </Text>
-          </TouchableOpacity>
-          <Text style={[{ fontSize: 22, fontWeight: '800', color: '#fff' }, S.num]}>
-            ₹{fmt0(grand)}
+      <View style={[S.bar, { paddingTop: 46 }]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingRight: 2 }}>
+          <Text style={{ fontSize: 22, color: '#fff', opacity: 0.8 }}>‹</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={{ flex: 1, minWidth: 0 }} onPress={() => setCustOpen(true)}>
+          <Text numberOfLines={1} style={S.barName}>
+            {cust ? (isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name)
+                  : 'Tap to choose customer'}
           </Text>
+          <Text numberOfLines={1} style={S.barSub}>{docName}</Text>
+        </TouchableOpacity>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={S.barTotL}>TOTAL</Text>
+          <Text style={[S.barTot, S.num]}>₹{fmt0(grand)}</Text>
         </View>
       </View>
 
       {/* THE ENTRY LINE — one box, product and quantity together */}
       {!!cust && (
-        <View style={{ backgroundColor: C.card, paddingHorizontal: 14, paddingVertical: 9,
+        <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                        borderBottomWidth: 1, borderBottomColor: C.line }}>
           <TextInput
             ref={qRef}
-            style={[S.input, { paddingVertical: 11 }]}
+            style={S.input}
             placeholder="Type item and quantity — thali 12"
             placeholderTextColor={C.faint}
             value={q} onChangeText={setQ}
@@ -339,10 +336,10 @@ export default function BillScreen({ route, navigation }) {
                 const nm = n === 1 ? (org?.price1_name || 'Wholesale') : (org?.price2_name || 'Retail');
                 return (
                   <TouchableOpacity key={n} onPress={() => applyList(n)}
-                    style={{ flex: 1, paddingVertical: 8, borderRadius: 10, alignItems: 'center',
-                             borderWidth: 1.5, borderColor: on ? C.green : C.greyB,
-                             backgroundColor: on ? C.greenL : C.card }}>
-                    <Text style={{ fontSize: 13, fontWeight: '800', color: on ? C.greenD : C.muted }}>
+                    style={{ flex: 1, paddingVertical: 7, borderRadius: 9, alignItems: 'center',
+                             borderWidth: 1, borderColor: on ? C.accent : C.line,
+                             backgroundColor: on ? C.accentSoft : C.surface }}>
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: on ? C.accent : C.muted }}>
                       {nm}
                     </Text>
                   </TouchableOpacity>
@@ -352,32 +349,26 @@ export default function BillScreen({ route, navigation }) {
           )}
 
           {!!q.trim() && (
-            <View style={{ marginTop: 6, maxHeight: 260, borderWidth: 1, borderColor: C.line,
-                           borderRadius: 12, backgroundColor: C.card, overflow: 'hidden' }}>
+            <View style={{ marginTop: 6, maxHeight: 280, borderWidth: 1, borderColor: C.line,
+                           borderRadius: 9, backgroundColor: C.surface, overflow: 'hidden' }}>
               <ScrollView keyboardShouldPersistTaps="handled">
                 {hits.map((h) => (
-                  <TouchableOpacity key={h.p.id} onPress={() => addHit(h)}
-                    style={{ paddingVertical: 11, paddingHorizontal: 13,
-                             borderBottomWidth: 1, borderBottomColor: C.line }}>
-                    <View style={S.row}>
-                      <View style={{ flex: 1 }}>
-                        <View style={S.row}>
-                          <Marked text={h.p.name} toks={h.toks}
-                                  style={{ fontSize: 15.5, fontWeight: '700', color: C.ink, flexShrink: 1 }} />
-                          {h.qty != null && (
-                            <Text style={[{ fontSize: 12.5, fontWeight: '800', color: C.greenD,
-                                            backgroundColor: C.greenL, paddingHorizontal: 6,
-                                            paddingVertical: 2, borderRadius: 6 }, S.num]}>
-                              × {h.qty}
-                            </Text>
-                          )}
-                        </View>
-                        <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
-                          {uqcShort(h.p.unit)}{h.p.alias ? ` · ${h.p.alias}` : ''}
-                        </Text>
+                  <TouchableOpacity key={h.p.id} onPress={() => addHit(h)} style={S.hit}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <View style={[S.row, { gap: 6 }]}>
+                        <Marked text={h.p.name} toks={h.toks} style={[S.hitName, { flexShrink: 1 }]} />
+                        {h.qty != null && (
+                          <Text style={[S.qbadge, S.num]}>&times; {h.qty}</Text>
+                        )}
                       </View>
-                      <Text style={[{ fontSize: 15, fontWeight: '800', color: C.ink }, S.num]}>
-                        ₹{fmt0(listRate(h.p))}
+                      <Text numberOfLines={1} style={S.hitSub}>
+                        {uqcShort(h.p.unit)}{h.p.alias ? ` · ${h.p.alias}` : ''}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={[S.hitPr, S.num]}>{fmt0(listRate(h.p))}</Text>
+                      <Text style={{ fontSize: 10, color: C.muted }}>
+                        {priceList === 1 ? (org?.price1_name || 'Wholesale') : (org?.price2_name || 'Retail')}
                       </Text>
                     </View>
                   </TouchableOpacity>
@@ -386,8 +377,8 @@ export default function BillScreen({ route, navigation }) {
                   onPress={() => setQuick({ name: parsed.base || parsed.full, alias: '', unit: 'PCS',
                                             hsn: '', gst_rate: '', rate: '',
                                             qty: parsed.qty == null ? '' : String(parsed.qty) })}
-                  style={{ paddingVertical: 12, paddingHorizontal: 13, backgroundColor: C.greenL }}>
-                  <Text style={{ fontSize: 14.5, fontWeight: '800', color: C.greenD }}>
+                  style={{ paddingVertical: 12, paddingHorizontal: 12, backgroundColor: C.soft }}>
+                  <Text style={{ fontSize: 14, fontWeight: '600', color: C.accent }}>
                     + Add “{parsed.base || parsed.full}” as a new item
                   </Text>
                 </TouchableOpacity>
@@ -410,39 +401,37 @@ export default function BillScreen({ route, navigation }) {
         {lines.map((l) => {
           const amt = num(l.qty) * num(l.rate);
           return (
-            <View key={l.key} style={{
-              backgroundColor: l.flag ? '#FFFBF0' : C.card, borderRadius: 14, padding: 11,
-              marginBottom: 9, borderWidth: 1.5,
-              borderColor: l.flag ? '#E8C86A' : l.checked ? '#BFE3CC' : C.line }}>
+            <View key={l.key} style={[S.line, {
+              backgroundColor: l.flag ? C.flagSoft : C.surface,
+              borderColor: l.flag ? C.flagLine : l.checked ? C.okLine : C.line,
+              borderLeftWidth: (l.flag || l.checked) ? 4 : 1,
+              borderLeftColor: l.flag ? C.flag : l.checked ? C.ok : C.line }]}>
 
-              <View style={[S.row, { marginBottom: 8 }]}>
+              <View style={[S.row, { alignItems: 'flex-start', gap: 4, marginBottom: 10 }]}>
                 <TouchableOpacity onPress={() => toggleCheck(l.key)} accessibilityLabel="I have re-checked this line"
-                  style={{ width: 32, height: 32, borderRadius: 9, alignItems: 'center', justifyContent: 'center',
-                           borderWidth: 1.5, borderColor: l.checked ? C.green : C.greyB,
-                           backgroundColor: l.checked ? C.green : C.card }}>
-                  <Text style={{ fontSize: 16, fontWeight: '800', color: l.checked ? '#fff' : C.faint }}>✓</Text>
+                  style={{ borderWidth: 1.5, borderRadius: 7, paddingHorizontal: 6, paddingVertical: 3,
+                           borderColor: l.checked ? C.ok : C.line,
+                           backgroundColor: l.checked ? C.ok : 'transparent' }}>
+                  <Text style={{ fontSize: 15, fontWeight: '700', color: l.checked ? '#fff' : C.greyB }}>✓</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity onPress={() => toggleFlag(l.key)} accessibilityLabel="Highlight this line on the bill"
-                  style={{ width: 32, height: 32, borderRadius: 9, alignItems: 'center', justifyContent: 'center',
-                           borderWidth: 1.5, borderColor: l.flag ? '#E0A800' : C.greyB,
-                           backgroundColor: l.flag ? '#FFF6D9' : C.card }}>
-                  <Text style={{ fontSize: 15, color: l.flag ? '#8A5A00' : C.faint }}>{l.flag ? '★' : '☆'}</Text>
+                  style={{ paddingHorizontal: 3, paddingTop: 1 }}>
+                  <Text style={{ fontSize: 21, color: l.flag ? C.flag : C.greyB }}>{l.flag ? '★' : '☆'}</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity style={{ flex: 1 }}
+                <TouchableOpacity style={{ flex: 1, paddingLeft: 4 }}
                   onPress={() => { setSwapFor(swapFor === l.key ? null : l.key); setSq(''); }}>
-                  <Text numberOfLines={1} style={{ fontSize: 15.5, fontWeight: '700', color: C.ink }}>
+                  <Text numberOfLines={2} style={S.lineNm}>
                     {l.item_name}
+                    <Text style={{ fontSize: 10, fontWeight: '600', color: C.muted }}>{'  change'}</Text>
                   </Text>
-                  <Text style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>
-                    {uqcShort(l.unit)} · tap to change
-                  </Text>
+                  <Text style={[S.chip, { alignSelf: 'flex-start', marginTop: 4 }]}>{uqcShort(l.unit)}</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity onPress={() => removeLine(l.key)} accessibilityLabel="Remove line"
-                  style={{ padding: 6 }}>
-                  <Text style={{ fontSize: 20, color: C.faint }}>×</Text>
+                  style={{ paddingHorizontal: 6, paddingVertical: 2 }}>
+                  <Text style={{ fontSize: 22, color: C.danger }}>×</Text>
                 </TouchableOpacity>
               </View>
 
@@ -464,26 +453,21 @@ export default function BillScreen({ route, navigation }) {
                 </View>
               )}
 
-              <View style={S.row}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8 }}>
                 <View style={{ flex: 1 }}>
-                  <Text style={S.label}>QTY</Text>
-                  <TextInput style={[S.input, { marginTop: 4, paddingVertical: 9 }, S.num]}
-                    keyboardType="numeric" value={String(l.qty)}
+                  <Text style={S.label}>Qty</Text>
+                  <TextInput style={[S.input, S.num]} keyboardType="numeric" value={String(l.qty)}
                     onChangeText={(t) => setLine(l.key, { qty: t })} />
                 </View>
-                <Text style={{ fontSize: 17, color: C.muted, marginTop: 16 }}>×</Text>
+                <Text style={{ fontSize: 13, color: C.muted, paddingBottom: 12 }}>×</Text>
                 <View style={{ flex: 1 }}>
-                  <Text style={S.label}>RATE</Text>
-                  <TextInput style={[S.input, { marginTop: 4, paddingVertical: 9 }, S.num]}
-                    keyboardType="numeric" value={String(l.rate)}
+                  <Text style={S.label}>Rate</Text>
+                  <TextInput style={[S.input, S.num]} keyboardType="numeric" value={String(l.rate)}
                     onChangeText={(t) => setLine(l.key, { rate: t, rateEdited: true })} />
                 </View>
-                <View style={{ width: 88, alignItems: 'flex-end' }}>
-                  <Text style={S.label}>AMOUNT</Text>
-                  <Text style={[{ fontSize: 18, fontWeight: '800', color: C.ink, marginTop: 8 }, S.num]}>
-                    {amt ? fmt0(amt) : '–'}
-                  </Text>
-                </View>
+                <Text style={[S.amt, S.num, { paddingBottom: 11, minWidth: 74 }]}>
+                  {amt ? fmt0(amt) : '–'}
+                </Text>
               </View>
             </View>
           );
@@ -503,7 +487,7 @@ export default function BillScreen({ route, navigation }) {
         )}
 
         {!!lines.length && (
-          <View style={{ padding: 14, backgroundColor: C.soft, borderRadius: 14 }}>
+          <View style={S.card}>
             <Row k="Items total" v={fmt(calc.taxable)} />
             {mode === 'cgst_sgst' && (<><Row k="CGST" v={fmt(calc.cgst)} /><Row k="SGST" v={fmt(calc.sgst)} /></>)}
             {mode === 'igst' && <Row k="IGST" v={fmt(calc.igst)} />}
@@ -512,22 +496,27 @@ export default function BillScreen({ route, navigation }) {
 
             {!showExtra ? (
               <TouchableOpacity onPress={() => setShowExtra(true)} style={{ paddingTop: 8 }}>
-                <Text style={{ fontSize: 13.5, fontWeight: '800', color: C.green }}>
+                <Text style={{ fontSize: 13, fontWeight: '600', color: C.accent }}>
                   + Add freight or other charge
                 </Text>
               </TouchableOpacity>
             ) : (
               <View style={[S.row, { marginTop: 10 }]}>
-                <TextInput style={[S.input, { flex: 1, paddingVertical: 9 }]} placeholder="What for?"
+                <TextInput style={[S.input, { flex: 1 }]} placeholder="What for?"
                   value={extraNote} onChangeText={setExtraNote} />
-                <TextInput style={[S.input, { width: 110, paddingVertical: 9 }, S.num]}
+                <TextInput style={[S.input, { width: 110 }, S.num]}
                   keyboardType="numeric" placeholder="0" value={extra} onChangeText={setExtra} />
               </View>
             )}
 
+            <View style={[S.tline, { borderTopWidth: 2, borderTopColor: C.ink, marginTop: 8, paddingTop: 10 }]}>
+              <Text style={{ fontSize: 20, fontWeight: '700', color: C.ink }}>Total</Text>
+              <Text style={[{ fontSize: 20, fontWeight: '700', color: C.ink }, S.num]}>₹{fmt0(grand)}</Text>
+            </View>
+
             {!!lines.length && checked > 0 && (
-              <Text style={{ marginTop: 10, fontSize: 12.5, fontWeight: '700',
-                             color: checked === lines.length ? C.greenD : '#7A5310' }}>
+              <Text style={{ marginTop: 10, fontSize: 11.5, fontWeight: '600',
+                             color: checked === lines.length ? C.ok : C.flagInk }}>
                 {checked === lines.length
                   ? `All ${checked} lines re-checked.`
                   : `${checked} of ${lines.length} lines re-checked.`}
@@ -537,22 +526,18 @@ export default function BillScreen({ route, navigation }) {
         )}
       </ScrollView>
 
-      <View style={{ padding: 14, paddingBottom: 24, backgroundColor: C.card,
-                     borderTopWidth: 1.5, borderTopColor: C.line }}>
-        <View style={S.row}>
-          <View style={{ flex: 1 }}>
-            <Text style={S.label}>TOTAL</Text>
-            <Text style={[{ fontSize: 28, fontWeight: '800', color: C.ink }, S.num]}>₹ {fmt0(grand)}</Text>
-          </View>
-          <TouchableOpacity onPress={() => save(true)} disabled={busy}
-            style={[S.btnGhost, { paddingHorizontal: 16, height: 56 }]}>
-            <Text style={[S.ghostText, { fontSize: 15 }]}>SAVE ONLY</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => save(false)} disabled={busy}
-            style={[S.btn, { paddingHorizontal: 26, height: 56 }, busy && { opacity: 0.6 }]}>
-            <Text style={S.btnText}>{busy ? '…' : 'SAVE'}</Text>
-          </TouchableOpacity>
+      <View style={S.foot}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={S.footL}>TOTAL</Text>
+          <Text style={[S.footTot, S.num]}>₹{fmt0(grand)}</Text>
         </View>
+        <TouchableOpacity onPress={() => save(true)} disabled={busy} style={S.btnGhost}>
+          <Text style={[S.ghostText, { fontSize: 13, lineHeight: 16 }]}>{'Save\nonly'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => save(false)} disabled={busy}
+          style={[S.btn, busy && { backgroundColor: C.faint }]}>
+          <Text style={S.btnText}>{busy ? 'Saving…' : 'Save & send'}</Text>
+        </TouchableOpacity>
       </View>
 
       {/* ---------- customer picker ---------- */}
@@ -664,22 +649,23 @@ export default function BillScreen({ route, navigation }) {
       {/* ---------- saved ---------- */}
       <Modal visible={!!saved} transparent animationType="slide">
         <View style={{ flex: 1, backgroundColor: '#3B3A35EE', justifyContent: 'flex-end' }}>
-          <View style={{ backgroundColor: C.bg, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 22 }}>
-            <Text style={{ fontSize: 24, fontWeight: '800', color: C.ink, textAlign: 'center' }}>SAVED</Text>
-            <Text style={{ fontSize: 15, fontWeight: '600', color: C.muted, textAlign: 'center',
-                           marginTop: 4, marginBottom: 20 }}>
-              {saved?.voucher?.voucher_no ? `No. ${saved.voucher.voucher_no} · ` : ''}
+          <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 14, borderTopRightRadius: 14, padding: 20 }}>
+            <Text style={{ fontSize: 13, color: C.muted, letterSpacing: 1 }}>
+              {docName.toUpperCase()} {saved?.voucher?.voucher_no || ''}
+            </Text>
+            <Text style={[{ fontSize: 30, fontWeight: '700', color: C.ink, marginTop: 6, marginBottom: 16 },
+                          S.num]}>
               ₹{fmt0(saved?.voucher?.total || 0)}
             </Text>
-            <TouchableOpacity style={S.btn} onPress={onShare}>
-              <Text style={S.btnText}>SEND ON WHATSAPP</Text>
+            <TouchableOpacity style={[S.btn, { backgroundColor: C.wa }]} onPress={onShare}>
+              <Text style={S.btnText}>Send on WhatsApp</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[S.btnGhost, { marginTop: 12 }]} onPress={onPrint}>
-              <Text style={S.ghostText}>PRINT</Text>
+            <TouchableOpacity style={[S.btnGhost, { marginTop: 10, paddingVertical: 14 }]} onPress={onPrint}>
+              <Text style={[S.ghostText, { fontSize: 16 }]}>Print</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => { setSaved(null); navigation.navigate('Home'); }}
               style={{ marginTop: 16, alignItems: 'center', paddingVertical: 10 }}>
-              <Text style={{ fontSize: 17, fontWeight: '700', color: C.muted }}>DONE</Text>
+              <Text style={{ fontSize: 16, fontWeight: '600', color: C.muted }}>Done</Text>
             </TouchableOpacity>
           </View>
         </View>

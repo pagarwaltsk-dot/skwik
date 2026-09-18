@@ -51,6 +51,14 @@ export default function MoreScreen({ navigation }) {
           Alert.alert('Log out?', 'You will need your number and password again.',
             [{ text: 'Cancel' }, { text: 'Log out', onPress: signOut }])} />
       </View>
+
+      <View style={{ alignItems: 'center', marginTop: 30, marginBottom: 10 }}>
+        <Text style={{ fontSize: 15, fontWeight: '700', color: C.accent, letterSpacing: -0.4 }}>
+          Skwik
+        </Text>
+        <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>Smooth &amp; Quick</Text>
+        <Text style={{ fontSize: 10.5, color: C.muted, marginTop: 2, opacity: 0.8 }}>version 1.0</Text>
+      </View>
     </ScrollView>
   );
 }
