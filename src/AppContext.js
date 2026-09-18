@@ -44,17 +44,50 @@ export function AppProvider({ children }) {
   }, [loadOrg]);
 
   // Everything the register screens collected, turned into a login and a firm.
+  //
+  // The order matters. Making the account is not the same as being logged in,
+  // and until we are logged in the database refuses to let us create the firm.
+  // So: make the account, log in properly, check we really have a login, and
+  // only then write the firm. If anything goes wrong after the account is made
+  // we log back out, so nobody is left holding a login with no shop behind it.
   const register = async (d) => {
     setRegistering(true);
+    let accountMade = false;
     try {
-      const phone = String(d.phone || '').replace(/\D/g, '');
-      const { error } = await supabase.auth.signUp({
-        email: phoneToEmail(phone), password: d.password,
-      });
-      if (error) throw error;
+      const phone    = String(d.phone || '').replace(/\D/g, '');
+      const email    = phoneToEmail(phone);
+      const password = d.password;
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Account made, but could not log in. Try logging in.');
+      // 1. Make the account. If the number is already taken Supabase does not
+      //    always say so, so we find out at the login step instead.
+      const { error: upErr } = await supabase.auth.signUp({ email, password });
+      if (upErr && !/already registered|already exists/i.test(upErr.message)) throw upErr;
+
+      // 2. Log in for real. Signing up does not always leave a login behind,
+      //    and without one every write below is refused.
+      const { data: signIn, error: inErr } =
+        await supabase.auth.signInWithPassword({ email, password });
+
+      if (inErr || !signIn?.session) {
+        if (inErr && /confirm/i.test(inErr.message)) {
+          throw new Error(
+            'Your account was made but cannot be used yet, because e-mail ' +
+            'confirmation is switched on in Supabase. Turn it off under ' +
+            'Authentication, Providers, Email - then register again.'
+          );
+        }
+        if (inErr && /invalid/i.test(inErr.message)) {
+          throw new Error(
+            'This mobile number is already registered with a different ' +
+            'password. Go back and log in with it instead.'
+          );
+        }
+        throw inErr || new Error('Could not log in after making the account.');
+      }
+      accountMade = true;
+
+      const user = signIn.user;
+      if (!user) throw new Error('Logged in, but no user came back. Try again.');
 
       await supabase.from('profiles').upsert({ id: user.id, phone });
 
@@ -77,10 +110,26 @@ export function AppProvider({ children }) {
         plan: 'trial',
         trial_ends_at: trial.toISOString(),
       }).select().single();
-      if (e2) throw e2;
+
+      if (e2) {
+        if (/row-level security/i.test(e2.message)) {
+          throw new Error(
+            'The shop could not be saved because the login was not accepted ' +
+            'by the database. Close Skwik, open it again, and register once more.'
+          );
+        }
+        throw e2;
+      }
 
       await supabase.from('profiles').upsert({ id: user.id, org_id: newOrg.id, phone });
       await loadOrg();
+    } catch (err) {
+      // Half a registration is worse than none: it drops the shopkeeper on the
+      // bare "Your shop" screen with everything they typed thrown away. Undo it.
+      if (accountMade) {
+        try { await supabase.auth.signOut(); } catch (_) {}
+      }
+      throw err;
     } finally {
       setRegistering(false);
     }
