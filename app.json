@@ -1,27 +1,26 @@
 {
   "expo": {
-    "name": "skwik",
+    "name": "Skwik",
     "slug": "skwik",
+    "scheme": "skwik",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "backgroundColor": "#FAF9F5",
+    "primaryColor": "#0F7B45",
+    "assetBundlePatterns": ["**/*"],
+    "android": {
+      "package": "com.skwik.billing",
+      "versionCode": 1,
+      "softwareKeyboardLayoutMode": "resize"
+    },
     "ios": {
+      "bundleIdentifier": "com.skwik.billing",
       "supportsTablet": true
     },
-    "android": {
-      "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
-    "plugins": [
-      "expo-sharing"
-    ]
+    "androidStatusBar": {
+      "barStyle": "dark-content",
+      "backgroundColor": "#FAF9F5"
+    }
   }
 }
