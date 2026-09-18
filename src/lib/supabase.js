@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------
 //  PUT YOUR TWO SUPABASE KEYS HERE. Nothing else in the app needs editing.
 // ---------------------------------------------------------------
-export const SUPABASE_URL      = 'https://PASTE-YOUR-PROJECT-REF.supabase.co';
-export const SUPABASE_ANON_KEY = 'PASTE-YOUR-ANON-PUBLIC-KEY';
+export const SUPABASE_URL      = 'https://hdwtilbueohlauezcpih.supabase.co';
+export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhkd3RpbGJ1ZW9obGF1ZXpjcGloIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3MTM1OTMsImV4cCI6MjEwNTI4OTU5M30.pPePm_oFgByqFgkdaDOxpLLSJ9uF4C_bgkD4tEI_fic';
 // ---------------------------------------------------------------
 
 import 'react-native-url-polyfill/auto';
