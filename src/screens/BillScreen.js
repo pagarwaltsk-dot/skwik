@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Modal, Platform,
-  KeyboardAvoidingView,
+  KeyboardAvoidingView, BackHandler,
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -60,6 +60,11 @@ export default function BillScreen({ route, navigation }) {
   const [quick, setQuick] = useState(null);
   const qRef = useRef(null);
   const seq  = useRef(0);
+  // Every qty and rate box on the bill, so the keyboard's next key can
+  // walk from one to the next without anybody tapping.
+  const cell = useRef({});
+  const focusCell = (key, which) =>
+    setTimeout(() => cell.current[`${key}:${which}`]?.focus(), 60);
 
   useEffect(() => {
     (async () => {
@@ -125,8 +130,10 @@ export default function BillScreen({ route, navigation }) {
     };
     setLines((ls) => [line, ...ls]);                 // newest at the TOP
     setQ('');
-    // quantity was typed: on to the next product. Not typed: ask for it.
+    // quantity was typed: on to the next product. Not typed: ask for it,
+    // with the cursor already sitting in the quantity box.
     if (h.qty != null) setTimeout(() => qRef.current?.focus(), 80);
+    else focusCell(line.key, 'qty');
 
     if (cust?.id) lastRate(line.key, h.p.id);
   };
@@ -289,6 +296,34 @@ export default function BillScreen({ route, navigation }) {
 
   const docName = vtype === 'estimate' ? 'Estimate' : isBuy ? 'Purchase' : 'New Bill';
 
+  /* ---------------- going back ---------------- */
+
+  // One way out, used by both the arrow and the phone's own back button, so the
+  // two never disagree. A bill with lines on it is never thrown away silently.
+  const leave = () => {
+    if (quick)          { setQuick(null);   return true; }
+    if (swapFor != null){ setSwapFor(null); return true; }
+    if (saved)          { return true; }              // already saved: use Done
+    if (custOpen) {
+      if (!cust) { navigation.goBack(); return true; } // no customer picked yet
+      setCustOpen(false); return true;
+    }
+    if (lines.length) {
+      Alert.alert('Leave this bill?',
+        `${lines.length} line${lines.length > 1 ? 's' : ''} will be lost.`,
+        [{ text: 'Stay on the bill' },
+         { text: 'Leave', style: 'destructive', onPress: () => navigation.goBack() }]);
+      return true;
+    }
+    navigation.goBack();
+    return true;
+  };
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', leave);
+    return () => sub.remove();
+  });
+
   /* ---------------- screen ---------------- */
 
   return (
@@ -296,8 +331,10 @@ export default function BillScreen({ route, navigation }) {
 
       {/* PINNED HEAD — who it is for, and what it comes to */}
       <View style={[S.bar, { paddingTop: 46 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingRight: 2 }}>
-          <Text style={{ fontSize: 22, color: '#fff', opacity: 0.8 }}>‹</Text>
+        <TouchableOpacity onPress={leave} accessibilityLabel="Back"
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
+          <Text style={{ fontSize: 26, color: '#fff', opacity: 0.85 }}>‹</Text>
         </TouchableOpacity>
         <TouchableOpacity style={{ flex: 1, minWidth: 0 }} onPress={() => setCustOpen(true)}>
           <Text numberOfLines={1} style={S.barName}>
@@ -457,12 +494,20 @@ export default function BillScreen({ route, navigation }) {
                 <View style={{ flex: 1 }}>
                   <Text style={S.label}>Qty</Text>
                   <TextInput style={[S.input, S.num]} keyboardType="numeric" value={String(l.qty)}
+                    ref={(r) => { cell.current[`${l.key}:qty`] = r; }}
+                    selectTextOnFocus
+                    returnKeyType="next" blurOnSubmit={false}
+                    onSubmitEditing={() => focusCell(l.key, 'rate')}
                     onChangeText={(t) => setLine(l.key, { qty: t })} />
                 </View>
                 <Text style={{ fontSize: 13, color: C.muted, paddingBottom: 12 }}>×</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={S.label}>Rate</Text>
                   <TextInput style={[S.input, S.num]} keyboardType="numeric" value={String(l.rate)}
+                    ref={(r) => { cell.current[`${l.key}:rate`] = r; }}
+                    selectTextOnFocus
+                    returnKeyType="next" blurOnSubmit={false}
+                    onSubmitEditing={() => qRef.current?.focus()}
                     onChangeText={(t) => setLine(l.key, { rate: t, rateEdited: true })} />
                 </View>
                 <Text style={[S.amt, S.num, { paddingBottom: 11, minWidth: 74 }]}>
