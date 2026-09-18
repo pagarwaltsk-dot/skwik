@@ -74,7 +74,9 @@ export default function SettingsScreen({ navigation }) {
     <ScrollView style={S.screen} keyboardShouldPersistTaps="handled"
                 contentContainerStyle={{ padding: 16, paddingTop: 50, paddingBottom: 60 }}>
       <View style={S.row}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
+        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
           <Text style={{ fontSize: 26, color: C.ink }}>‹</Text>
         </TouchableOpacity>
         <Text style={S.h1}>Settings</Text>
