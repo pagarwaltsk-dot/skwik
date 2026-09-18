@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, Alert, ScrollView, KeyboardAvoidingView, Platform,
+  BackHandler,
 } from 'react-native';
 import { useApp } from '../AppContext';
 import { STATES } from '../lib/states';
@@ -46,6 +47,17 @@ export default function RegisterScreen({ navigation }) {
     return setStep('gst');
   };
 
+  // The phone's own back button walks back one question at a time, the same as
+  // the arrow. Without this it leaves the whole sign-up in one press.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (registering) return true;
+      back();
+      return true;
+    });
+    return () => sub.remove();
+  });
+
   const toDetails = () => setStep('details');
 
   const checkDetails = () => {
@@ -88,8 +100,10 @@ export default function RegisterScreen({ navigation }) {
   return (
     <KeyboardAvoidingView style={S.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={[S.bar, { paddingTop: 46 }]}>
-        <TouchableOpacity onPress={back} style={{ paddingRight: 4 }} disabled={registering}>
-          <Text style={{ fontSize: 22, color: '#fff', opacity: 0.8 }}>‹</Text>
+        <TouchableOpacity onPress={back} disabled={registering} accessibilityLabel="Back"
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
+          <Text style={{ fontSize: 26, color: '#fff', opacity: 0.85 }}>‹</Text>
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={S.barName}>Skwik</Text>
