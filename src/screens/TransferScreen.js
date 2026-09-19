@@ -13,6 +13,7 @@ import { fmt0 } from '../lib/money';
 import {
   sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml,
   itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml,
+  looksMangled, base64ToBytes, decodeBytes,
   ITEMS_TEMPLATE, PARTIES_TEMPLATE,
 } from '../lib/transfer';
 import { C, S } from '../theme';
@@ -41,15 +42,34 @@ const firstOfMonth = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padSt
 // and if it will not have it, go through Android's own content reader, which
 // always can. One of the two always works.
 async function readPickedFile(uri) {
-  let firstProblem;
-  try {
-    return await new File(uri).text();
-  } catch (e) { firstProblem = e; }
+  let asText, firstProblem;
 
   try {
-    return await LegacyFS.readAsStringAsync(uri, { encoding: 'utf8' });
+    asText = await new File(uri).text();
   } catch (e) {
-    throw firstProblem || e;
+    firstProblem = e;
+    try {
+      asText = await LegacyFS.readAsStringAsync(uri, { encoding: 'utf8' });
+    } catch (e2) {
+      throw firstProblem || e2;
+    }
+  }
+
+  // Readable? Then we are done, and nothing expensive happened.
+  if (!looksMangled(asText)) return asText;
+
+  // Not readable. Tally writes UTF-16 and the phone read it as UTF-8, so the
+  // text is full of holes. Take the raw bytes instead and decode them here,
+  // where we can see what encoding they really are.
+  try {
+    let b64;
+    try { b64 = await new File(uri).base64(); }
+    catch (e) { b64 = await LegacyFS.readAsStringAsync(uri, { encoding: 'base64' }); }
+    const decoded = decodeBytes(base64ToBytes(b64));
+    if (decoded && !looksMangled(decoded)) return decoded;
+    return decoded || asText;
+  } catch (e) {
+    return asText;      // fall back to whatever we had
   }
 }
 
