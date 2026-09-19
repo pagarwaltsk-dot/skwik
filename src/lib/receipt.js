@@ -29,7 +29,9 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   const igst = voucher.tax_mode === 'igst';
   const est = voucher.vtype === 'estimate' || org?.mode === 'estimate';
 
-  const title = est ? 'ESTIMATE'
+  const title = voucher.vtype === 'sale_return' ? 'CREDIT NOTE'
+    : voucher.vtype === 'purchase_return' ? 'DEBIT NOTE'
+    : est ? 'ESTIMATE'
     : org?.is_composition ? 'BILL OF SUPPLY'
     : org?.is_gst_registered ? 'TAX INVOICE' : 'BILL';
 
@@ -99,6 +101,9 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
 
   <div class="kv sm"><span>No.</span><b>${esc(voucher.voucher_no || '')}</b></div>
   <div class="kv sm"><span>Date</span><span>${dmy(voucher.vdate)}</span></div>
+  ${voucher.ref_invoice_no
+    ? `<div class="kv sm"><span>Against bill</span><span>${esc(voucher.ref_invoice_no)}`
+      + `${voucher.ref_invoice_date ? ` of ${dmy(voucher.ref_invoice_date)}` : ''}</span></div>` : ''}
   <div class="kv sm"><span>${voucher.is_cash ? 'Cash' : 'Credit'}</span>
        <span>${esc(party?.name || voucher.printed_name || 'CASH')}</span></div>
   ${party?.gstin ? `<div class="kv sm"><span>GSTIN</span><span>${esc(party.gstin)}</span></div>` : ''}

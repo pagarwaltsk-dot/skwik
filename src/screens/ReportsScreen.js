@@ -9,6 +9,8 @@ import { File, Paths } from 'expo-file-system';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt, fmt0, n2 } from '../lib/money';
+import { buildGstr1 } from '../lib/gstr1';
+import { Bar, Foot, MoreButton, BackButton } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // WHAT THE BOOKS SAY.
@@ -144,6 +146,66 @@ export default function ReportsScreen({ navigation }) {
 
   const label = rangeOf(range)[2];
 
+  // THE RETURN ITSELF.
+  // Only ever for one whole month — the portal will not take anything else.
+  const [filing, setFiling] = useState(false);
+
+  const makeGstr1 = async () => {
+    const now = new Date();
+    let y = now.getFullYear(), m = now.getMonth() + 1;
+    if (range === 'last') { const d = new Date(y, m - 2, 1); y = d.getFullYear(); m = d.getMonth() + 1; }
+    else if (range !== 'month') {
+      return Alert.alert('Which month?',
+        'A GSTR-1 covers one month. Choose This month or Last month first.');
+    }
+
+    setFiling(true);
+    try {
+      const from = `${y}-${String(m).padStart(2, '0')}-01`;
+      const to   = new Date(y, m, 0).toISOString().slice(0, 10);
+
+      const { data: vs, error } = await supabase.from('vouchers')
+        .select('*, parties(name, gstin, state_code, state_name)')
+        .gte('vdate', from).lte('vdate', to);
+      if (error) throw error;
+
+      const byV = {};
+      if (vs?.length) {
+        const ids = vs.map((v) => v.id);
+        for (let i = 0; i < ids.length; i += 200) {
+          const { data } = await supabase.from('voucher_lines')
+            .select('*').in('voucher_id', ids.slice(i, i + 200));
+          (data || []).forEach((l) => { (byV[l.voucher_id] = byV[l.voucher_id] || []).push(l); });
+        }
+      }
+
+      const r = buildGstr1({ org, vouchers: vs || [], linesByVoucher: byV, year: y, month: m });
+
+      const go = async () => {
+        const name = `GSTR1-${org?.gstin || 'firm'}-${String(m).padStart(2, '0')}${y}.json`;
+        const f = new File(Paths.cache, name);
+        try { if (f.exists) f.delete(); } catch (e) { /* first time */ }
+        f.create(); f.write(JSON.stringify(r.json));
+        if (!(await Sharing.isAvailableAsync())) {
+          return Alert.alert('Nothing to share with', 'This phone has no app set up to receive files.');
+        }
+        await Sharing.shareAsync(f.uri, { mimeType: 'application/json', dialogTitle: name });
+      };
+
+      const s = r.summary;
+      const body = `${s.bills} bills, ${s.notes} credit note${s.notes === 1 ? '' : 's'}.\n`
+        + `${s.b2b} to registered buyers, ${s.b2cl} large out-of-state, `
+        + `${s.b2cs} summary row${s.b2cs === 1 ? '' : 's'}.\n\n`
+        + `Taxable ₹${fmt0(s.taxable)}, tax ₹${fmt0(s.tax)}.`
+        + (r.problems.length ? `\n\nBefore you file:\n· ${r.problems.join('\n· ')}` : '');
+
+      Alert.alert(`GSTR-1 for ${String(m).padStart(2, '0')}/${y}`, body,
+        [{ text: 'Not now' }, { text: 'Send the file', onPress: go }]);
+    } catch (e) {
+      Alert.alert('Could not build it', e.message || String(e));
+    } finally { setFiling(false); }
+  };
+
   /* ---------------- send it on ---------------- */
 
   const share = async () => {
@@ -210,12 +272,8 @@ export default function ReportsScreen({ navigation }) {
 
   return (
     <View style={S.screen}>
-      <View style={[S.bar, { paddingTop: 46 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: '#fff', opacity: 0.85 }}>‹</Text>
-        </TouchableOpacity>
+      <Bar>
+        <BackButton navigation={navigation} />
         <View style={{ flex: 1 }}>
           <Text style={S.barName}>Reports</Text>
           <Text style={S.barSub}>{label}</Text>
@@ -223,7 +281,8 @@ export default function ReportsScreen({ navigation }) {
         <TouchableOpacity onPress={share} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
           <Text style={{ fontSize: 13, fontWeight: '700', color: '#fff', opacity: 0.9 }}>SEND</Text>
         </TouchableOpacity>
-      </View>
+        <MoreButton navigation={navigation} />
+      </Bar>
 
       <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                      borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -296,6 +355,24 @@ export default function ReportsScreen({ navigation }) {
                     It is not your return, and your accountant has the last word.
                   </Text>
                 </Card>
+              )}
+
+              {org?.is_gst_registered && !org?.is_composition && (
+                <TouchableOpacity style={S.card} onPress={makeGstr1} disabled={filing}>
+                  <Text style={S.eyebrow}>Your return</Text>
+                  <View style={S.row}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 16, fontWeight: '700', color: C.accent }}>
+                        {filing ? 'Working it out…' : 'Make the GSTR-1 file'}
+                      </Text>
+                      <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>
+                        The JSON the GST portal takes, worked out from these bills.
+                        One month at a time. You still file it yourself — read it first.
+                      </Text>
+                    </View>
+                    {filing && <ActivityIndicator size="small" color={C.accent} />}
+                  </View>
+                </TouchableOpacity>
               )}
 
               {!!sums.rates.length && (

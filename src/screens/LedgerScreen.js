@@ -8,6 +8,7 @@ import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt0, n2 } from '../lib/money';
 import { ledgerHtml } from '../lib/invoice';
+import { Head } from '../components/Chrome';
 import { C, S } from '../theme';
 
 export default function LedgerScreen({ route, navigation }) {
@@ -45,32 +46,56 @@ export default function LedgerScreen({ route, navigation }) {
     await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send account' });
   };
 
+  // EVERY LINE GOES SOMEWHERE.
+  //
+  // A ledger that only shows numbers leaves the question "which bill was
+  // that?" unanswered, and answering it meant going to Past bills and hunting
+  // by date. Each entry now opens the thing it came from.
+  const openRow = (r) => {
+    if (r.kind === 'voucher' && r.id) {
+      if (r.vtype === 'sale_return' || r.vtype === 'purchase_return') {
+        return navigation.navigate('Bills');       // notes are read, not edited
+      }
+      return navigation.navigate('Bill', { voucherId: r.id, vtype: r.vtype });
+    }
+    if (r.kind === 'payment') {
+      return navigation.navigate('Money',
+        { ptype: r.ptype || 'receipt', paymentId: r.id });
+    }
+  };
+
   const Col = ({ list, right: alignRight }) => (
     <View style={{ flex: 1, paddingHorizontal: 10,
                    borderRightWidth: alignRight ? 0 : 1.5, borderRightColor: C.line }}>
       {list.length === 0 && <Text style={{ color: C.faint }}>—</Text>}
-      {list.map((r, i) => (
-        <View key={i} style={{ marginBottom: 14, alignItems: alignRight ? 'flex-end' : 'flex-start' }}>
-          <Text style={{ fontSize: 11.5, fontWeight: '600', color: C.muted }}>
-            {String(r.d).slice(8, 10)}/{String(r.d).slice(5, 7)} · {r.label}
-          </Text>
-          <Text style={[{ fontSize: 17, fontWeight: '800',
-                          color: alignRight ? C.greenD : C.ink }, S.num]}>{fmt0(r.amt)}</Text>
-        </View>
-      ))}
+      {list.map((r, i) => {
+        const goes = !!r.id;
+        return (
+          <TouchableOpacity key={i} disabled={!goes} onPress={() => openRow(r)}
+            style={{ marginBottom: 14, alignItems: alignRight ? 'flex-end' : 'flex-start' }}>
+            <Text style={{ fontSize: 11.5, fontWeight: '600', color: C.muted }}>
+              {String(r.d).slice(8, 10)}/{String(r.d).slice(5, 7)} · {r.label}
+            </Text>
+            <Text style={[{ fontSize: 17, fontWeight: '800',
+                            color: alignRight ? C.greenD : C.ink },
+                          goes && { textDecorationLine: 'underline',
+                                    textDecorationColor: C.greyB },
+                          S.num]}>
+              {fmt0(r.amt)}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 
   return (
     <View style={S.screen}>
-      <View style={[S.header, { paddingTop: 50 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: C.ink }}>‹</Text>
-        </TouchableOpacity>
-        <Text style={S.h1}>{party?.name || ''}</Text>
-      </View>
+      <Head navigation={navigation} title={party?.name || ''} />
+
+      <Text style={{ fontSize: 12, color: C.muted, textAlign: 'center', marginTop: 10 }}>
+        Tap any amount to open the bill or the entry behind it.
+      </Text>
 
       <View style={{ margin: 16, padding: 15, borderRadius: 18, borderWidth: 1.5,
                      backgroundColor: owes ? C.redL : C.greenL,

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Alert,
 } from 'react-native';
@@ -6,6 +6,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { num, fmt0, settle } from '../lib/money';
+import { Head } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // MONEY IN, MONEY OUT — and putting it right when it was typed wrong.
@@ -71,6 +72,21 @@ export default function MoneyScreen({ route, navigation }) {
     setAmount(String(Number(p.amount)));
     setNote(p.note || '');
   };
+
+  // Opened from a party's ledger: bring that entry straight up for correcting,
+  // so tapping an amount in the ledger lands on the entry behind it and not on
+  // a list he has to search through again.
+  const wantId = route.params?.paymentId;
+  useEffect(() => {
+    if (!wantId) return;
+    let on = true;
+    (async () => {
+      const { data } = await supabase.from('payments')
+        .select('*, parties(name)').eq('id', wantId).maybeSingle();
+      if (on && data) startEdit(data);
+    })();
+    return () => { on = false; };
+  }, [wantId]);
 
   const save = async () => {
     if (!party && !text.trim()) {
@@ -140,16 +156,10 @@ export default function MoneyScreen({ route, navigation }) {
   );
 
   return (
-    <ScrollView style={S.screen} keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ padding: 16, paddingTop: 50, paddingBottom: 40 }}>
-      <View style={S.row}>
-        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: C.ink }}>‹</Text>
-        </TouchableOpacity>
-        <Text style={S.h1}>{received ? 'Money received' : 'Money paid'}</Text>
-      </View>
+    <View style={S.screen}>
+      <Head navigation={navigation} title={received ? 'Money received' : 'Money paid'} />
+      <ScrollView keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
 
       {!!editing && (
         <View style={{ marginTop: 14, padding: 12, backgroundColor: C.flagSoft,
@@ -239,6 +249,7 @@ export default function MoneyScreen({ route, navigation }) {
           ))}
         </>
       )}
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }

@@ -7,6 +7,7 @@ import { fmt0, num, settle, hsnApplies } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { checkHsn, hsnExists, hsnDesc } from '../lib/hsn';
 import { HsnField, UomField } from '../components/Pickers';
+import { Foot, Head } from '../components/Chrome';
 import { C, S } from '../theme';
 
 const FIELD = {
@@ -173,13 +174,7 @@ export default function ItemsScreen({ navigation }) {
 
   return (
     <View style={S.screen}>
-      <View style={[S.header, { paddingTop: 50 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: C.ink }}>‹</Text>
-        </TouchableOpacity>
-        <Text style={S.h1}>Items</Text>
+      <Head navigation={navigation} title="Items">
         {!bulk && (
           <>
             <TouchableOpacity onPress={startBulk}
@@ -199,7 +194,7 @@ export default function ItemsScreen({ navigation }) {
             <Text style={{ fontSize: 15, fontWeight: '800', color: C.muted }}>CANCEL</Text>
           </TouchableOpacity>
         )}
-      </View>
+      </Head>
 
       <View style={{ padding: 16, paddingBottom: bulk ? 10 : 16 }}>
         <TextInput style={S.input} placeholder="Search" placeholderTextColor={C.faint}
@@ -301,7 +296,7 @@ export default function ItemsScreen({ navigation }) {
         ))} />
 
       {bulk && (
-        <View style={S.foot}>
+        <Foot>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={S.footL}>CHANGED</Text>
             <Text style={[S.footTot, S.num]}>{changed.length}</Text>
@@ -312,7 +307,7 @@ export default function ItemsScreen({ navigation }) {
               {saving ? 'Saving…' : changed.length ? `Save ${changed.length} rate${changed.length === 1 ? '' : 's'}` : 'Nothing changed'}
             </Text>
           </TouchableOpacity>
-        </View>
+        </Foot>
       )}
 
       <Modal visible={!!edit} animationType="slide">

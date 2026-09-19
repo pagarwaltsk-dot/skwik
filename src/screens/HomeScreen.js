@@ -4,6 +4,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt0 } from '../lib/money';
+import { Bar, MoreButton } from '../components/Chrome';
+import { showPurchase, showReports, showStock } from '../lib/features';
 import { C, S } from '../theme';
 
 const Tile = ({ label, onPress }) => (
@@ -59,21 +61,37 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
+  // Two to a row, and only what this shop has switched on in Settings. A
+  // counter that bills and takes cash sees four buttons, not ten.
+  const tiles = [
+    { label: 'Past bills', go: () => navigation.navigate('Bills') },
+    showPurchase(org) &&
+      { label: 'Purchase', go: () => navigation.navigate('Bill', { vtype: 'purchase' }) },
+    { label: 'Received',  go: () => navigation.navigate('Money', { ptype: 'receipt' }) },
+    { label: 'Paid',      go: () => navigation.navigate('Money', { ptype: 'payment' }) },
+    { label: 'Customers', go: () => navigation.navigate('Parties') },
+    { label: 'Items',     go: () => navigation.navigate('Items') },
+    showReports(org) && { label: 'Reports', go: () => navigation.navigate('Reports') },
+    showStock(org)   && { label: 'Stock',   go: () => navigation.navigate('Stock') },
+  ].filter(Boolean);
+
+  const rows = tiles.reduce((acc, t, i) => {
+    if (i % 2 === 0) acc.push([t]); else acc[acc.length - 1].push(t);
+    return acc;
+  }, []);
+
   const trialLeft = org?.trial_ends_at && org?.plan === 'trial'
     ? Math.ceil((new Date(org.trial_ends_at) - new Date()) / 86400000) : null;
 
   return (
     <View style={S.screen}>
-      <View style={[S.bar, { paddingTop: 46 }]}>
+      <Bar>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text numberOfLines={1} style={S.barName}>{org?.name}</Text>
           <Text style={S.barSub}>{estimate ? 'Estimates' : 'GST billing'}</Text>
         </View>
-        <TouchableOpacity onPress={() => navigation.navigate('More')}
-          style={{ paddingHorizontal: 8, paddingVertical: 4 }}>
-          <Text style={{ fontSize: 22, color: '#fff', opacity: 0.85 }}>⋯</Text>
-        </TouchableOpacity>
-      </View>
+        <MoreButton navigation={navigation} />
+      </Bar>
 
       <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 30 }}>
         {pending > 0 && (
@@ -141,24 +159,12 @@ export default function HomeScreen({ navigation }) {
           </Text>
         </TouchableOpacity>
 
-        <View style={[S.row, { marginBottom: 10 }]}>
-          <Tile label="Past bills" onPress={() => navigation.navigate('Bills')} />
-          <Tile label="Purchase"   onPress={() => navigation.navigate('Bill',  { vtype: 'purchase' })} />
-        </View>
-        <View style={[S.row, { marginBottom: 10 }]}>
-          <Tile label="Received" onPress={() => navigation.navigate('Money', { ptype: 'receipt' })} />
-          <Tile label="Paid"     onPress={() => navigation.navigate('Money', { ptype: 'payment' })} />
-        </View>
-        <View style={[S.row, { marginBottom: 10 }]}>
-          <Tile label="Customers" onPress={() => navigation.navigate('Parties')} />
-          <Tile label="Items"     onPress={() => navigation.navigate('Items')} />
-        </View>
-        <View style={[S.row, { marginBottom: 10 }]}>
-          <Tile label="Reports" onPress={() => navigation.navigate('Reports')} />
-          {org?.stock_enabled
-            ? <Tile label="Stock" onPress={() => navigation.navigate('Stock')} />
-            : <View style={{ flex: 1 }} />}
-        </View>
+        {rows.map((row, i) => (
+          <View key={i} style={[S.row, { marginBottom: 10 }]}>
+            {row.map((t) => <Tile key={t.label} label={t.label} onPress={t.go} />)}
+            {row.length === 1 && <View style={{ flex: 1 }} />}
+          </View>
+        ))}
 
       </ScrollView>
     </View>

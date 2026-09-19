@@ -12,11 +12,13 @@ import { useApp } from '../AppContext';
 import { fmt0 } from '../lib/money';
 import {
   sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml,
+  priceLevelsInTally,
   itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml,
   looksMangled, base64ToBytes, decodeBytes,
   buildBackup, readBackup, backupVoucherPayload,
   ITEMS_TEMPLATE, PARTIES_TEMPLATE,
 } from '../lib/transfer';
+import { Bar, Foot, MoreButton, BackButton } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // BRINGING BOOKS IN, AND SENDING THEM OUT.
@@ -90,7 +92,7 @@ function rangeDates(k) {
 }
 
 export default function TransferScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, reloadOrg } = useApp();
   const [busy, setBusy]   = useState('');
   const [range, setRange] = useState('month');
   const [ready, setReady] = useState(null);   // what was read, waiting to be confirmed
@@ -323,9 +325,15 @@ export default function TransferScreen({ navigation }) {
       const text = await readPickedFile(asset.uri);
       const kind = sniff(text);
 
+      // A Tally file can hold a wholesale list and a retail list side by side.
+      // The one he chose last time is remembered on his firm; if that level is
+      // not in this file we start with none, and he picks below.
+      const levels = kind === 'csv' || what !== 'items' ? [] : priceLevelsInTally(text);
+      const saved  = levels.includes(org?.tally_price_level) ? org.tally_price_level : '';
+
       let read;
       if (what === 'items') {
-        read = kind === 'csv' ? itemsFromCsv(text) : itemsFromTallyXml(text);
+        read = kind === 'csv' ? itemsFromCsv(text) : itemsFromTallyXml(text, { level: saved });
       } else {
         read = kind === 'csv' ? partiesFromCsv(text) : partiesFromTallyXml(text);
       }
@@ -334,7 +342,9 @@ export default function TransferScreen({ navigation }) {
       if (!read.rows.length) return Alert.alert('Nothing found', 'That file had no rows we could use.');
 
       setReady({ what, rows: read.rows, name: asset.name || 'the file',
-                 kind: kind === 'csv' ? 'a spreadsheet' : 'a Tally export' });
+                 kind: kind === 'csv' ? 'a spreadsheet' : 'a Tally export',
+                 text: kind === 'csv' ? '' : text,
+                 levels, level: saved, basis: read.basis || null });
     } catch (e) {
       const msg = String(e?.message || e);
       Alert.alert('Could not read that file',
@@ -343,6 +353,17 @@ export default function TransferScreen({ navigation }) {
             + 'phone\'s Downloads folder and pick it from there.'
           : msg);
     } finally { setBusy(''); }
+  };
+
+  // Reading the same file again on a different price level. The file is still
+  // in hand, so nothing is picked twice, and the choice is kept on the firm so
+  // the next import starts on the right list.
+  const useLevel = (level) => {
+    if (!ready?.text) return;
+    const read = itemsFromTallyXml(ready.text, { level });
+    setReady((r) => ({ ...r, level, rows: read.rows, basis: read.basis || r.basis }));
+    supabase.from('orgs').update({ tally_price_level: level || null }).eq('id', org.id)
+      .then(() => reloadOrg?.());
   };
 
   // Names already in the book are updated, new ones are added. Nothing is
@@ -415,17 +436,14 @@ export default function TransferScreen({ navigation }) {
 
   return (
     <View style={S.screen}>
-      <View style={[S.bar, { paddingTop: 46 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: '#fff', opacity: 0.85 }}>‹</Text>
-        </TouchableOpacity>
+      <Bar>
+        <BackButton navigation={navigation} />
         <View style={{ flex: 1 }}>
-          <Text style={S.barName}>Import &amp; export</Text>
+          <Text style={S.barName}>Import & export</Text>
           <Text style={S.barSub}>Tally and spreadsheets</Text>
         </View>
-      </View>
+        <MoreButton navigation={navigation} />
+      </Bar>
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
 
@@ -516,6 +534,51 @@ export default function TransferScreen({ navigation }) {
                 <Text style={{ fontSize: 13, color: C.muted, marginTop: 6, lineHeight: 19 }}>
                   From {ready.name}, which looks like {ready.kind}. Nothing is saved yet.
                 </Text>
+
+                {ready.levels?.length > 1 && (
+                  <View style={{ marginTop: 14 }}>
+                    <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink }}>
+                      Which price list is your selling rate?
+                    </Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                      {['', ...ready.levels].map((lv) => {
+                        const on = (ready.level || '') === lv;
+                        return (
+                          <TouchableOpacity key={lv || 'newest'} onPress={() => useLevel(lv)}
+                            style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 9,
+                                     borderWidth: 1, borderColor: on ? C.accent : C.line,
+                                     backgroundColor: on ? C.accentSoft : C.surface }}>
+                            <Text style={{ fontSize: 13, fontWeight: '600',
+                                           color: on ? C.accent : C.muted }}>
+                              {lv || 'Newest rate'}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 16 }}>
+                      Check a rate below against Tally before you bring them in.
+                    </Text>
+                  </View>
+                )}
+
+                {!!ready.basis && ready.basis !== 'closing' && (
+                  <View style={{ marginTop: 14, padding: 12, backgroundColor: C.flagSoft,
+                                 borderWidth: 1, borderColor: C.flagLine, borderRadius: 12 }}>
+                    <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.flagInk }}>
+                      {ready.basis === 'mixed'
+                        ? 'Some of these are opening figures, not closing'
+                        : 'These are opening figures, not closing'}
+                    </Text>
+                    <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 4, lineHeight: 17 }}>
+                      A Tally masters export carries the balance the books opened
+                      with on 1 April. To bring the balance as it stands today,
+                      export again from Tally with closing balances in it —
+                      Gateway → Display → Trial Balance (or Stock Summary for
+                      items) → Export.
+                    </Text>
+                  </View>
+                )}
 
                 <View style={{ marginTop: 14, padding: 12, backgroundColor: C.surface,
                                borderWidth: 1, borderColor: C.line, borderRadius: 12 }}>

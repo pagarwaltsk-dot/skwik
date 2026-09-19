@@ -57,6 +57,8 @@ export function invoiceHtml({ org, voucher, party, lines }) {
   const showHsn  = hsnApplies(org) && !est;
   const title    = est ? 'ESTIMATE'
                  : comp ? 'BILL OF SUPPLY'
+                 : voucher.vtype === 'sale_return'     ? 'CREDIT NOTE'
+                 : voucher.vtype === 'purchase_return' ? 'DEBIT NOTE'
                  : (org.is_gst_registered ? 'TAX INVOICE' : 'INVOICE');
   const buyerNm  = party?.name || voucher.printed_name || 'CASH';
   const hsn      = hsnSummary(lines);

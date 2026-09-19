@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Switch } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
+import { showPurchase, showReturns, showReports, showTransfer, showStock } from '../lib/features';
 import { useApp } from '../AppContext';
 import { STATES } from './OnboardScreen';
 import { Alert as RNAlert } from 'react-native';
+import { Head } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // Everything a shopkeeper can change about his own firm, on his phone.
@@ -27,8 +30,23 @@ const Field = ({ label, value, onChange, ...rest }) => (
   </>
 );
 
+const Toggle = ({ label, note, value, disabled, onValueChange }) => (
+  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13,
+                 borderBottomWidth: 1, borderBottomColor: C.line }}>
+    <View style={{ flex: 1 }}>
+      <Text style={{ fontSize: 15.5, fontWeight: '700', color: C.ink }}>{label}</Text>
+      {!!note && (
+        <Text style={{ fontSize: 12, color: C.muted, marginTop: 2, lineHeight: 17 }}>{note}</Text>
+      )}
+    </View>
+    <Switch value={value} disabled={disabled} onValueChange={onValueChange}
+            trackColor={{ true: C.green }} />
+  </View>
+);
+
 export default function SettingsScreen({ navigation }) {
   const { org, reloadOrg } = useApp();
+  const insets = useSafeAreaInsets();
   const [f, setF] = useState({ ...org });
   const [busy, setBusy] = useState(false);
   const set = (k) => (v) => setF((s) => ({ ...s, [k]: v }));
@@ -91,16 +109,35 @@ export default function SettingsScreen({ navigation }) {
   };
 
   return (
-    <ScrollView style={S.screen} keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ padding: 16, paddingTop: 50, paddingBottom: 60 }}>
-      <View style={S.row}>
-        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: C.ink }}>‹</Text>
-        </TouchableOpacity>
-        <Text style={S.h1}>Settings</Text>
-      </View>
+    <View style={S.screen}>
+      <Head navigation={navigation} title="Settings" />
+      <ScrollView keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ padding: 16,
+                    paddingBottom: Math.max(insets.bottom, 12) + 60 }}>
+
+      <Section title="What you use"
+               note="Skwik opens as a billing book: sale, purchase, money in, money out. Switch on whatever else your shop needs and it appears straight away. Switching something off only hides it — nothing you have written is ever deleted.">
+        <Toggle label="Purchase bills" disabled={busy}
+                note="Bills your suppliers give you. Leave it off if only your accountant enters them."
+                value={showPurchase(org)}
+                onValueChange={(v) => saveOrg({ show_purchase: v })} />
+        <Toggle label="Keep stock" disabled={busy}
+                note="Skwik counts what goes out and what comes in, and shows what is left."
+                value={showStock(org)}
+                onValueChange={(v) => saveOrg({ stock_enabled: v })} />
+        <Toggle label="Returns" disabled={busy}
+                note="Goods coming back — credit notes to your customer, debit notes to your supplier."
+                value={showReturns(org)}
+                onValueChange={(v) => saveOrg({ show_returns: v })} />
+        <Toggle label="Reports and GSTR-1" disabled={busy}
+                note="Day, month and party totals, tax rate-wise, and the GSTR-1 file for the portal."
+                value={showReports(org)}
+                onValueChange={(v) => saveOrg({ show_reports: v })} />
+        <Toggle label="Import and export" disabled={busy}
+                note="Bringing items and parties in from Tally or Excel, and taking your books out."
+                value={showTransfer(org)}
+                onValueChange={(v) => saveOrg({ show_transfer: v })} />
+      </Section>
 
       {org?.mode === 'estimate' && (
         <Section title="GST"
@@ -272,15 +309,6 @@ export default function SettingsScreen({ navigation }) {
         </TouchableOpacity>
       </Section>
 
-      <Section title="Stock">
-        <View style={[S.row, { padding: 14, backgroundColor: C.soft, borderRadius: 16 }]}>
-          <Text style={{ flex: 1, fontSize: 16, fontWeight: '700', color: C.ink }}>Keep stock</Text>
-          <Switch value={!!org?.stock_enabled} disabled={busy}
-                  onValueChange={(v) => saveOrg({ stock_enabled: v })}
-                  trackColor={{ true: C.green }} />
-        </View>
-      </Section>
-
       <Section title="Account names"
                note="Used on your reports and on the file your accountant imports. Change them to match the names in his books.">
         <Field label="BANK NAME"         value={f.bank_name} onChange={set('bank_name')}
@@ -301,6 +329,7 @@ export default function SettingsScreen({ navigation }) {
           <Text style={S.btnText}>SAVE ACCOUNT NAMES</Text>
         </TouchableOpacity>
       </Section>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }

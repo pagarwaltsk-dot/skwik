@@ -19,6 +19,7 @@ import {
   uuid, withTimeout, looksOffline, cacheItems, cacheParties,
   cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue,
 } from '../lib/offline';
+import { Bar, Foot, MoreButton, BackButton } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // Matched letters shown marked, the way the estimate app does it.
@@ -153,13 +154,15 @@ export default function BillScreen({ route, navigation }) {
   }, [cq, isOut]);
 
   // by name OR phone number
+  // Only what he is typing towards. A shop with three hundred customers does
+  // not want the first eight of them in alphabetical order.
   const custHits = cq.trim()
     ? parties.filter((p) => {
         const s = cashInfo.name.toLowerCase();
         if (!s) return false;
         return p.name.toLowerCase().indexOf(s) > -1 || String(p.phone || '').indexOf(s) > -1;
       }).slice(0, 8)
-    : parties.slice(0, 8);
+    : [];
 
   const chooseCust = (p) => {
     setCust(p); setIsCash(cashInfo.isCash); setCustOpen(false);
@@ -350,7 +353,12 @@ export default function BillScreen({ route, navigation }) {
 
       const payload = {
         id: editId || uuid(),
-        vtype, vdate: editId ? vdate : new Date().toISOString().slice(0, 10),
+        vtype,
+        // A purchase belongs to the date on the supplier's bill. He often
+        // enters August's bills in September, and they must land in August.
+        vdate: editId ? vdate
+             : (isBuy && supDate) ? supDate
+             : new Date().toISOString().slice(0, 10),
         party_id: pty.id, printed_name: cust.name, is_cash: isCash,
         supplier_invoice_no: isBuy ? supNo : null,
         supplier_invoice_date: isBuy ? supDate : null,
@@ -458,12 +466,8 @@ export default function BillScreen({ route, navigation }) {
     <KeyboardAvoidingView style={S.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 
       {/* PINNED HEAD — who it is for, and what it comes to */}
-      <View style={[S.bar, { paddingTop: 46 }]}>
-        <TouchableOpacity onPress={leave} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: '#fff', opacity: 0.85 }}>‹</Text>
-        </TouchableOpacity>
+      <Bar>
+        <BackButton navigation={navigation} onPress={leave} />
         <TouchableOpacity style={{ flex: 1, minWidth: 0 }} onPress={() => setCustOpen(true)}>
           <Text numberOfLines={1} style={S.barName}>
             {cust ? (isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name)
@@ -475,13 +479,42 @@ export default function BillScreen({ route, navigation }) {
           <Text style={S.barTotL}>TOTAL</Text>
           <Text style={[S.barTot, S.num]}>₹{fmt0(grand)}</Text>
         </View>
-      </View>
+      </Bar>
 
       {offline && (
         <View style={{ backgroundColor: C.flagSoft, borderBottomWidth: 1,
                        borderBottomColor: C.flagLine, paddingHorizontal: 12, paddingVertical: 7 }}>
           <Text style={{ fontSize: 12.5, fontWeight: '600', color: C.flagInk }}>
             No internet — carry on billing. It sends itself when the line comes back.
+          </Text>
+        </View>
+      )}
+
+      {/* A SUPPLIER'S BILL IS READ FROM THE TOP: his name, his bill number,
+          its date, then the goods. Asking for the number at the end meant
+          finding the paper again after the typing was done. */}
+      {isBuy && !!cust && (
+        <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingTop: 10,
+                       paddingBottom: 4, borderBottomWidth: 1, borderBottomColor: C.line }}>
+          <View style={[S.row, { gap: 10, alignItems: 'flex-start' }]}>
+            <View style={{ flex: 1.2 }}>
+              <Text style={S.cellLabel}>His bill number</Text>
+              <TextInput style={S.cell} value={supNo} onChangeText={setSupNo}
+                placeholder="e.g. 1024" placeholderTextColor={C.faint}
+                autoCapitalize="characters"
+                returnKeyType="next" blurOnSubmit={false} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={S.cellLabel}>Its date</Text>
+              <TextInput style={[S.cell, S.num]} value={supDate} onChangeText={setSupDate}
+                placeholder="2026-09-19" placeholderTextColor={C.faint}
+                returnKeyType="next" blurOnSubmit={false}
+                onSubmitEditing={() => qRef.current?.focus()} />
+            </View>
+          </View>
+          <Text style={[S.hint, { marginBottom: 8 }]}>
+            The date on his bill, not today — a bill from last month is entered
+            under last month.
           </Text>
         </View>
       )}
@@ -505,7 +538,7 @@ export default function BillScreen({ route, navigation }) {
                                             unit: 'PCS', hsn: '', gst_rate: '', rate: '',
                                             qty: parsed.qty == null ? '' : String(parsed.qty) });
             }} />
-          {isOut && (
+          {isOut && !cust?.price_list && (
             <View style={[S.row, { marginTop: 8 }]}>
               {[1, 2].map((n) => {
                 const on = priceList === n;
@@ -693,19 +726,6 @@ export default function BillScreen({ route, navigation }) {
           );
         })}
 
-        {isBuy && (
-          <View style={[S.row, { marginTop: 4, marginBottom: 12 }]}>
-            <View style={{ flex: 1 }}>
-              <Text style={S.label}>SUPPLIER BILL NO.</Text>
-              <TextInput style={[S.input, { marginTop: 6 }]} value={supNo} onChangeText={setSupNo} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={S.label}>BILL DATE</Text>
-              <TextInput style={[S.input, { marginTop: 6 }]} value={supDate} onChangeText={setSupDate} />
-            </View>
-          </View>
-        )}
-
         {!!lines.length && (
           <View style={S.card}>
             <Text style={S.eyebrow}>Totals</Text>
@@ -747,7 +767,7 @@ export default function BillScreen({ route, navigation }) {
         )}
       </ScrollView>
 
-      <View style={S.foot}>
+      <Foot>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={S.footL}>TOTAL</Text>
           <Text style={[S.footTot, S.num]}>₹{fmt0(grand)}</Text>
@@ -761,7 +781,7 @@ export default function BillScreen({ route, navigation }) {
             {busy ? 'Saving…' : editId ? 'Save changes' : 'Save & send'}
           </Text>
         </TouchableOpacity>
-      </View>
+      </Foot>
 
       {/* ---------- customer picker ---------- */}
       <Modal visible={custOpen} animationType="slide" onRequestClose={() => setCustOpen(false)}>
@@ -776,12 +796,23 @@ export default function BillScreen({ route, navigation }) {
           </View>
           <TextInput style={[S.input, { marginTop: 14 }]} autoFocus
             placeholder={isOut ? 'Name, phone, or CASH' : 'Supplier name or phone'}
+            placeholderTextColor={C.faint}
+            returnKeyType="next" blurOnSubmit={false}
+            onSubmitEditing={() => { if (custHits.length) chooseCust(custHits[0]);
+                                     else if (cashInfo.name) newCust(); }}
             value={cq} onChangeText={setCq} />
           {isOut && cashInfo.isCash && (
             <Text style={{ marginTop: 8, fontSize: 12.5, fontWeight: '700', color: C.green }}>
               Cash sale{cashInfo.name ? ` · ${cashInfo.name}'s name prints on the bill` : ''}
             </Text>
           )}
+          {!cq.trim() && (
+            <Text style={{ fontSize: 13.5, color: C.muted, marginTop: 20, lineHeight: 20 }}>
+              Start typing a name or a phone number.
+              {isOut ? '\nFor a cash sale, type CASH, or CASH and the name.' : ''}
+            </Text>
+          )}
+
           <ScrollView keyboardShouldPersistTaps="handled" style={{ marginTop: 12 }}>
             {custHits.map((p) => (
               <TouchableOpacity key={p.id} onPress={() => chooseCust(p)}

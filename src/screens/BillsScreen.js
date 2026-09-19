@@ -9,8 +9,11 @@ import * as Sharing from 'expo-sharing';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt0 } from '../lib/money';
+import { uqcShort } from '../lib/uqc';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
+import { Bar, Foot, MoreButton, BackButton } from '../components/Chrome';
+import { showPurchase, showReturns } from '../lib/features';
 import { C, S } from '../theme';
 
 // EVERY BILL EVER WRITTEN. Find one, read it, send it again, fix it, remove it.
@@ -18,12 +21,15 @@ import { C, S } from '../theme';
 // A shopkeeper is asked "send me last Tuesday's bill again" every week, and
 // until now Skwik had no answer to that. This is the answer.
 
-const KINDS = [
-  { key: 'all',      label: 'All'        },
-  { key: 'sale',     label: 'Bills'      },
-  { key: 'estimate', label: 'Estimates'  },
-  { key: 'purchase', label: 'Purchases'  },
-];
+// The filter strip only offers what this shop has switched on, so a counter
+// that never takes goods back is not asked to read the word "Returns".
+const kindsFor = (org) => [
+  { key: 'all',      label: 'All'       },
+  { key: 'sale',     label: 'Bills'     },
+  { key: 'estimate', label: 'Estimates' },
+  showPurchase(org) && { key: 'purchase', label: 'Purchases' },
+  showReturns(org)  && { key: 'returns',  label: 'Returns'   },
+].filter(Boolean);
 
 const dmy = (d) => `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(0, 4)}`;
 
@@ -40,6 +46,7 @@ const dayLabel = (d) => {
 
 export default function BillsScreen({ navigation }) {
   const { org } = useApp();
+  const KINDS = kindsFor(org);
   const [rows, setRows]   = useState([]);
   const [busy, setBusy]   = useState(true);
   const [q, setQ]         = useState('');
@@ -66,7 +73,9 @@ export default function BillsScreen({ navigation }) {
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
     return rows.filter((v) => {
-      if (kind !== 'all' && v.vtype !== kind) return false;
+      if (kind === 'returns') {
+        if (v.vtype !== 'sale_return' && v.vtype !== 'purchase_return') return false;
+      } else if (kind !== 'all' && v.vtype !== kind) return false;
       if (!s) return true;
       const who = v.parties?.name || v.printed_name || '';
       return who.toLowerCase().includes(s)
@@ -147,12 +156,8 @@ export default function BillsScreen({ navigation }) {
 
   return (
     <View style={S.screen}>
-      <View style={[S.bar, { paddingTop: 46 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: '#fff', opacity: 0.85 }}>‹</Text>
-        </TouchableOpacity>
+      <Bar>
+        <BackButton navigation={navigation} />
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={S.barName}>Bills</Text>
           <Text style={S.barSub}>{shown.length} shown</Text>
@@ -161,7 +166,8 @@ export default function BillsScreen({ navigation }) {
           <Text style={S.barTotL}>SALES SHOWN</Text>
           <Text style={[S.barTot, S.num]}>₹{fmt0(dayTotal)}</Text>
         </View>
-      </View>
+        <MoreButton navigation={navigation} />
+      </Bar>
 
       <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                      borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -204,7 +210,8 @@ export default function BillsScreen({ navigation }) {
             const prev = shown[index - 1];
             const newDay = !prev || prev.vdate !== v.vdate;
             const who = v.parties?.name || v.printed_name || 'CASH';
-            const buy = v.vtype === 'purchase';
+            const buy = v.vtype === 'purchase' || v.vtype === 'sale_return'
+             || v.vtype === 'purchase_return';
             return (
               <>
                 {newDay && (
@@ -218,7 +225,11 @@ export default function BillsScreen({ navigation }) {
                       <Text numberOfLines={1} style={S.lineNm}>{who}</Text>
                       <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>
                         {v.voucher_no ? `${v.voucher_no} · ` : ''}
-                        {buy ? 'Purchase' : v.vtype === 'estimate' ? 'Estimate' : 'Bill'}
+                        {v.vtype === 'purchase' ? 'Purchase'
+                          : v.vtype === 'estimate' ? 'Estimate'
+                          : v.vtype === 'sale_return' ? `Credit note${v.ref_invoice_no ? ` on ${v.ref_invoice_no}` : ''}`
+                          : v.vtype === 'purchase_return' ? `Debit note${v.ref_invoice_no ? ` on ${v.ref_invoice_no}` : ''}`
+                          : 'Bill'}
                         {v.is_cash ? ' · Cash' : ''}
                       </Text>
                     </View>
@@ -242,7 +253,9 @@ export default function BillsScreen({ navigation }) {
               <>
                 <Text style={{ fontSize: 12, color: C.muted, letterSpacing: 1 }}>
                   {(open.vtype === 'purchase' ? 'PURCHASE'
-                    : open.vtype === 'estimate' ? 'ESTIMATE' : 'BILL')}
+                    : open.vtype === 'estimate' ? 'ESTIMATE'
+                    : open.vtype === 'sale_return' ? 'CREDIT NOTE'
+                    : open.vtype === 'purchase_return' ? 'DEBIT NOTE' : 'BILL')}
                   {open.voucher_no ? ` ${open.voucher_no}` : ''} · {dmy(open.vdate)}
                 </Text>
                 <Text numberOfLines={1} style={{ fontSize: 20, fontWeight: '700', color: C.ink,
@@ -265,7 +278,7 @@ export default function BillsScreen({ navigation }) {
                         {l.item_name}
                       </Text>
                       <Text style={[{ fontSize: 12.5, color: C.muted, marginRight: 10 }, S.num]}>
-                        {Number(l.qty)} × {fmt0(l.rate)}
+                        {Number(l.qty)} {uqcShort(l.unit)} × {fmt0(l.rate)}
                       </Text>
                       <Text style={[{ fontSize: 13.5, fontWeight: '700', color: C.ink }, S.num]}>
                         {fmt0(l.amount)}
@@ -290,6 +303,20 @@ export default function BillsScreen({ navigation }) {
                     <Text style={[S.ghostText, { fontSize: 15 }]}>Change</Text>
                   </TouchableOpacity>
                 </View>
+
+                {/* goods coming back — a note against this bill, not an edit of it */}
+                {showReturns(org) && (open.vtype === 'sale' || open.vtype === 'purchase') && (
+                  <TouchableOpacity style={[S.btnGhost, { marginTop: 10, paddingVertical: 14 }]}
+                    onPress={() => {
+                      const v = open;
+                      setOpen(null); setLines(null);
+                      navigation.navigate('Return', { voucherId: v.id });
+                    }}>
+                    <Text style={[S.ghostText, { fontSize: 15 }]}>
+                      {open.vtype === 'purchase' ? 'Send goods back' : 'Goods came back'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
 
                 <TouchableOpacity onPress={remove} disabled={working}
                   style={{ marginTop: 14, alignItems: 'center', paddingVertical: 10 }}>

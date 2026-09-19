@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { num } from '../lib/money';
 import { STATES } from '../lib/states';
+import { Head } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // CUSTOMERS AND SUPPLIERS.
@@ -120,18 +121,12 @@ export default function PartiesScreen({ navigation }) {
 
   return (
     <View style={S.screen}>
-      <View style={[S.header, { paddingTop: 50 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: C.ink }}>‹</Text>
-        </TouchableOpacity>
-        <Text style={S.h1}>Customers &amp; suppliers</Text>
+      <Head navigation={navigation} title="Customers & suppliers">
         <TouchableOpacity onPress={() => setEdit({ ...empty })}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
           <Text style={{ fontSize: 15, fontWeight: '800', color: C.accent }}>+ NEW</Text>
         </TouchableOpacity>
-      </View>
+      </Head>
 
       <View style={{ padding: 16 }}>
         <TextInput style={S.input} placeholder="Search a name, phone or GST number"

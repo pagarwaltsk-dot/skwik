@@ -1,10 +1,14 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '../AppContext';
+import { showReports, showTransfer, showStock } from '../lib/features';
+import { Head } from '../components/Chrome';
 import { C, S } from '../theme';
 
 export default function MoreScreen({ navigation }) {
   const { org, signOut } = useApp();
+  const insets = useSafeAreaInsets();
 
   const scheme = !org?.is_gst_registered ? 'Not registered under GST'
     : org?.is_composition ? 'Composition scheme — bills say BILL OF SUPPLY'
@@ -18,15 +22,10 @@ export default function MoreScreen({ navigation }) {
   );
 
   return (
-    <ScrollView style={S.screen} contentContainerStyle={{ padding: 16, paddingTop: 50 }}>
-      <View style={S.row}>
-        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back"
-          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-          style={{ paddingVertical: 8, paddingRight: 10, paddingLeft: 2 }}>
-          <Text style={{ fontSize: 26, color: C.ink }}>‹</Text>
-        </TouchableOpacity>
-        <Text style={S.h1}>More</Text>
-      </View>
+    <View style={S.screen}>
+      <Head navigation={navigation} title="Everything" more={false} />
+      <ScrollView contentContainerStyle={{ padding: 16,
+                    paddingBottom: Math.max(insets.bottom, 12) + 24 }}>
 
       <View style={{ marginTop: 20, padding: 16, backgroundColor: C.card,
                      borderRadius: 18, borderWidth: 1.5, borderColor: C.line }}>
@@ -45,13 +44,15 @@ export default function MoreScreen({ navigation }) {
 
       <View style={{ marginTop: 10 }}>
         <Item label="Past bills"            onPress={() => navigation.navigate('Bills')} />
-        <Item label="Reports"               onPress={() => navigation.navigate('Reports')} />
-        <Item label="Import &amp; export"       onPress={() => navigation.navigate('Transfer')} />
-        <Item label="Settings"              onPress={() => navigation.navigate('Settings')} />
-        <Item label="Items"                 onPress={() => navigation.navigate('Items')} />
         <Item label="Customers & suppliers" onPress={() => navigation.navigate('Parties')} />
-        {!!org?.stock_enabled &&
+        <Item label="Items"                 onPress={() => navigation.navigate('Items')} />
+        {showStock(org) &&
           <Item label="Stock in hand"       onPress={() => navigation.navigate('Stock')} />}
+        {showReports(org) &&
+          <Item label="Reports"             onPress={() => navigation.navigate('Reports')} />}
+        {showTransfer(org) &&
+          <Item label="Import & export"     onPress={() => navigation.navigate('Transfer')} />}
+        <Item label="Settings"              onPress={() => navigation.navigate('Settings')} />
         <Item label="Log out" onPress={() =>
           Alert.alert('Log out?', 'You will need your number and password again.',
             [{ text: 'Cancel' }, { text: 'Log out', onPress: signOut }])} />
@@ -61,9 +62,10 @@ export default function MoreScreen({ navigation }) {
         <Text style={{ fontSize: 15, fontWeight: '700', color: C.accent, letterSpacing: -0.4 }}>
           Skwik
         </Text>
-        <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>Smooth &amp; Quick</Text>
+        <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>Smooth & Quick</Text>
         <Text style={{ fontSize: 10.5, color: C.muted, marginTop: 2, opacity: 0.8 }}>version 1.0</Text>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }

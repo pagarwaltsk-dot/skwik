@@ -266,8 +266,10 @@ export function partiesFromCsv(text) {
 // The tag must end right after its name, or carry a space before attributes.
 // Without that, asking for NAME also matches <NAME.LIST> and brings back
 // rubbish.
+const rx = (tag) => String(tag).replace(/\./g, '\\.');
+
 const tagOf = (chunk, tag) => {
-  const m = chunk.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'i'));
+  const m = chunk.match(new RegExp(`<${rx(tag)}(?:\\s[^>]*)?>([\\s\\S]*?)</${rx(tag)}>`, 'i'));
   return m ? unesc(m[1].trim()) : '';
 };
 
@@ -279,7 +281,7 @@ const unesc = (s) => String(s)
 
 const blocksOf = (xml, tag) => {
   const out = [];
-  const re = new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*?</${tag}>`, 'gi');
+  const re = new RegExp(`<${rx(tag)}(?:\\s[^>]*)?>[\\s\\S]*?</${rx(tag)}>`, 'gi');
   let m;
   while ((m = re.exec(xml))) out.push(m[0]);
   return out;
@@ -347,10 +349,76 @@ function inherited(groups, parent, field, depth = 0) {
   return inherited(groups, g.parent, field, depth + 1);
 }
 
-export function itemsFromTallyXml(xml) {
+/* -------------------- rates, balances -------------------- */
+
+// WHICH FIGURE IS HIS BALANCE.
+//
+// A Tally masters export carries the figure the books OPENED with — on 1
+// April, not today. Some exports also carry the closing figure, and that is
+// what a shopkeeper means when he says "his balance", so it wins whenever it
+// is in the file. Skwik says afterwards which of the two it found, because
+// importing the wrong one silently is how a whole ledger goes wrong.
+function balanceOf(block) {
+  const cl = tagOf(block, 'CLOSINGBALANCE');
+  if (cl !== '') return { value: numOf(cl), basis: 'closing' };
+  return { value: numOf(tagOf(block, 'OPENINGBALANCE')), basis: 'opening' };
+}
+
+// Every price level named anywhere in the file. A shop that keeps a wholesale
+// list and a retail list has two; most have none.
+export function priceLevelsInTally(xml) {
+  const out = [];
+  const re = /<PRICELEVEL>([\s\S]*?)<\/PRICELEVEL>/gi;
+  let m;
+  while ((m = re.exec(cleanText(xml)))) {
+    const name = unesc(m[1].trim());
+    if (name && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+// The rates Tally keeps for one item: a block per date the price changed, and
+// inside it a line per price level. Reading the first RATE in the block — what
+// Skwik used to do — hands back whichever level Tally happened to write first,
+// which is how a wholesale rate ends up on a retail bill.
+function ratesOf(block) {
+  const out = [];
+  for (const pl of blocksOf(block, 'FULLPRICELIST.LIST')) {
+    const date = tagOf(pl, 'DATE') || '';
+    const rows = blocksOf(pl, 'PRICELEVELLIST.LIST');
+    if (rows.length) {
+      for (const r of rows) {
+        const rate = numOf(tagOf(r, 'RATE'));
+        if (rate) out.push({ date, level: tagOf(r, 'PRICELEVEL'), rate });
+      }
+    } else {
+      const rate = numOf(tagOf(pl, 'RATE'));
+      if (rate) out.push({ date, level: '', rate });
+    }
+  }
+  return out;
+}
+
+// The newest rate on the level he named. If he named none, or that level has
+// no rate for this item, the newest rate of any level — which is right for the
+// shops that keep a single price list.
+function rateAt(rates, level) {
+  const newest = (list) => list.reduce((b, r) => (!b || r.date >= b.date ? r : b), null);
+  const want = String(level || '').trim().toLowerCase();
+  if (want) {
+    const mine = rates.filter((r) => String(r.level).trim().toLowerCase() === want);
+    if (mine.length) return newest(mine).rate;
+    return 0;
+  }
+  const any = newest(rates);
+  return any ? any.rate : 0;
+}
+
+export function itemsFromTallyXml(xml, opts = {}) {
   xml = cleanText(xml);
   const groups = groupsFromTallyXml(xml);
   const out = [];
+  let sawClosing = false, sawOpening = false;
 
   for (const b of blocksOf(xml, 'STOCKITEM')) {
     const name = nameAttr(b) || tagOf(b, 'NAME');
@@ -360,16 +428,14 @@ export function itemsFromTallyXml(xml) {
     const hsn = hsnOf(b) || inherited(groups, parent, 'hsn');
     const gst = gstRateOf(b) || inherited(groups, parent, 'gst_rate');
 
-    // The rate he sells at: the newest price level, if he keeps price lists.
-    let sale = 0;
-    let newest = '';
-    for (const pl of blocksOf(b, 'FULLPRICELIST.LIST')) {
-      const date = tagOf(pl, 'DATE') || '';
-      const rate = numOf(tagOf(pl, 'RATE'));
-      if (rate && date >= newest) { sale = rate; newest = date; }
-    }
+    // The rate he sells at, off the price level he picked.
+    const rates = ratesOf(b);
+    const sale  = rateAt(rates, opts.level);
+    const two   = opts.level2 ? rateAt(rates, opts.level2) : 0;
 
     const cost = numOf(tagOf(b, 'OPENINGRATE'));
+    const bal  = balanceOf(b);
+    if (bal.basis === 'closing') sawClosing = true; else sawOpening = true;
 
     out.push({
       name,
@@ -377,15 +443,20 @@ export function itemsFromTallyXml(xml) {
       hsn,
       unit: (tagOf(b, 'BASEUNITS') || 'PCS').toUpperCase(),
       sale_price: sale || cost,
-      price2: 0,
+      price2: two,
       purchase_price: cost,
       gst_rate: gst,
-      opening_stock: numOf(tagOf(b, 'OPENINGBALANCE')),
+      opening_stock: bal.value,
       group: parent,
     });
   }
 
-  if (out.length) return { rows: out, problem: null };
+  if (out.length) {
+    return { rows: out, problem: null,
+             levels: priceLevelsInTally(xml),
+             basis: sawClosing && !sawOpening ? 'closing'
+                  : sawClosing ? 'mixed' : 'opening' };
+  }
   return { rows: [], problem: blocksOf(xml, 'LEDGER').length
     ? 'That file holds customers and suppliers, not items. Use it under '
       + '"Customers and suppliers" instead.'
@@ -395,6 +466,7 @@ export function itemsFromTallyXml(xml) {
 export function partiesFromTallyXml(xml) {
   xml = cleanText(xml);
   const out = [];
+  let sawClosing = false, sawOpening = false;
 
   for (const b of blocksOf(xml, 'LEDGER')) {
     const name = nameAttr(b) || tagOf(b, 'NAME');
@@ -406,7 +478,9 @@ export function partiesFromTallyXml(xml) {
 
     const gstin = (tagOf(b, 'PARTYGSTIN') || tagOf(b, 'GSTIN')).toUpperCase().replace(/\s/g, '');
     const code  = gstin.slice(0, 2);
-    const bal   = numOf(tagOf(b, 'OPENINGBALANCE'));
+    const b2    = balanceOf(b);
+    const bal   = b2.value;
+    if (b2.basis === 'closing') sawClosing = true; else sawOpening = true;
 
     out.push({
       name,
@@ -422,7 +496,11 @@ export function partiesFromTallyXml(xml) {
     });
   }
 
-  if (out.length) return { rows: out, problem: null };
+  if (out.length) {
+    return { rows: out, problem: null,
+             basis: sawClosing && !sawOpening ? 'closing'
+                  : sawClosing ? 'mixed' : 'opening' };
+  }
   return { rows: [], problem: blocksOf(xml, 'STOCKITEM').length
     ? `That file holds ${blocksOf(xml, 'STOCKITEM').length} items and no customers. `
       + 'In Tally, export the ledgers separately: Gateway → Chart of Accounts → '

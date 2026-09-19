@@ -1,6 +1,7 @@
 import React from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { ActivityIndicator, View } from 'react-native';
 
@@ -15,6 +16,7 @@ import BillScreen    from './src/screens/BillScreen';
 import BillsScreen   from './src/screens/BillsScreen';
 import TransferScreen from './src/screens/TransferScreen';
 import ReportsScreen from './src/screens/ReportsScreen';
+import ReturnScreen  from './src/screens/ReturnScreen';
 import MoneyScreen   from './src/screens/MoneyScreen';
 import PartiesScreen from './src/screens/PartiesScreen';
 import LedgerScreen  from './src/screens/LedgerScreen';
@@ -54,6 +56,7 @@ function Routes() {
           <Stack.Screen name="Bills"   component={BillsScreen} />
           <Stack.Screen name="Transfer" component={TransferScreen} />
           <Stack.Screen name="Reports"  component={ReportsScreen} />
+          <Stack.Screen name="Return"   component={ReturnScreen} />
           <Stack.Screen name="Money"   component={MoneyScreen} />
           <Stack.Screen name="Parties" component={PartiesScreen} />
           <Stack.Screen name="Ledger"  component={LedgerScreen} />
@@ -69,11 +72,13 @@ function Routes() {
 
 export default function App() {
   return (
-    <AppProvider>
-      <StatusBar style="dark" />
-      <NavigationContainer>
-        <Routes />
-      </NavigationContainer>
-    </AppProvider>
+    <SafeAreaProvider>
+      <AppProvider>
+        <StatusBar style="dark" />
+        <NavigationContainer>
+          <Routes />
+        </NavigationContainer>
+      </AppProvider>
+    </SafeAreaProvider>
   );
 }
