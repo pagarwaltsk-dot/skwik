@@ -2,11 +2,14 @@
 
 export const n2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
 
-// Lets him type sums the way he would on paper: 12*2, 5+3+2, 144/12.
-// Only digits and + - * / ( ) . are ever evaluated, nothing else can run.
+// Lets him type sums the way he would on paper: 10x5, 12*2, 5+3+2, 144/12.
+// "x" is how a shopkeeper writes times, so x, X and the proper sign are all
+// read as multiply. Only digits and + - * / ( ) . are ever evaluated,
+// nothing else can run.
 export function calc(x) {
-  const s = String(x ?? '').replace(/\s+/g, '');
+  let s = String(x ?? '').replace(/\s+/g, '').replace(/,/g, '');
   if (!s) return 0;
+  s = s.replace(/[xX\u00D7*]/g, '*').replace(/[\u00F7]/g, '/');
   if (/^[0-9]*\.?[0-9]*$/.test(s)) return Number(s) || 0;      // a plain number
   if (!/^[0-9+\-*/().]+$/.test(s)) return Number(s.replace(/[^0-9.]/g, '')) || 0;
   try {
@@ -17,6 +20,18 @@ export function calc(x) {
 }
 
 export const num = calc;
+
+// What the box should show once he moves on: the sum worked out, written
+// plainly. "10x5" becomes "50", "12.50" stays "12.50", rubbish stays put so
+// he can see it and fix it.
+export function settle(x) {
+  const raw = String(x ?? '').trim();
+  if (!raw) return '';
+  if (/^[0-9]*\.?[0-9]*$/.test(raw)) return raw;          // already a plain number
+  const v = calc(raw);
+  if (!v && !/^[0-9]/.test(raw)) return raw;               // could not read it: leave it
+  return String(Math.round(v * 1000) / 1000);
+}
 
 export const fmt  = (x) => (Number(x) || 0).toLocaleString('en-IN',
   { minimumFractionDigits: 2, maximumFractionDigits: 2 });
