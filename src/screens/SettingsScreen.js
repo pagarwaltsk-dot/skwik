@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
+import { sayPlainly } from '../lib/offline';
 import { showPurchase, showReturns, showReports, showTransfer, showStock } from '../lib/features';
 import { useApp } from '../AppContext';
 import { STATES } from './OnboardScreen';
@@ -55,7 +56,7 @@ export default function SettingsScreen({ navigation }) {
     setBusy(true);
     const { error } = await supabase.from('orgs').update(patch).eq('id', org.id);
     setBusy(false);
-    if (error) return Alert.alert('Could not save', error.message);
+    if (error) return Alert.alert('Could not save', sayPlainly(error));
     await reloadOrg();
     if (msg) Alert.alert('Saved', msg);
   };
@@ -216,7 +217,7 @@ export default function SettingsScreen({ navigation }) {
             const { error } = await supabase.from('orgs')
               .update({ print_width: f.print_width || 'a4' }).eq('id', org.id);
             setBusy(false);
-            if (error) return Alert.alert('Could not save', error.message);
+            if (error) return Alert.alert('Could not save', sayPlainly(error));
             await reloadOrg();
             Alert.alert('Saved', 'Bills will print on that from now on.');
           }}>
