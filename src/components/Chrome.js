@@ -1,5 +1,8 @@
-import React from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  View, Text, TextInput, TouchableOpacity, ScrollView, Keyboard, Platform,
+  UIManager, useWindowDimensions,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { C, S } from '../theme';
 
@@ -23,11 +26,54 @@ export function Bar({ children, style }) {
 
 export function Foot({ children, style }) {
   const insets = useSafeAreaInsets();
+  const gap = useKeyboardGap();
+  // With the keyboard up, the keyboard itself covers the navigation bar, so
+  // the room left for it is no longer needed and would only waste height.
   return (
-    <View style={[S.foot, { paddingBottom: Math.max(insets.bottom, 10) + 10 }, style]}>
+    <View style={[S.foot,
+                  { paddingBottom: gap > 0 ? 10 : Math.max(insets.bottom, 10) + 10 },
+                  style]}>
       {children}
     </View>
   );
+}
+
+// HOW MUCH OF THE SCREEN THE KEYBOARD HAS TAKEN.
+//
+// Android used to shrink the app when the keyboard came up, and every app got
+// this for free. Since edge-to-edge became the default the app is drawn full
+// height behind the keyboard instead, so the bottom of the screen — which on a
+// billing app is the total and the Save button — ends up underneath it. The
+// phone still announces how tall the keyboard is; this works out how much of
+// that the app has not already been given, so the answer is right whether the
+// window resized or not, and on both Android and iOS.
+export function useKeyboardGap() {
+  const [kb, setKb] = useState(0);
+  const { height } = useWindowDimensions();
+  const full = useRef(height);
+
+  // the tallest the window has been with no keyboard up is its real height
+  if (kb === 0 && height > full.current) full.current = height;
+
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const a = Keyboard.addListener(showEvt, (e) => setKb(e?.endCoordinates?.height || 0));
+    const b = Keyboard.addListener(hideEvt, () => setKb(0));
+    return () => { a.remove(); b.remove(); };
+  }, []);
+
+  if (!kb) return 0;
+  const shrank = Math.max(0, full.current - height);   // what Android already gave back
+  return Math.max(0, Math.round(kb - shrank));
+}
+
+// A screen that gets out of the keyboard's way. Everything inside rises by
+// exactly the height the keyboard took, so a fixed bottom bar sits on top of
+// the keys instead of behind them.
+export function Screen({ children, style }) {
+  const gap = useKeyboardGap();
+  return <View style={[S.screen, { paddingBottom: gap }, style]}>{children}</View>;
 }
 
 // THE WAY OUT OF ANYWHERE.
@@ -73,3 +119,89 @@ export function Head({ navigation, title, onBack, children, more = true }) {
     </View>
   );
 }
+
+/* ================= forms that keep the field in sight ================= */
+
+// Pushing the page up is only half of it. The field being typed in has to be
+// above the keyboard as well, and on a long form — settings, a new customer —
+// it usually is not. This scrolls it into view the moment it is tapped.
+
+const BringCtx = createContext(null);
+
+export function KeyForm({ children, contentContainerStyle, style, ...rest }) {
+  const ref = useRef(null);
+  const gap = useKeyboardGap();
+  const insets = useSafeAreaInsets();
+
+  const api = useMemo(() => ({
+    bring: (node) => {
+      const sv = ref.current;
+      if (!sv || !node) return;
+      const inner = sv.getInnerViewNode ? sv.getInnerViewNode() : null;
+      if (!inner) return;
+      try {
+        UIManager.measureLayout(node, inner,
+          () => {},                                   // could not measure: leave it
+          (x, y) => sv.scrollTo({ y: Math.max(0, y - 90), animated: true }));
+      } catch (_) { /* never let a scroll break typing */ }
+    },
+  }), []);
+
+  return (
+    <BringCtx.Provider value={api}>
+      <ScrollView ref={ref} keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="none"
+        style={style}
+        contentContainerStyle={[
+          contentContainerStyle,
+          { paddingBottom: gap + Math.max(insets.bottom, 12) + 40 },
+        ]}
+        {...rest}>
+        {children}
+      </ScrollView>
+    </BringCtx.Provider>
+  );
+}
+
+// Spread onto any TextInput inside a KeyForm: <TextInput {...bring()} />
+export function useBring() {
+  const api = useContext(BringCtx);
+  return (extra = {}) => ({
+    onFocus: (e) => {
+      api?.bring(e?.target);
+      extra.onFocus?.(e);
+    },
+  });
+}
+
+// ONE FIELD, AND THE WAY TO THE NEXT ONE.
+//
+// A shopkeeper filling a form should never have to put his thumb down to move
+// on. Give a field the ref of the one after it and the phone's own arrow key
+// carries him there; the last field in a form says "done" and can save.
+//
+//   const rate = useRef(null);
+//   <Box next={rate} … />
+//   <Box ref={rate} onSubmit={save} … />
+export const Box = React.forwardRef(function Box(
+  { next, onSubmit, style, multiline, ...rest }, ref) {
+  const bring = useBring();
+  const last = !next;
+  return (
+    <TextInput
+      ref={ref}
+      style={[S.input, style]}
+      placeholderTextColor={C.faint}
+      multiline={multiline}
+      returnKeyType={multiline ? undefined : (last ? 'done' : 'next')}
+      submitBehavior={multiline ? 'newline' : (last ? 'blurAndSubmit' : 'submit')}
+      {...rest}
+      {...bring(rest)}
+      onSubmitEditing={(e) => {
+        rest.onSubmitEditing?.(e);
+        if (next?.current?.focus) next.current.focus();
+        else onSubmit?.();
+      }}
+    />
+  );
+});

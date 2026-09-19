@@ -17,6 +17,26 @@ export const showReturns  = (org) => on(org?.show_returns);
 export const showReports  = (org) => on(org?.show_reports);
 export const showTransfer = (org) => on(org?.show_transfer);
 
+export const showExpenses = (org) => on(org?.show_expenses);
+export const showRecon    = (org) => on(org?.show_recon);
+
 // Stock is older than these switches and already defaults to off on the firm
 // row, so it is read plainly.
 export const showStock    = (org) => !!org?.stock_enabled;
+
+// Udhar is not a switch: every shop lends, and the list is built from what is
+// already in the books. It is always there.
+
+/* ---------------- the ones that are off until a trade needs them ---------- */
+
+// A chemist cannot sell without a batch and an expiry; a hardware shop never
+// wants to see either. Both default to off, and a shop that does not switch
+// them on never learns they exist.
+export const showBatch    = (org) => !!org?.batch_enabled;
+export const showExpiry   = (org) => !!org?.expiry_enabled;
+
+// More than one godown. Off until a shop says it has two.
+export const showGodowns  = (org) => !!org?.godowns_enabled;
+
+// One item in several sizes, found as one name.
+export const showVariants = (org) => !!org?.variants_enabled;

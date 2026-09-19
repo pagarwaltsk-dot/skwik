@@ -5,11 +5,11 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
-import * as LegacyFS from 'expo-file-system/legacy';
+import { readPickedFile } from '../lib/pickfile';
 
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { fmt0 } from '../lib/money';
+import { fmt0, today } from '../lib/money';
 import {
   sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml,
   priceLevelsInTally,
@@ -18,7 +18,7 @@ import {
   buildBackup, readBackup, backupVoucherPayload,
   ITEMS_TEMPLATE, PARTIES_TEMPLATE,
 } from '../lib/transfer';
-import { Bar, Foot, MoreButton, BackButton } from '../components/Chrome';
+import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // BRINGING BOOKS IN, AND SENDING THEM OUT.
@@ -38,51 +38,13 @@ const firstOfMonth = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padSt
 
 // READING THE FILE HE PICKED.
 //
-// Android hands a picked file over as a content:// address rather than a real
-// path, and the two ways of reading one do not work in the same places. Inside
-// Expo Go the newer reader is fenced off from anything outside the app's own
-// folder, which is exactly where a picked file lands. So: try the modern way,
-// and if it will not have it, go through Android's own content reader, which
-// always can. One of the two always works.
-async function readPickedFile(uri) {
-  let asText, firstProblem;
-
-  try {
-    asText = await new File(uri).text();
-  } catch (e) {
-    firstProblem = e;
-    try {
-      asText = await LegacyFS.readAsStringAsync(uri, { encoding: 'utf8' });
-    } catch (e2) {
-      throw firstProblem || e2;
-    }
-  }
-
-  // Readable? Then we are done, and nothing expensive happened.
-  if (!looksMangled(asText)) return asText;
-
-  // Not readable. Tally writes UTF-16 and the phone read it as UTF-8, so the
-  // text is full of holes. Take the raw bytes instead and decode them here,
-  // where we can see what encoding they really are.
-  try {
-    let b64;
-    try { b64 = await new File(uri).base64(); }
-    catch (e) { b64 = await LegacyFS.readAsStringAsync(uri, { encoding: 'base64' }); }
-    const decoded = decodeBytes(base64ToBytes(b64));
-    if (decoded && !looksMangled(decoded)) return decoded;
-    return decoded || asText;
-  } catch (e) {
-    return asText;      // fall back to whatever we had
-  }
-}
-
 function rangeDates(k) {
   const now = new Date();
   if (k === 'month') return [firstOfMonth(now), null];
   if (k === 'last') {
     const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const end   = new Date(now.getFullYear(), now.getMonth(), 0);
-    return [firstOfMonth(start), end.toISOString().slice(0, 10)];
+    return [firstOfMonth(start), today(end)];
   }
   if (k === 'fy') {
     const y = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
@@ -221,7 +183,7 @@ export default function TransferScreen({ navigation }) {
       ]);
 
       const text = buildBackup({ org, items, parties, vouchers, lines, payments });
-      const day = new Date().toISOString().slice(0, 10);
+      const day = today();
       await send(`skwik-backup-${day}.json`, text, 'application/json');
 
       Alert.alert('Backup made',
@@ -435,7 +397,7 @@ export default function TransferScreen({ navigation }) {
   );
 
   return (
-    <View style={S.screen}>
+    <Screen>
       <Bar>
         <BackButton navigation={navigation} />
         <View style={{ flex: 1 }}>
@@ -622,6 +584,6 @@ export default function TransferScreen({ navigation }) {
           <Text style={{ color: '#fff', fontWeight: '700', marginTop: 12 }}>Saving…</Text>
         </View>
       )}
-    </View>
+    </Screen>
   );
 }

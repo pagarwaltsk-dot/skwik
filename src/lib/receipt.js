@@ -8,7 +8,7 @@
 // enough to read, no lines it does not need, and no fixed page height —
 // thermal paper is a roll, so the page is as long as the bill.
 
-import { fmt, fmt0, n2, num, amountInWords } from './money';
+import { amountInWords, fmt, fmt0, hsnApplies, n2, num, pct, qty } from './money';
 import { uqcShort } from './uqc';
 
 const esc = (s) => String(s ?? '')
@@ -26,6 +26,9 @@ const PAPER = {
 export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   const p = PAPER[String(width)] || PAPER['80'];
   const gst = voucher.tax_mode && voucher.tax_mode !== 'none';
+  // A roll is the only document some shops ever issue, so what is on it has to
+  // stand on its own: HSN and the rate per line, not just a total.
+  const showHsn = hsnApplies(org) && voucher.vtype !== 'estimate';
   const igst = voucher.tax_mode === 'igst';
   const est = voucher.vtype === 'estimate' || org?.mode === 'estimate';
 
@@ -36,15 +39,18 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
     : org?.is_gst_registered ? 'TAX INVOICE' : 'BILL';
 
   const rows = (lines || []).map((l) => {
-    const qty  = num(l.qty);
+    const q    = num(l.qty);
     const rate = num(l.rate);
-    const amt  = n2(l.amount != null ? l.amount : qty * rate);
+    const amt  = n2(l.amount != null ? l.amount : q * rate);
     return `
       <div class="it">
         <div class="nm">${esc(l.item_name)}${l.flag ? ' <b>★</b>' : ''}</div>
         ${l.note ? `<div class="nt">${esc(l.note)}</div>` : ''}
+        ${Number(l.disc) ? `<div class="nt">Less ${fmt(l.disc)}</div>` : ''}
         <div class="qr">
-          <span>${qty} ${esc(uqcShort(l.unit || ''))} &times; ${fmt0(rate)}</span>
+          <span>${qty(q)} ${esc(uqcShort(l.unit || ''))} &times; ${fmt(rate)}${
+            gst && num(l.gst_rate) ? ` &middot; ${pct(l.gst_rate)}%` : ''}${
+            showHsn && l.hsn ? ` &middot; ${esc(l.hsn)}` : ''}</span>
           <span class="amt">${fmt(amt)}</span>
         </div>
       </div>`;
@@ -55,7 +61,7 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
     : `<div class="tr"><span>CGST</span><span>${fmt(voucher.cgst)}</span></div>
        <div class="tr"><span>SGST</span><span>${fmt(voucher.sgst)}</span></div>`);
 
-  const extra = Number(voucher.extra_amount) > 0
+  const extra = Number(voucher.extra_amount)
     ? `<div class="tr"><span>${esc(voucher.extra_note || 'Other')}</span><span>${fmt(voucher.extra_amount)}</span></div>` : '';
 
   const round = Number(voucher.round_off)

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { STATES } from '../lib/states';
+import { Box, KeyForm } from '../components/Chrome';
 import { C, S } from '../theme';
 
 
@@ -10,8 +11,23 @@ import { C, S } from '../theme';
 // This shows only if someone has a login but no shop against it - an account
 // made before this version, or a sign-up that stopped half way.
 export default function OnboardScreen() {
-  const { reloadOrg, signOut } = useApp();
+  const { reloadOrg, signOut, joinShop } = useApp();
   const [name, setName] = useState('');
+  const fName = useRef(null), fPhone = useRef(null), fCode = useRef(null);
+  const [code, setCode] = useState('');
+
+  const join = async () => {
+    if (code.trim().length < 4) {
+      return Alert.alert('The code', 'Ask the owner for the six-character shop code.');
+    }
+    setBusy(true);
+    try {
+      const r = await joinShop(code);
+      Alert.alert('You are in', `You can now write bills for ${r?.name || 'the shop'}.`);
+    } catch (e) {
+      Alert.alert('Could not join', e.message || String(e));
+    } finally { setBusy(false); }
+  };
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -44,19 +60,19 @@ export default function OnboardScreen() {
   };
 
   return (
-    <ScrollView style={S.screen} contentContainerStyle={{ padding: 24, paddingTop: 80 }}>
+    <KeyForm style={S.screen} contentContainerStyle={{ padding: 24, paddingTop: 80 }}>
       <Text style={{ fontSize: 28, fontWeight: '700', color: C.ink }}>Your shop</Text>
       <Text style={{ fontSize: 15, color: C.muted, marginTop: 8, marginBottom: 28 }}>
         Just the name for now. You can start billing straight away.
       </Text>
 
       <Text style={S.label}>Shop name</Text>
-      <TextInput style={[S.input, { marginTop: 6, marginBottom: 18, fontSize: 20 }]}
-        autoFocus placeholder="Your shop name" placeholderTextColor={C.faint}
+      <Box ref={fName} next={fPhone} style={{ marginTop: 6, marginBottom: 18, fontSize: 20 }}
+        autoFocus placeholder="Your shop name"
         value={name} onChangeText={setName} />
 
       <Text style={S.label}>Phone (optional)</Text>
-      <TextInput style={[S.input, { marginTop: 6, marginBottom: 26 }]}
+      <Box ref={fPhone} onSubmit={start} style={{ marginTop: 6, marginBottom: 26 }}
         keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
 
       <TouchableOpacity style={[S.btn, busy && { opacity: 0.6 }]} onPress={start} disabled={busy}>
@@ -74,10 +90,32 @@ export default function OnboardScreen() {
         </Text>
       </View>
 
+      {/* The other kind of person who lands here: not an owner at all, but
+          somebody whose employer already has a shop in Skwik. */}
+      <View style={{ marginTop: 18, padding: 14, backgroundColor: C.surface, borderWidth: 1,
+                     borderColor: C.line, borderRadius: 12 }}>
+        <Text style={{ fontSize: 13.5, fontWeight: '700', color: C.ink }}>
+          I work at a shop
+        </Text>
+        <Text style={{ fontSize: 12.5, fontWeight: '600', color: C.muted, marginTop: 5, lineHeight: 18 }}>
+          If the owner already uses Skwik, ask him for the shop code and type
+          it here. Six letters and numbers.
+        </Text>
+        <View style={[S.row, { gap: 8, marginTop: 10 }]}>
+          <Box ref={fCode} onSubmit={join} style={[{ flex: 1, letterSpacing: 3 }, S.num]}
+            autoCapitalize="characters" maxLength={6} placeholder="ABC123"
+            value={code} onChangeText={(t) => setCode(t.toUpperCase().replace(/[^A-Z0-9]/g, ''))} />
+          <TouchableOpacity style={[S.btnGhost, { paddingHorizontal: 18, paddingVertical: 12 }]}
+            onPress={join} disabled={busy}>
+            <Text style={S.ghostText}>JOIN</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       <TouchableOpacity onPress={signOut} style={{ marginTop: 20, alignItems: 'center' }}>
         <Text style={{ fontSize: 14, fontWeight: '700', color: C.muted }}>Log out</Text>
       </TouchableOpacity>
-    </ScrollView>
+    </KeyForm>
   );
 }
 

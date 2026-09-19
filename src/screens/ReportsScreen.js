@@ -8,9 +8,9 @@ import { File, Paths } from 'expo-file-system';
 
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { fmt, fmt0, n2 } from '../lib/money';
+import { fmt, fmt0, n2, today } from '../lib/money';
 import { buildGstr1 } from '../lib/gstr1';
-import { Bar, Foot, MoreButton, BackButton } from '../components/Chrome';
+import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // WHAT THE BOOKS SAY.
@@ -28,13 +28,40 @@ const RANGES = [
 
 const firstOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
 
+// EVERY ROW, NOT THE FIRST THOUSAND.
+//
+// Supabase hands back at most a thousand rows and says nothing about the rest.
+// A shop doing 200 bills a month has more lines than that, and the return
+// would quietly go out short. These two ask for the next page until a page
+// comes back short.
+async function allRows(build) {
+  const out = [];
+  const size = 1000;
+  for (let from = 0; ; from += size) {
+    const { data, error } = await build().range(from, from + size - 1);
+    if (error) throw error;
+    out.push(...(data || []));
+    if (!data || data.length < size) return out;
+  }
+}
+
+async function linesFor(ids) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += 200) {
+    const part = ids.slice(i, i + 200);
+    out.push(...await allRows(() => supabase.from('voucher_lines')
+      .select('*').in('voucher_id', part).order('id')));
+  }
+  return out;
+}
+
 function rangeOf(k) {
   const now = new Date();
   if (k === 'month') return [firstOf(now), null, 'this month'];
   if (k === 'last') {
     const s = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const e = new Date(now.getFullYear(), now.getMonth(), 0);
-    return [firstOf(s), e.toISOString().slice(0, 10), 'last month'];
+    return [firstOf(s), today(e), 'last month'];
   }
   if (k === 'fy') {
     const y = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
@@ -51,29 +78,27 @@ export default function ReportsScreen({ navigation }) {
   const [busy, setBusy]   = useState(true);
   const [vouchers, setVouchers] = useState([]);
   const [lines, setLines] = useState([]);
+  const [pnl, setPnl] = useState(null);
 
   const load = useCallback(async () => {
     setBusy(true);
     try {
       const [from, to] = rangeOf(range);
-      let q = supabase.from('vouchers')
-        .select('*, parties(name, gstin, state_name)').order('vdate');
-      if (from) q = q.gte('vdate', from);
-      if (to)   q = q.lte('vdate', to);
-      const { data: vs, error } = await q;
-      if (error) throw error;
-      setVouchers(vs || []);
+      const vs = await allRows(() => {
+        let q = supabase.from('vouchers')
+          .select('*, parties(name, gstin, state_name)').order('vdate');
+        if (from) q = q.gte('vdate', from);
+        if (to)   q = q.lte('vdate', to);
+        return q;
+      });
+      setVouchers(vs);
+      setLines(vs.length ? await linesFor(vs.map((v) => v.id)) : []);
 
-      if (vs?.length) {
-        const ids = vs.map((v) => v.id);
-        const all = [];
-        for (let i = 0; i < ids.length; i += 200) {
-          const { data } = await supabase.from('voucher_lines')
-            .select('*').in('voucher_id', ids.slice(i, i + 200));
-          all.push(...(data || []));
-        }
-        setLines(all);
-      } else setLines([]);
+      // what the shop earned: sales less the cost of what went out, less the
+      // money that went on rent, salary and the rest
+      const { data: pl } = await supabase.rpc('profit_and_loss',
+        { p_from: from || '2000-04-01', p_to: to || today() });
+      setPnl(pl || null);
     } catch (e) {
       Alert.alert('Could not load', e.message || String(e));
     } finally { setBusy(false); }
@@ -95,12 +120,13 @@ export default function ReportsScreen({ navigation }) {
       return acc;
     };
 
-    const sales = blank(), purchases = blank(), estimates = blank();
+    const sales = blank(), purchases = blank(), estimates = blank(), returns = blank();
     const byDay = {};
     for (const v of vouchers) {
       if (v.vtype === 'sale')      { add(sales, v);
                                      byDay[v.vdate] = n2((byDay[v.vdate] || 0) + Number(v.total || 0)); }
       else if (v.vtype === 'purchase') add(purchases, v);
+      else if (v.vtype === 'sale_return') add(returns, v);
       else if (v.vtype === 'estimate') { add(estimates, v);
                                      byDay[v.vdate] = n2((byDay[v.vdate] || 0) + Number(v.total || 0)); }
     }
@@ -134,12 +160,14 @@ export default function ReportsScreen({ navigation }) {
     }
 
     return {
-      sales, purchases, estimates,
+      sales, purchases, estimates, returns,
       rates: Object.values(byRate).sort((a, b) => a.rate - b.rate),
       b2bTaxable, b2cTaxable,
       days: Object.entries(byDay).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 31),
       items: Object.values(byItem).sort((a, b) => b.value - a.value).slice(0, 15),
-      gstOwed: n2(sales.cgst + sales.sgst + sales.igst),
+      // credit notes reduce what is owed; leaving them out overstated it
+      gstOwed: n2(sales.cgst + sales.sgst + sales.igst
+                - (returns?.cgst || 0) - (returns?.sgst || 0) - (returns?.igst || 0)),
       itc: n2(purchases.cgst + purchases.sgst + purchases.igst),
     };
   }, [vouchers, lines]);
@@ -162,24 +190,19 @@ export default function ReportsScreen({ navigation }) {
     setFiling(true);
     try {
       const from = `${y}-${String(m).padStart(2, '0')}-01`;
-      const to   = new Date(y, m, 0).toISOString().slice(0, 10);
+      const to   = today(new Date(y, m, 0));
 
-      const { data: vs, error } = await supabase.from('vouchers')
+      const vs = await allRows(() => supabase.from('vouchers')
         .select('*, parties(name, gstin, state_code, state_name)')
-        .gte('vdate', from).lte('vdate', to);
-      if (error) throw error;
+        .gte('vdate', from).lte('vdate', to).order('vdate'));
 
       const byV = {};
-      if (vs?.length) {
-        const ids = vs.map((v) => v.id);
-        for (let i = 0; i < ids.length; i += 200) {
-          const { data } = await supabase.from('voucher_lines')
-            .select('*').in('voucher_id', ids.slice(i, i + 200));
-          (data || []).forEach((l) => { (byV[l.voucher_id] = byV[l.voucher_id] || []).push(l); });
-        }
+      if (vs.length) {
+        (await linesFor(vs.map((v) => v.id)))
+          .forEach((l) => { (byV[l.voucher_id] = byV[l.voucher_id] || []).push(l); });
       }
 
-      const r = buildGstr1({ org, vouchers: vs || [], linesByVoucher: byV, year: y, month: m });
+      const r = buildGstr1({ org, vouchers: vs, linesByVoucher: byV, year: y, month: m });
 
       const go = async () => {
         const name = `GSTR1-${org?.gstin || 'firm'}-${String(m).padStart(2, '0')}${y}.json`;
@@ -271,7 +294,7 @@ export default function ReportsScreen({ navigation }) {
   );
 
   return (
-    <View style={S.screen}>
+    <Screen>
       <Bar>
         <BackButton navigation={navigation} />
         <View style={{ flex: 1 }}>
@@ -341,6 +364,25 @@ export default function ReportsScreen({ navigation }) {
                   <Line k={`${sums.purchases.n} bill${sums.purchases.n === 1 ? '' : 's'}`} v="" />
                   <Line k="Goods" v={fmt(sums.purchases.taxable)} />
                   <Line k="Total" v={`₹${fmt0(sums.purchases.total)}`} strong />
+                </Card>
+              )}
+
+              {!!pnl && (
+                <Card title="What you earned">
+                  <Line k="Sold (before tax)" v={fmt(pnl.sale)} />
+                  <Line k="What those goods cost" v={fmt(pnl.cost)} />
+                  <Line k="Gross profit" v={fmt(n2(Number(pnl.sale) - Number(pnl.cost)))} />
+                  {!!Number(pnl.expenses) && <Line k="Money out" v={fmt(pnl.expenses)} />}
+                  <Line k="Left" strong
+                        v={`₹${fmt0(n2(Number(pnl.sale) - Number(pnl.cost) - Number(pnl.expenses)))}`} />
+                  {(pnl.heads || []).map((h) => (
+                    <Line key={h.head} k={`   ${h.head}`} v={fmt(h.amount)} />
+                  ))}
+                  <Text style={S.hint}>
+                    The cost is taken from each item's purchase price, so it is only
+                    as right as those are. Bills where the item was typed in by hand
+                    and never saved carry no cost at all.
+                  </Text>
                 </Card>
               )}
 
@@ -420,6 +462,6 @@ export default function ReportsScreen({ navigation }) {
           )}
         </ScrollView>
       )}
-    </View>
+    </Screen>
   );
 }

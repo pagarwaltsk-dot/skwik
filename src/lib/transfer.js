@@ -8,6 +8,17 @@
 
 import { n2 } from './money';
 import { STATES } from './states';
+import { guessUqc, isUqc } from './uqc';
+
+// "Bottles", "Pieces", "Meters" — what Tally and spreadsheets actually hold.
+// Stored as they come, they print as nonsense and the GST portal refuses the
+// return, so they are turned into real unit codes on the way in.
+const asUqc = (unit, fallback = 'PCS') => {
+  const u = String(unit || '').trim();
+  if (!u) return fallback;
+  if (isUqc(u)) return u.toUpperCase();
+  return guessUqc(u) || fallback;
+};
 
 /* ===================== making sense of the bytes ===================== */
 
@@ -150,6 +161,8 @@ const SAYS = {
   address:        ['address', 'add', 'addr'],
   state_name:     ['state', 'statename'],
   opening_balance:['openingbalance', 'balance', 'outstanding', 'due', 'openingbal'],
+  owed_by:        ['owedby', 'owed', 'direction', 'drcr', 'debitcredit'],
+  kind:           ['customerorsupplier', 'kind', 'type', 'partytype', 'category'],
 };
 
 const tidy = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -187,6 +200,14 @@ export function mapColumns(header, wanted) {
 }
 
 const cell = (row, i) => (i === undefined ? '' : String(row[i] ?? '').trim());
+
+// The "Owed by" column Skwik writes: "you" or "them".
+const owedBy = (v) => {
+  const s = String(v || '').trim().toLowerCase();
+  if (/^(you|me|myself|i)$/.test(s) || /you owe/.test(s)) return 'you_owe';
+  if (/^(them|they|him|party|customer)$/.test(s) || /owes you/.test(s)) return 'owes_you';
+  return null;
+};
 const money = (x) => {
   const v = Number(String(x).replace(/[^0-9.\-]/g, ''));
   return Number.isFinite(v) ? v : 0;
@@ -211,7 +232,7 @@ export function itemsFromCsv(text) {
       name,
       alias: cell(rows[i], cols.alias),
       hsn: cell(rows[i], cols.hsn).replace(/[^0-9]/g, ''),
-      unit: (cell(rows[i], cols.unit) || 'PCS').toUpperCase(),
+      unit: asUqc(cell(rows[i], cols.unit)),
       sale_price: money(cell(rows[i], cols.sale_price)),
       price2: money(cell(rows[i], cols.price2)),
       purchase_price: money(cell(rows[i], cols.purchase_price)),
@@ -228,7 +249,8 @@ export function partiesFromCsv(text) {
     return { rows: [], problem: `That file has no rows under the headings. `
       + `It begins: ${peek(text, 90)}` };
   }
-  const cols = mapColumns(rows[0], ['name', 'gstin', 'phone', 'address', 'state_name', 'opening_balance']);
+  const cols = mapColumns(rows[0],
+    ['name', 'kind', 'gstin', 'phone', 'address', 'state_name', 'opening_balance', 'owed_by']);
   if (cols.name === undefined) {
     return { rows: [], problem: 'No column looks like the name. One heading must say Name or Party.' };
   }
@@ -245,8 +267,14 @@ export function partiesFromCsv(text) {
       address: cell(rows[i], cols.address),
       state_code: STATES[code] ? code : '',
       state_name: STATES[code] || cell(rows[i], cols.state_name),
+      // Which way the balance runs. Skwik's own export writes the amount as a
+      // plain number and puts the direction in its own column, so that column
+      // is read first; a file from anywhere else gets the old rule, where a
+      // minus means the money is going the other way.
       opening_balance: Math.abs(money(cell(rows[i], cols.opening_balance))),
-      opening_type: money(cell(rows[i], cols.opening_balance)) < 0 ? 'you_owe' : 'owes_you',
+      opening_type: owedBy(cell(rows[i], cols.owed_by))
+                 || (money(cell(rows[i], cols.opening_balance)) < 0 ? 'you_owe' : 'owes_you'),
+      kind: /suppl|vendor|creditor/i.test(cell(rows[i], cols.kind)) ? 'supplier' : 'customer',
     });
   }
   return { rows: out, problem: null };
@@ -441,7 +469,7 @@ export function itemsFromTallyXml(xml, opts = {}) {
       name,
       alias: '',
       hsn,
-      unit: (tagOf(b, 'BASEUNITS') || 'PCS').toUpperCase(),
+      unit: asUqc(tagOf(b, 'BASEUNITS')),
       sale_price: sale || cost,
       price2: two,
       purchase_price: cost,
@@ -735,8 +763,14 @@ export function backupVoucherPayload(v, linesFor) {
     taxable: v.taxable, cgst: v.cgst, sgst: v.sgst, igst: v.igst,
     extra_amount: v.extra_amount, extra_note: v.extra_note,
     round_off: v.round_off, total: v.total, notes: v.notes,
+    // a credit note with no link back to its bill is an orphan: the return
+    // screen can no longer see what has already come back
+    ref_voucher_id: v.ref_voucher_id || null,
+    ref_invoice_no: v.ref_invoice_no || null,
+    ref_invoice_date: v.ref_invoice_date || null,
     lines: (linesFor || []).map((l) => ({
       item_id: l.item_id, item_name: l.item_name, hsn: l.hsn, unit: l.unit,
+      note: l.note || null,
       qty: l.qty, rate: l.rate, gst_rate: l.gst_rate,
       taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
       amount: l.amount, flag: l.flag, checked: l.checked,

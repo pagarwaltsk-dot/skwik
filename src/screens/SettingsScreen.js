@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
-import { showPurchase, showReturns, showReports, showTransfer, showStock } from '../lib/features';
+import {
+  showBatch, showExpenses, showExpiry, showGodowns, showPurchase, showRecon,
+  showReturns, showReports, showTransfer, showStock, showVariants,
+} from '../lib/features';
 import { useApp } from '../AppContext';
 import { STATES } from './OnboardScreen';
 import { Alert as RNAlert } from 'react-native';
-import { Head } from '../components/Chrome';
+import { Box, Head, KeyForm, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // Everything a shopkeeper can change about his own firm, on his phone.
@@ -23,13 +26,17 @@ const Section = ({ title, note, children }) => (
   </View>
 );
 
-const Field = ({ label, value, onChange, ...rest }) => (
-  <>
-    <Text style={[S.label, { marginTop: 12 }]}>{label}</Text>
-    <TextInput style={[S.input, { marginTop: 6 }]} value={value ?? ''}
-      onChangeText={onChange} {...rest} />
-  </>
-);
+// Every settings field is a Box, so the arrow key walks down the form and the
+// tapped field is scrolled clear of the keyboard.
+const Field = React.forwardRef(function Field({ label, value, onChange, next, ...rest }, ref) {
+  return (
+    <>
+      <Text style={[S.label, { marginTop: 12 }]}>{label}</Text>
+      <Box ref={ref} next={next} style={{ marginTop: 6 }} value={value ?? ''}
+        onChangeText={onChange} {...rest} />
+    </>
+  );
+});
 
 const Toggle = ({ label, note, value, disabled, onValueChange }) => (
   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13,
@@ -51,6 +58,24 @@ export default function SettingsScreen({ navigation }) {
   const [f, setF] = useState({ ...org });
   const [busy, setBusy] = useState(false);
   const set = (k) => (v) => setF((s) => ({ ...s, [k]: v }));
+
+  // the arrow key walks each block of the form, top to bottom
+  const rName = useRef(null), rAddr = useRef(null), rPhone = useRef(null), rState = useRef(null);
+  const rPre  = useRef(null), rNext = useRef(null);
+  const rP1   = useRef(null), rP2   = useRef(null);
+  const rL0 = useRef(null), rL1 = useRef(null), rL2 = useRef(null), rL3 = useRef(null);
+  const rL4 = useRef(null), rL5 = useRef(null), rL6 = useRef(null), rL7 = useRef(null);
+  const rL8 = useRef(null), rLock = useRef(null);
+
+  const saveLock = () => {
+    const d = String(f.books_locked_upto || '').trim();
+    if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      return Alert.alert('Check the date', 'Write it as 2026-08-31 — year, month, day.');
+    }
+    saveOrg({ books_locked_upto: d || null },
+      d ? `Nothing on or before ${d} can be changed now.` : 'Your books are open again.');
+  };
+  const taxLedgers = !!f.is_gst_registered && !f.is_composition;
 
   const saveOrg = async (patch, msg) => {
     setBusy(true);
@@ -93,6 +118,22 @@ export default function SettingsScreen({ navigation }) {
   const saveNumbering = async () => {
     const n = parseInt(String(f.next_invoice_no), 10);
     if (!n || n < 1) return Alert.alert('Check the number', 'The next bill number must be 1 or more.');
+
+    // Rule 46(b) is strict about what a bill number may look like: at most 16
+    // characters, and only letters, numbers, a hyphen and a slash. The portal
+    // refuses anything else, and it refuses it months later, at filing time,
+    // when the bills are already out of the shop.
+    const example = nextLooksLike();
+    if (example.length > 16) {
+      return Alert.alert('Too long',
+        `Your bill number would be ${example} — ${example.length} characters. GST `
+        + 'allows 16. Shorten the prefix.');
+    }
+    if (!/^[A-Za-z0-9/-]+$/.test(example)) {
+      return Alert.alert('Not allowed in a bill number',
+        `${example} has a character GST does not accept. Only letters, numbers, `
+        + 'a hyphen ( - ) and a slash ( / ) are allowed.');
+    }
     setBusy(true);
     const { error } = await supabase.rpc('set_invoice_start',
       { p_next: n, p_prefix: f.invoice_prefix || '' });
@@ -110,9 +151,9 @@ export default function SettingsScreen({ navigation }) {
   };
 
   return (
-    <View style={S.screen}>
+    <Screen>
       <Head navigation={navigation} title="Settings" />
-      <ScrollView keyboardShouldPersistTaps="handled"
+      <KeyForm
                   contentContainerStyle={{ padding: 16,
                     paddingBottom: Math.max(insets.bottom, 12) + 60 }}>
 
@@ -134,6 +175,33 @@ export default function SettingsScreen({ navigation }) {
                 note="Day, month and party totals, tax rate-wise, and the GSTR-1 file for the portal."
                 value={showReports(org)}
                 onValueChange={(v) => saveOrg({ show_reports: v })} />
+        <Toggle label="Money out" disabled={busy}
+                note="Rent, salary, transport. Without them Skwik cannot tell you what you earned."
+                value={showExpenses(org)}
+                onValueChange={(v) => saveOrg({ show_expenses: v })} />
+        <Toggle label="Supplier credit (GSTR-2B)" disabled={busy}
+                note="Which of your suppliers has not filed, so you know before you claim."
+                value={showRecon(org)}
+                onValueChange={(v) => saveOrg({ show_recon: v })} />
+        <Toggle label="More than one godown" disabled={busy}
+                note="A back store and a counter store, with goods moved between them."
+                value={showGodowns(org)}
+                onValueChange={(v) => {
+                  saveOrg({ godowns_enabled: v });
+                  if (v) navigation.navigate('Godowns');
+                }} />
+        <Toggle label="Batch numbers" disabled={busy}
+                note="For a chemist or anyone selling in lots. Asked on each line of a bill."
+                value={showBatch(org)}
+                onValueChange={(v) => saveOrg({ batch_enabled: v })} />
+        <Toggle label="Expiry dates" disabled={busy}
+                note="Goes beside the batch on the line, and stays with the stock."
+                value={showExpiry(org)}
+                onValueChange={(v) => saveOrg({ expiry_enabled: v })} />
+        <Toggle label="Sizes of one item" disabled={busy}
+                note="9x2, 9x3, 10x2 clip tiffin as one product in three sizes, each with its own rate and stock."
+                value={showVariants(org)}
+                onValueChange={(v) => saveOrg({ variants_enabled: v })} />
         <Toggle label="Import and export" disabled={busy}
                 note="Bringing items and parties in from Tally or Excel, and taking your books out."
                 value={showTransfer(org)}
@@ -169,16 +237,55 @@ export default function SettingsScreen({ navigation }) {
         </Section>
       )}
 
+      <Section title="Closing a month"
+               note="Once a return has gone to the portal the bills behind it must not change. Put the last filed date here and Skwik refuses to write, alter or remove anything on or before it — a mistake in a closed month is put right with a credit note, which is what the return expects.">
+        <Field ref={rLock} onSubmit={saveLock} label="FILED UP TO (YYYY-MM-DD)"
+               value={f.books_locked_upto || ''} onChange={set('books_locked_upto')}
+               placeholder="2026-08-31" />
+        <Text style={{ fontSize: 12, fontWeight: '600', color: C.muted, marginTop: 6 }}>
+          {org?.books_locked_upto
+            ? `Your books are closed up to ${org.books_locked_upto}.`
+            : 'Nothing is closed. Every bill can still be changed.'}
+        </Text>
+        <TouchableOpacity style={[S.btn, { marginTop: 14 }]} onPress={saveLock} disabled={busy}>
+          <Text style={S.btnText}>SAVE THE CLOSING DATE</Text>
+        </TouchableOpacity>
+        {!!org?.books_locked_upto && (
+          <TouchableOpacity onPress={() => saveOrg({ books_locked_upto: null }, 'Your books are open again.')}
+            style={{ marginTop: 12, alignItems: 'center', paddingVertical: 10 }}>
+            <Text style={{ fontSize: 14.5, fontWeight: '700', color: C.danger }}>
+              Open them again
+            </Text>
+          </TouchableOpacity>
+        )}
+      </Section>
+
+      <Section title="Seeing it work"
+               note="Write a month of real bills from your own items, your own customers and the money you have already received, so you can see what the reports, the ledgers and the stock do before you bill a single real day. A whole run can be taken back out again if you do not like it.">
+        <TouchableOpacity style={S.btn} onPress={() => navigation.navigate('Sample')}>
+          <Text style={S.btnText}>FILL A MONTH</Text>
+        </TouchableOpacity>
+      </Section>
+
+      <Section title="Who can bill"
+               note="Give the man at your counter his own login. He can write bills and take money; he cannot remove a bill, change these settings, see what you paid for your goods, or read the reports.">
+        <TouchableOpacity style={S.btn} onPress={() => navigation.navigate('Staff')}>
+          <Text style={S.btnText}>SHOP CODE AND PEOPLE</Text>
+        </TouchableOpacity>
+      </Section>
+
       <Section title="Your firm" note="This prints at the top of every bill.">
-        <Field label="FIRM NAME" value={f.name} onChange={set('name')} />
-        <Field label="ADDRESS"   value={f.address} onChange={set('address')} multiline
+        <Field ref={rName} next={rAddr} label="FIRM NAME" value={f.name} onChange={set('name')} />
+        <Field ref={rAddr} next={rPhone} label="ADDRESS" value={f.address} onChange={set('address')} multiline
                style={[S.input, { marginTop: 6, height: 80 }]} />
-        <Field label="PHONE"     value={f.phone} onChange={set('phone')} keyboardType="phone-pad" />
+        <Field ref={rPhone} next={rState} label="PHONE" value={f.phone} onChange={set('phone')}
+               keyboardType="phone-pad" />
         {!!f.is_gst_registered && (
           <Field label="GST NUMBER" value={f.gstin} onChange={set('gstin')}
                  autoCapitalize="characters" maxLength={15} />
         )}
-        <Field label="STATE CODE" value={String(f.state_code ?? '')} onChange={set('state_code')}
+        <Field ref={rState} onSubmit={saveDetails} label="STATE CODE"
+               value={String(f.state_code ?? '')} onChange={set('state_code')}
                keyboardType="number-pad" maxLength={2} />
         <Text style={{ fontSize: 12, fontWeight: '600', color: C.muted, marginTop: 4 }}>
           {STATES[f.state_code] || 'Unknown state code'}
@@ -227,9 +334,9 @@ export default function SettingsScreen({ navigation }) {
 
       <Section title="Bill numbering"
                note="Carry on from the number your book has reached. A number you have already used will be refused.">
-        <Field label="PREFIX (OPTIONAL)" value={f.invoice_prefix} onChange={set('invoice_prefix')}
+        <Field ref={rPre} next={rNext} label="PREFIX (OPTIONAL)" value={f.invoice_prefix} onChange={set('invoice_prefix')}
                placeholder="SGS/26-27/" autoCapitalize="characters" />
-        <Field label="NEXT BILL NUMBER" value={String(f.next_invoice_no ?? '')}
+        <Field ref={rNext} onSubmit={saveNumbering} label="NEXT BILL NUMBER" value={String(f.next_invoice_no ?? '')}
                onChange={set('next_invoice_no')} keyboardType="number-pad" />
         <TouchableOpacity
           onPress={() => setF((x) => ({ ...x, restart_each_year: !x.restart_each_year }))}
@@ -298,9 +405,9 @@ export default function SettingsScreen({ navigation }) {
 
       <Section title="Price lists"
                note="Two lists, named however you say them. Each customer sits on one of them.">
-        <Field label="PRICE LIST 1" value={f.price1_name} onChange={set('price1_name')}
+        <Field ref={rP1} next={rP2} label="PRICE LIST 1" value={f.price1_name} onChange={set('price1_name')}
                placeholder="Wholesale" />
-        <Field label="PRICE LIST 2" value={f.price2_name} onChange={set('price2_name')}
+        <Field ref={rP2} label="PRICE LIST 2" value={f.price2_name} onChange={set('price2_name')}
                placeholder="Retail" />
         <TouchableOpacity style={[S.btn, { marginTop: 16 }]} disabled={busy}
           onPress={() => saveOrg({ price1_name: (f.price1_name || 'Wholesale').trim(),
@@ -312,25 +419,25 @@ export default function SettingsScreen({ navigation }) {
 
       <Section title="Account names"
                note="Used on your reports and on the file your accountant imports. Change them to match the names in his books.">
-        <Field label="BANK NAME"         value={f.bank_name} onChange={set('bank_name')}
+        <Field ref={rL0} next={rL1} label="BANK NAME"         value={f.bank_name} onChange={set('bank_name')}
                placeholder="State Bank of India" />
-        <Field label="BANK ACCOUNT NAME" value={f.bank_ledger} onChange={set('bank_ledger')} />
-        <Field label="CASH ACCOUNT NAME" value={f.cash_ledger} onChange={set('cash_ledger')} />
-        <Field label="SALES ACCOUNT"     value={f.sales_ledger} onChange={set('sales_ledger')} />
-        <Field label="PURCHASE ACCOUNT"  value={f.purchase_ledger} onChange={set('purchase_ledger')} />
+        <Field ref={rL1} next={rL2} label="BANK ACCOUNT NAME" value={f.bank_ledger} onChange={set('bank_ledger')} />
+        <Field ref={rL2} next={rL3} label="CASH ACCOUNT NAME" value={f.cash_ledger} onChange={set('cash_ledger')} />
+        <Field ref={rL3} next={rL4} label="SALES ACCOUNT"     value={f.sales_ledger} onChange={set('sales_ledger')} />
+        <Field ref={rL4} next={taxLedgers ? rL5 : rL8} label="PURCHASE ACCOUNT"  value={f.purchase_ledger} onChange={set('purchase_ledger')} />
         {!!f.is_gst_registered && !f.is_composition && (
           <>
-            <Field label="CGST ACCOUNT" value={f.cgst_ledger} onChange={set('cgst_ledger')} />
-            <Field label="SGST ACCOUNT" value={f.sgst_ledger} onChange={set('sgst_ledger')} />
-            <Field label="IGST ACCOUNT" value={f.igst_ledger} onChange={set('igst_ledger')} />
+            <Field ref={rL5} next={rL6} label="CGST ACCOUNT" value={f.cgst_ledger} onChange={set('cgst_ledger')} />
+            <Field ref={rL6} next={rL7} label="SGST ACCOUNT" value={f.sgst_ledger} onChange={set('sgst_ledger')} />
+            <Field ref={rL7} next={rL8} label="IGST ACCOUNT" value={f.igst_ledger} onChange={set('igst_ledger')} />
           </>
         )}
-        <Field label="ROUND OFF ACCOUNT" value={f.round_off_ledger} onChange={set('round_off_ledger')} />
+        <Field ref={rL8} onSubmit={saveLedgers} label="ROUND OFF ACCOUNT" value={f.round_off_ledger} onChange={set('round_off_ledger')} />
         <TouchableOpacity style={[S.btn, { marginTop: 16 }]} onPress={saveLedgers} disabled={busy}>
           <Text style={S.btnText}>SAVE ACCOUNT NAMES</Text>
         </TouchableOpacity>
       </Section>
-      </ScrollView>
-    </View>
+      </KeyForm>
+    </Screen>
   );
 }

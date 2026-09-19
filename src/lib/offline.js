@@ -115,8 +115,19 @@ export async function noteServerCounters(org) {
   await write(K.counters, next);
 }
 
+// April to March, the way a bill is labelled: 26-27.
+const fyLabel = (d = new Date()) => {
+  const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
+  return `${String(y).slice(2)}-${String(y + 1).slice(2)}`;
+};
+
 // Take the next number and keep it. Used only when the server cannot be
 // reached — online, the server hands out the number as it always did.
+//
+// It has to come out the same SHAPE the server would have produced, year and
+// all. A phone that writes a bare "41" while the books are on "26-27/41" has
+// started a second series nobody asked for, and the shopkeeper finds out at
+// filing time.
 export async function takeLocalNumber(org, vtype) {
   const c = await read(K.counters, {});
   const key = vtype === 'estimate' ? 'estimate' : 'invoice';
@@ -124,32 +135,53 @@ export async function takeLocalNumber(org, vtype) {
     Number(c[key] || 0),
     Number((vtype === 'estimate' ? org?.next_estimate_no : org?.next_invoice_no) || 1));
   await write(K.counters, { ...c, [key]: n + 1 });
-  const prefix = (vtype === 'estimate' ? org?.estimate_prefix : org?.invoice_prefix) || '';
+
+  let prefix = (vtype === 'estimate' ? org?.estimate_prefix : org?.invoice_prefix) || '';
+  if (org?.restart_each_year && org?.year_in_prefix !== false) prefix += `${fyLabel()}/`;
   return `${prefix}${n}`;
 }
 
 /* ---------------- the queue ---------------- */
+
+// ONE HAND ON THE QUEUE AT A TIME.
+//
+// Reading the list, changing it and writing it back is three steps with an
+// await in each. Two of them running at once — a bill being saved while the
+// outbox is being emptied — and one overwrites the other's work: a bill that
+// was printed and handed over never reaches the books, and the waiting count
+// shows nothing, so nobody goes looking for it. Every change to the queue
+// goes through here, and they take their turn.
+let chain = Promise.resolve();
+const inTurn = (job) => {
+  const run = chain.then(job, job);
+  chain = run.then(() => {}, () => {});
+  return run;
+};
 
 // Each entry is everything needed to finish the job later, on its own:
 //   { id, at, kind: 'bill', payload, newParty, newItems }
 export const queueList  = () => read(K.queue, []);
 export const queueCount = async () => (await queueList()).length;
 
-export async function queueAdd(entry) {
+export const queueAdd = (entry) => inTurn(async () => {
   const q = await queueList();
   q.push({ ...entry, at: new Date().toISOString() });
   return write(K.queue, q);
-}
+});
 
-export async function queueRemove(id) {
+export const queueRemove = (id) => inTurn(async () => {
   const q = await queueList();
   return write(K.queue, q.filter((e) => e.id !== id));
-}
+});
 
-export async function queueMark(id, problem) {
+export const queueMark = (id, problem) => inTurn(async () => {
   const q = await queueList();
   return write(K.queue, q.map((e) => (e.id === id ? { ...e, problem } : e)));
-}
+});
+
+// Drop an entry the shopkeeper has decided to give up on, once he has been
+// shown what it was.
+export const queueDrop = (id) => queueRemove(id);
 
 /* ---------------- emptying the queue ---------------- */
 
@@ -158,11 +190,25 @@ export async function queueMark(id, problem) {
 // marked, never silently thrown away.
 //
 // Returns { sent, failed, stillOffline }.
+let flushing = false;
+
 export async function flushQueue(supabase) {
+  // Two flushes at once send the same bill twice. The second is harmless —
+  // save_voucher knows the bill's own id and refuses to write it again — but
+  // there is no reason to make the phone do the work.
+  if (flushing) return { sent: 0, failed: 0, stillOffline: false, busy: true };
+  flushing = true;
+  try {
+    return await flushOnce(supabase);
+  } finally { flushing = false; }
+}
+
+async function flushOnce(supabase) {
   const q = await queueList();
   if (!q.length) return { sent: 0, failed: 0, stillOffline: false };
 
   let sent = 0, failed = 0;
+  const renumbered = [];
 
   for (const entry of q) {
     try {
@@ -180,9 +226,19 @@ export async function flushQueue(supabase) {
         if (error && !/duplicate|already exists/i.test(error.message)) throw error;
       }
 
-      const { error } = await withTimeout(
+      const { data, error } = await withTimeout(
         supabase.rpc('save_voucher', { p: entry.payload }));
       if (error) throw error;
+
+      // The bill may already be in the books: the phone gave up waiting on a
+      // slow line after the server had in fact written it. The number the
+      // BOOKS hold is the real one, and if it is not the number printed on the
+      // paper in the customer's hand, somebody has to be told.
+      const given = String(entry.payload?.voucher_no || '');
+      const kept  = String(data?.voucher_no || given);
+      if (given && kept && given !== kept) {
+        renumbered.push({ printed: given, saved: kept, date: entry.payload?.vdate });
+      }
 
       await queueRemove(entry.id);
       sent++;
@@ -195,5 +251,5 @@ export async function flushQueue(supabase) {
     }
   }
 
-  return { sent, failed, stillOffline: false };
+  return { sent, failed, stillOffline: false, renumbered };
 }

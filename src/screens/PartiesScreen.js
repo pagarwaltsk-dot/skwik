@@ -1,13 +1,13 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList, Modal, Alert, ScrollView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { num } from '../lib/money';
+import { num, today } from '../lib/money';
 import { STATES } from '../lib/states';
-import { Head } from '../components/Chrome';
+import { Box, Head, KeyForm, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // CUSTOMERS AND SUPPLIERS.
@@ -21,7 +21,7 @@ const empty = {
   name: '', kind: 'customer', phone: '', gstin: '', address: '',
   state_code: '', state_name: '', price_list: 1,
   opening_balance: '', opening_type: 'owes_you',
-  opening_date: new Date().toISOString().slice(0, 10),
+  opening_date: today(),
 };
 
 export default function PartiesScreen({ navigation }) {
@@ -29,6 +29,11 @@ export default function PartiesScreen({ navigation }) {
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState('');
   const [edit, setEdit] = useState(null);
+
+  // name → phone → GST → state → address → what was outstanding → its date
+  const fName  = useRef(null), fPhone = useRef(null), fGstin = useRef(null);
+  const fState = useRef(null), fAddr  = useRef(null), fOpen  = useRef(null);
+  const fDate  = useRef(null);
 
   const load = () => supabase.from('parties').select('*').order('name')
     .then(({ data }) => setRows(data || []));
@@ -94,7 +99,7 @@ export default function PartiesScreen({ navigation }) {
     price_list: Number(p.price_list) === 2 ? 2 : 1,
     opening_balance: p.opening_balance ? String(p.opening_balance) : '',
     opening_type: p.opening_type || 'owes_you',
-    opening_date: p.opening_date || new Date().toISOString().slice(0, 10),
+    opening_date: p.opening_date || today(),
   });
 
   const Label = ({ children, top = 14 }) => (
@@ -120,7 +125,7 @@ export default function PartiesScreen({ navigation }) {
   );
 
   return (
-    <View style={S.screen}>
+    <Screen>
       <Head navigation={navigation} title="Customers & suppliers">
         <TouchableOpacity onPress={() => setEdit({ ...empty })}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
@@ -130,7 +135,7 @@ export default function PartiesScreen({ navigation }) {
 
       <View style={{ padding: 16 }}>
         <TextInput style={S.input} placeholder="Search a name, phone or GST number"
-          placeholderTextColor={C.faint} value={q} onChangeText={setQ} />
+          placeholderTextColor={C.faint} value={q} onChangeText={setQ}  returnKeyType="search" />
       </View>
 
       <FlatList
@@ -163,35 +168,33 @@ export default function PartiesScreen({ navigation }) {
 
       <Modal visible={!!edit} animationType="slide" onRequestClose={() => setEdit(null)}>
         {!!edit && (
-          <ScrollView style={S.screen} keyboardShouldPersistTaps="handled"
+          <KeyForm style={S.screen} keyboardShouldPersistTaps="handled"
                       contentContainerStyle={{ padding: 20, paddingTop: 54 }}>
             <Text style={{ fontSize: 24, fontWeight: '700', color: C.ink }}>
               {edit.id ? edit.name || 'Edit' : 'New customer or supplier'}
             </Text>
 
             <Label top={18}>Name</Label>
-            <TextInput style={[S.input, { marginTop: 6 }]} value={edit.name}
-              onChangeText={set('name')} placeholder="Sri Ganesh Store"
-              placeholderTextColor={C.faint} />
+            <Box ref={fName} next={fPhone} style={{ marginTop: 6 }} value={edit.name}
+              onChangeText={set('name')} placeholder="Sri Ganesh Store" />
 
             <Label>They are a</Label>
             <Pick value={edit.kind} onChange={set('kind')}
               options={[{ v: 'customer', label: 'Customer' }, { v: 'supplier', label: 'Supplier' }]} />
 
             <Label>Phone</Label>
-            <TextInput style={[S.input, S.num, { marginTop: 6 }]} keyboardType="phone-pad"
-              value={edit.phone} onChangeText={set('phone')} placeholder="98640 12345"
-              placeholderTextColor={C.faint} />
+            <Box ref={fPhone} next={fGstin} style={[S.num, { marginTop: 6 }]} keyboardType="phone-pad"
+              value={edit.phone} onChangeText={set('phone')} placeholder="98640 12345" />
 
             <Label>GST number</Label>
-            <TextInput style={[S.input, { marginTop: 6 }]} autoCapitalize="characters" maxLength={15}
-              value={edit.gstin} onChangeText={setGstin} placeholder="Leave empty if unregistered"
-              placeholderTextColor={C.faint} />
+            <Box ref={fGstin} next={fState} style={{ marginTop: 6 }}
+              autoCapitalize="characters" maxLength={15}
+              value={edit.gstin} onChangeText={setGstin} placeholder="Leave empty if unregistered" />
 
             <Label>State code</Label>
-            <TextInput style={[S.input, S.num, { marginTop: 6 }]} keyboardType="number-pad"
+            <Box ref={fState} next={fAddr} style={[S.num, { marginTop: 6 }]} keyboardType="number-pad"
               maxLength={2} value={String(edit.state_code || '')} onChangeText={setStateCode}
-              placeholder="18" placeholderTextColor={C.faint} />
+              placeholder="18" />
             <Text style={S.hint}>
               {edit.state_name
                 ? `${edit.state_name}. ${edit.state_code === String(org?.state_code)
@@ -201,8 +204,9 @@ export default function PartiesScreen({ navigation }) {
             </Text>
 
             <Label>Address</Label>
-            <TextInput style={[S.input, { marginTop: 6, height: 74, textAlignVertical: 'top' }]}
-              multiline value={edit.address} onChangeText={set('address')} />
+            <Box ref={fAddr} next={fOpen} style={{ marginTop: 6 }}
+              value={edit.address} onChangeText={set('address')}
+              placeholder="Shop and street" />
 
             <Label>Which price list</Label>
             <Pick value={Number(edit.price_list)} onChange={set('price_list')}
@@ -217,18 +221,18 @@ export default function PartiesScreen({ navigation }) {
                 nothing was.
               </Text>
 
-              <TextInput style={[S.input, S.num]} keyboardType="numeric"
+              <Box ref={fOpen} next={fDate} style={S.num} keyboardType="numeric"
                 value={edit.opening_balance} onChangeText={set('opening_balance')}
-                placeholder="0" placeholderTextColor={C.faint} />
+                placeholder="0" />
 
               <Pick value={edit.opening_type} onChange={set('opening_type')}
                 options={[{ v: 'owes_you', label: 'They owe you' },
                           { v: 'you_owe', label: 'You owe them' }]} />
 
               <Label top={12}>As on</Label>
-              <TextInput style={[S.input, S.num, { marginTop: 6 }]} value={edit.opening_date}
-                onChangeText={set('opening_date')} placeholder="2026-04-01"
-                placeholderTextColor={C.faint} />
+              <Box ref={fDate} onSubmit={save} style={[S.num, { marginTop: 6 }]}
+                value={edit.opening_date} onChangeText={set('opening_date')}
+                placeholder="2026-04-01" />
             </View>
 
             <TouchableOpacity style={[S.btn, { marginTop: 24 }]} onPress={save}>
@@ -239,9 +243,9 @@ export default function PartiesScreen({ navigation }) {
               <Text style={{ fontSize: 16, fontWeight: '600', color: C.muted }}>Cancel</Text>
             </TouchableOpacity>
             <View style={{ height: 40 }} />
-          </ScrollView>
+          </KeyForm>
         )}
       </Modal>
-    </View>
+    </Screen>
   );
 }

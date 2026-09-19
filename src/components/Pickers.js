@@ -4,14 +4,17 @@
 
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, Modal, FlatList } from 'react-native';
+import { useKeyboardGap } from './Chrome';
 import { searchUqc, uqcShort, uqcName } from '../lib/uqc';
 import { searchHsn, hsnDesc, minHsnDigits } from '../lib/hsn';
 import { C, S } from '../theme';
 
 function Sheet({ visible, title, hint, children, onClose }) {
+  const gap = useKeyboardGap();
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end' }}>
+      <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end',
+                     paddingBottom: gap }}>
         <View style={{ backgroundColor: C.bg, borderTopLeftRadius: 26, borderTopRightRadius: 26,
                        padding: 18, maxHeight: '86%' }}>
           <View style={[S.row, { marginBottom: 10 }]}>
@@ -53,7 +56,12 @@ export function UomField({ value, onChange }) {
       <Sheet visible={open} title="Unit" onClose={() => setOpen(false)}
              hint="Type how you say it — kilo, gattha, peti, dozen.">
         <TextInput style={S.input} autoFocus placeholder="Search"
-          value={q} onChangeText={setQ} />
+          value={q} onChangeText={setQ}
+          returnKeyType="next" submitBehavior="submit"
+          onSubmitEditing={() => {
+            const top = list[0];
+            if (top) { onChange(top.code); setOpen(false); }
+          }} />
         <FlatList
           data={list}
           keyExtractor={(u) => u.code}
@@ -107,7 +115,13 @@ export function HsnField({ value, onChange, org, onRate, hint }) {
       <Sheet visible={open} title="HSN code" onClose={() => setOpen(false)}
              hint={hint || `Type what the goods are — "bucket", "steel plate" — or the number itself. Your firm needs at least ${need} digits.`}>
         <TextInput style={S.input} autoFocus placeholder="bucket, steel, 3924…"
-          value={q} onChangeText={setQ} />
+          value={q} onChangeText={setQ}
+          returnKeyType="next" submitBehavior="submit"
+          onSubmitEditing={() => {
+            const top = list[0];
+            if (top) return take(top.hsn, top.gst_rate);
+            if (typedCode && q.trim().length >= need) take(q.trim());
+          }} />
 
         <FlatList
           data={list}

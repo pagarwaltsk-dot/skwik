@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, Alert, ScrollView, KeyboardAvoidingView, Platform,
+  View, Text, TextInput, TouchableOpacity, Alert, ScrollView, Platform,
   BackHandler,
 } from 'react-native';
 import { useApp } from '../AppContext';
 import { sayPlainly } from '../lib/offline';
 import { STATES } from '../lib/states';
+import { Box, KeyForm, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // REGISTERING, AS A SERIES OF SINGLE QUESTIONS.
@@ -33,6 +34,9 @@ const Choice = ({ title, note, onPress, tone }) => (
 export default function RegisterScreen({ navigation }) {
   const { register, registering } = useApp();
   const [step, setStep] = useState('gst');
+  // GST number → mobile → password, then shop name → address
+  const fGstin = useRef(null), fPhone = useRef(null), fPass = useRef(null);
+  const fShop  = useRef(null), fAddr  = useRef(null);
   const [d, setD] = useState({
     gstin: '', scheme: null, aboveFiveCr: null,
     phone: '', password: '', shopName: '', address: '',
@@ -99,7 +103,7 @@ export default function RegisterScreen({ navigation }) {
   );
 
   return (
-    <KeyboardAvoidingView style={S.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <Screen>
       <View style={[S.bar, { paddingTop: 46 }]}>
         <TouchableOpacity onPress={back} disabled={registering} accessibilityLabel="Back"
           hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
@@ -112,7 +116,7 @@ export default function RegisterScreen({ navigation }) {
         </View>
       </View>
 
-      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, paddingTop: 28 }}>
+      <KeyForm contentContainerStyle={{ padding: 20, paddingTop: 28 }}>
 
         {step === 'gst' && (
           <>
@@ -160,8 +164,8 @@ export default function RegisterScreen({ navigation }) {
             {d.scheme !== null && (
               <>
                 <Text style={S.label}>GST number</Text>
-                <TextInput style={[S.input, { marginBottom: 4 }]} autoCapitalize="characters"
-                  maxLength={15} placeholder="18AABCS1234F1Z5" placeholderTextColor={C.faint}
+                <Box ref={fGstin} next={fPhone} style={{ marginBottom: 4 }} autoCapitalize="characters"
+                  maxLength={15} placeholder="18AABCS1234F1Z5"
                   value={d.gstin} onChangeText={(t) => set('gstin')(t.toUpperCase().trim())} />
                 <Text style={[S.hint, { marginBottom: 14 }]}>
                   {STATES[d.gstin.slice(0, 2)]
@@ -172,13 +176,14 @@ export default function RegisterScreen({ navigation }) {
             )}
 
             <Text style={S.label}>Mobile number</Text>
-            <TextInput style={[S.input, S.num, { marginBottom: 14 }]} keyboardType="number-pad"
-              maxLength={10} placeholder="98640 12345" placeholderTextColor={C.faint}
+            <Box ref={fPhone} next={fPass} style={[S.num, { marginBottom: 14 }]}
+              keyboardType="number-pad" maxLength={10} placeholder="98640 12345"
               value={d.phone} onChangeText={set('phone')} />
 
             <Text style={S.label}>Password</Text>
-            <TextInput style={S.input} secureTextEntry placeholder="At least 6 characters"
-              placeholderTextColor={C.faint} value={d.password} onChangeText={set('password')} />
+            <Box ref={fPass} onSubmit={checkDetails} secureTextEntry
+              placeholder="At least 6 characters"
+              value={d.password} onChangeText={set('password')} />
 
             <TouchableOpacity style={[S.btn, { marginTop: 22 }]} onPress={checkDetails}>
               <Text style={S.btnText}>Continue</Text>
@@ -191,13 +196,12 @@ export default function RegisterScreen({ navigation }) {
             <Head title="Your shop" note="This prints at the top of every bill." />
 
             <Text style={S.label}>Shop name</Text>
-            <TextInput style={[S.input, { fontSize: 19, marginBottom: 14 }]} autoFocus
-              placeholder="Sri Ganesh Store" placeholderTextColor={C.faint}
+            <Box ref={fShop} next={fAddr} style={{ fontSize: 19, marginBottom: 14 }} autoFocus
+              placeholder="Sri Ganesh Store"
               value={d.shopName} onChangeText={set('shopName')} />
 
             <Text style={S.label}>Address (optional)</Text>
-            <TextInput style={[S.input, { height: 76, textAlignVertical: 'top' }]} multiline
-              placeholder="M. G. Road, Jorhat" placeholderTextColor={C.faint}
+            <Box ref={fAddr} placeholder="M. G. Road, Jorhat"
               value={d.address} onChangeText={set('address')} />
 
             <View style={{ marginTop: 18, padding: 14, backgroundColor: C.surface, borderWidth: 1,
@@ -221,7 +225,7 @@ export default function RegisterScreen({ navigation }) {
         )}
 
         <View style={{ height: 40 }} />
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </KeyForm>
+    </Screen>
   );
 }

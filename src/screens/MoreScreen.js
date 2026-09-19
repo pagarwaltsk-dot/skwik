@@ -2,12 +2,14 @@ import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '../AppContext';
-import { showReports, showTransfer, showStock } from '../lib/features';
-import { Head } from '../components/Chrome';
+import {
+  showExpenses, showGodowns, showRecon, showReports, showTransfer, showStock,
+} from '../lib/features';
+import { Head, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 export default function MoreScreen({ navigation }) {
-  const { org, signOut } = useApp();
+  const { org, signOut, isOwner } = useApp();
   const insets = useSafeAreaInsets();
 
   const scheme = !org?.is_gst_registered ? 'Not registered under GST'
@@ -22,7 +24,7 @@ export default function MoreScreen({ navigation }) {
   );
 
   return (
-    <View style={S.screen}>
+    <Screen>
       <Head navigation={navigation} title="Everything" more={false} />
       <ScrollView contentContainerStyle={{ padding: 16,
                     paddingBottom: Math.max(insets.bottom, 12) + 24 }}>
@@ -46,13 +48,24 @@ export default function MoreScreen({ navigation }) {
         <Item label="Past bills"            onPress={() => navigation.navigate('Bills')} />
         <Item label="Customers & suppliers" onPress={() => navigation.navigate('Parties')} />
         <Item label="Items"                 onPress={() => navigation.navigate('Items')} />
+        <Item label="Udhar — who owes you"  onPress={() => navigation.navigate('Udhar')} />
         {showStock(org) &&
           <Item label="Stock in hand"       onPress={() => navigation.navigate('Stock')} />}
-        {showReports(org) &&
+        {showGodowns(org) && isOwner &&
+          <Item label="Godowns"             onPress={() => navigation.navigate('Godowns')} />}
+        {showExpenses(org) && isOwner &&
+          <Item label="Money out"           onPress={() => navigation.navigate('Expenses')} />}
+        {showReports(org) && isOwner &&
           <Item label="Reports"             onPress={() => navigation.navigate('Reports')} />}
-        {showTransfer(org) &&
+        {showRecon(org) && isOwner &&
+          <Item label="Supplier credit — GSTR-2B" onPress={() => navigation.navigate('Recon')} />}
+        {showTransfer(org) && isOwner &&
           <Item label="Import & export"     onPress={() => navigation.navigate('Transfer')} />}
-        <Item label="Settings"              onPress={() => navigation.navigate('Settings')} />
+        <Item label="Who can bill"          onPress={() => navigation.navigate('Staff')} />
+        {isOwner &&
+          <Item label="Settings"            onPress={() => navigation.navigate('Settings')} />}
+        {isOwner &&
+          <Item label="Fill a month"          onPress={() => navigation.navigate('Sample')} />}
         <Item label="Log out" onPress={() =>
           Alert.alert('Log out?', 'You will need your number and password again.',
             [{ text: 'Cancel' }, { text: 'Log out', onPress: signOut }])} />
@@ -63,9 +76,9 @@ export default function MoreScreen({ navigation }) {
           Skwik
         </Text>
         <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>Smooth & Quick</Text>
-        <Text style={{ fontSize: 10.5, color: C.muted, marginTop: 2, opacity: 0.8 }}>version 1.0.1</Text>
+        <Text style={{ fontSize: 10.5, color: C.muted, marginTop: 2, opacity: 0.8 }}>version 1.2.0</Text>
       </View>
       </ScrollView>
-    </View>
+    </Screen>
   );
 }

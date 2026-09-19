@@ -88,6 +88,14 @@ export function searchItems(items, raw, limit = 20) {
   const p = parseQuery(raw);
   if (!p.full) return [];
 
+  // A barcode typed or read into the box is an exact thing, not a search:
+  // the packet in his hand is that item and nothing else.
+  const code = String(raw || '').trim();
+  if (/^[0-9]{6,}$/.test(code)) {
+    const exact = items.filter((it) => String(it.barcode || '').trim() === code);
+    if (exact.length) return exact.map((pr) => ({ p: pr, qty: null, toks: [] }));
+  }
+
   const seen = {};
   const hits = [];
   const run = (toks, qty) => {

@@ -3,7 +3,7 @@
     "name": "Skwik",
     "slug": "skwik",
     "scheme": "skwik",
-    "version": "1.0.1",
+    "version": "1.2.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "backgroundColor": "#FAF9F5",
@@ -14,7 +14,7 @@
     ],
     "android": {
       "package": "com.skwik.billing",
-      "versionCode": 2,
+      "versionCode": 4,
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -33,6 +33,14 @@
     "androidStatusBar": {
       "barStyle": "dark-content",
       "backgroundColor": "#FAF9F5"
-    }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Skwik uses the camera only to read barcodes while you bill."
+        }
+      ]
+    ]
   }
 }

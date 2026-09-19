@@ -12,33 +12,66 @@ export function AppProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [registering, setRegistering] = useState(false);
   const [pending, setPending] = useState(0);        // bills waiting on this phone
+  const [role, setRole] = useState('owner');        // owner | staff
   // True while we are fetching the firm after a login. Without it there is a
   // moment where there is a session but no firm yet, and the app takes that to
   // mean "this login has no shop" and flashes the set-up screen.
   const [checking, setChecking] = useState(false);
 
+  // WHO THIS PHONE BELONGS TO.
+  //
+  // This has to be right even with no signal, because getting it wrong is the
+  // worst thing the app can do: the shopkeeper is shown the "set up your shop"
+  // screen, does as he is told, and a second empty firm is created with every
+  // bill, customer and balance he has stranded behind it, unreachable.
+  //
+  // So a firm once seen is remembered on the phone, and a failure to reach the
+  // server falls back to it. Only a clear answer FROM the server — a login
+  // that genuinely has no firm — is allowed to send anyone to the set-up
+  // screen. Note that supabase resolves with an error rather than throwing, so
+  // every step is checked, not wrapped in a try and hoped for.
   const loadOrg = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setOrg(null); return null; }
-
-    try {
-      const { data: prof } = await supabase
-        .from('profiles').select('org_id').eq('id', user.id).maybeSingle();
-
-      if (!prof?.org_id) { setOrg(null); return null; }
-
-      const { data: o } = await supabase
-        .from('orgs').select('*').eq('id', prof.org_id).maybeSingle();
-
-      if (o) { cacheOrg(o); noteServerCounters(o); }
-      setOrg(o || null);
-      return o || null;
-    } catch (e) {
-      // no signal: the firm as it was last seen is enough to keep billing
+    const fallback = async (why) => {
       const o = await cachedOrg();
-      setOrg(o);
-      return o;
+      if (o) { setOrg(o); return o; }
+      if (why === 'no-user') { setOrg(null); return null; }
+      setOrg(null);
+      return null;
+    };
+
+    let user = null;
+    try {
+      const r = await supabase.auth.getUser();
+      user = r?.data?.user || null;
+      if (r?.error && !user) return fallback('unreachable');     // no signal
+    } catch (e) { return fallback('unreachable'); }
+    if (!user) return fallback('no-user');
+
+    let prof, profErr;
+    try {
+      const r = await supabase.from('profiles').select('org_id, role').eq('id', user.id).maybeSingle();
+      prof = r?.data; profErr = r?.error;
+    } catch (e) { profErr = e; }
+    if (prof?.role) setRole(prof.role);
+    if (profErr) return fallback('unreachable');
+    if (!prof?.org_id) {
+      // the server answered, and this login really has no firm behind it
+      const cached = await cachedOrg();
+      if (cached) { setOrg(cached); return cached; }
+      setOrg(null);
+      return null;
     }
+
+    let o, orgErr;
+    try {
+      const r = await supabase.from('orgs').select('*').eq('id', prof.org_id).maybeSingle();
+      o = r?.data; orgErr = r?.error;
+    } catch (e) { orgErr = e; }
+    if (orgErr || !o) return fallback('unreachable');
+
+    cacheOrg(o); noteServerCounters(o);
+    setOrg(o);
+    return o;
   }, []);
 
   // How many bills are sitting on this phone, and a way to push them.
@@ -59,8 +92,11 @@ export function AppProvider({ children }) {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!alive) return;
       setSession(data.session);
-      if (data.session) { await loadOrg(); await sendPending(); }
+      if (data.session) await loadOrg();
       setLoading(false);
+      // bills waiting on this phone go out in the background — nobody should
+      // look at a blank screen while a dead connection times out
+      if (data.session) sendPending();
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange(async (_e, s) => {
@@ -70,6 +106,7 @@ export function AppProvider({ children }) {
         try { await loadOrg(); } finally { setChecking(false); }
       } else {
         setOrg(null);
+        setRole('owner');
       }
     });
     return () => { alive = false; sub.subscription.unsubscribe(); };
@@ -167,8 +204,20 @@ export function AppProvider({ children }) {
     }
   };
 
+  // A second person in the same shop. He makes his own login in the ordinary
+  // way and types the code the owner reads out to him; from then on the shop
+  // is his to bill in, and nothing else.
+  const joinShop = async (code) => {
+    const { data, error } = await supabase.rpc('join_org', { p_code: String(code || '').trim() });
+    if (error) throw error;
+    setRole('staff');
+    await loadOrg();
+    return data;
+  };
+
   return (
-    <Ctx.Provider value={{ session, org, loading, registering, checking, register,
+    <Ctx.Provider value={{ session, org, loading, registering, checking, register, role,
+                           isOwner: role !== 'staff', joinShop,
                            reloadOrg: loadOrg, pending, countPending, sendPending,
                            signOut: () => supabase.auth.signOut() }}>
       {children}

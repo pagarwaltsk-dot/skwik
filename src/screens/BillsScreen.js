@@ -12,7 +12,7 @@ import { fmt0 } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
-import { Bar, Foot, MoreButton, BackButton } from '../components/Chrome';
+import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
 import { showPurchase, showReturns } from '../lib/features';
 import { C, S } from '../theme';
 
@@ -45,7 +45,7 @@ const dayLabel = (d) => {
 };
 
 export default function BillsScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   const KINDS = kindsFor(org);
   const [rows, setRows]   = useState([]);
   const [busy, setBusy]   = useState(true);
@@ -155,7 +155,7 @@ export default function BillsScreen({ navigation }) {
   /* ---------------- screen ---------------- */
 
   return (
-    <View style={S.screen}>
+    <Screen>
       <Bar>
         <BackButton navigation={navigation} />
         <View style={{ flex: 1, minWidth: 0 }}>
@@ -172,7 +172,8 @@ export default function BillsScreen({ navigation }) {
       <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                      borderBottomWidth: 1, borderBottomColor: C.line }}>
         <TextInput style={S.input} placeholder="Name, bill number, or amount"
-          placeholderTextColor={C.faint} value={q} onChangeText={setQ} />
+          placeholderTextColor={C.faint} value={q} onChangeText={setQ}
+          returnKeyType="search" />
         <View style={[S.row, { marginTop: 8, gap: 6 }]}>
           {KINDS.map((k) => {
             const on = kind === k.key;
@@ -318,12 +319,14 @@ export default function BillsScreen({ navigation }) {
                   </TouchableOpacity>
                 )}
 
-                <TouchableOpacity onPress={remove} disabled={working}
-                  style={{ marginTop: 14, alignItems: 'center', paddingVertical: 10 }}>
-                  <Text style={{ fontSize: 14.5, fontWeight: '700', color: C.danger }}>
-                    Remove this {open.vtype === 'purchase' ? 'purchase' : 'bill'}
-                  </Text>
-                </TouchableOpacity>
+                {isOwner && (
+                  <TouchableOpacity onPress={remove} disabled={working}
+                    style={{ marginTop: 14, alignItems: 'center', paddingVertical: 10 }}>
+                    <Text style={{ fontSize: 14.5, fontWeight: '700', color: C.danger }}>
+                      Remove this {open.vtype === 'purchase' ? 'purchase' : 'bill'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
 
                 <TouchableOpacity onPress={() => { setOpen(null); setLines(null); }}
                   style={{ marginTop: 4, alignItems: 'center', paddingVertical: 10 }}>
@@ -334,6 +337,6 @@ export default function BillsScreen({ navigation }) {
           </View>
         </View>
       </Modal>
-    </View>
+    </Screen>
   );
 }

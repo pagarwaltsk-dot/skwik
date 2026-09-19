@@ -24,6 +24,12 @@ import ItemsScreen   from './src/screens/ItemsScreen';
 import StockScreen   from './src/screens/StockScreen';
 import MoreScreen    from './src/screens/MoreScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import ExpensesScreen from './src/screens/ExpensesScreen';
+import UdharScreen from './src/screens/UdharScreen';
+import ReconScreen from './src/screens/ReconScreen';
+import StaffScreen from './src/screens/StaffScreen';
+import GodownScreen from './src/screens/GodownScreen';
+import SampleScreen from './src/screens/SampleScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -64,6 +70,12 @@ function Routes() {
           <Stack.Screen name="Stock"   component={StockScreen} />
           <Stack.Screen name="More"     component={MoreScreen} />
           <Stack.Screen name="Settings" component={SettingsScreen} />
+          <Stack.Screen name="Expenses" component={ExpensesScreen} />
+          <Stack.Screen name="Udhar"    component={UdharScreen} />
+          <Stack.Screen name="Recon"    component={ReconScreen} />
+          <Stack.Screen name="Staff"    component={StaffScreen} />
+          <Stack.Screen name="Godowns"  component={GodownScreen} />
+          <Stack.Screen name="Sample"   component={SampleScreen} />
         </>
       )}
     </Stack.Navigator>

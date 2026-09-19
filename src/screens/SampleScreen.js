@@ -1,0 +1,376 @@
+import React, { useCallback, useRef, useState } from 'react';
+import {
+  View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator,
+} from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+
+import { supabase } from '../lib/supabase';
+import { useApp } from '../AppContext';
+import { computeBill, fmt0, num, taxModeFor } from '../lib/money';
+import { planSample } from '../lib/sample';
+import { sayPlainly } from '../lib/offline';
+import { Box, Head, Screen } from '../components/Chrome';
+import { C, S } from '../theme';
+
+// SEEING IT WORK, BEFORE TRUSTING IT.
+//
+// The bills this writes are ordinary bills. They take his real numbers, carry
+// his real tax, print like the rest and can be edited afterwards like the
+// rest. Nothing about them says "sample", because a bill that behaved
+// differently would tell him nothing about his own shop.
+//
+// It draws on three things he already has: the money he has taken and not yet
+// billed, what is actually on his shelves, and his own customers.
+
+const p2 = (n) => String(n).padStart(2, '0');
+const firstOfMonth = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-01`;
+const lastOfMonth  = (d) => {
+  const e = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return `${e.getFullYear()}-${p2(e.getMonth() + 1)}-${p2(e.getDate())}`;
+};
+
+export default function SampleScreen({ navigation }) {
+  const { org } = useApp();
+  const lastMonth = new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
+
+  const [from, setFrom]   = useState(firstOfMonth(lastMonth));
+  const [to, setTo]       = useState(lastOfMonth(lastMonth));
+  const [count, setCount] = useState('50');
+  const [total, setTotal] = useState('320000');
+  const [plan, setPlan]   = useState(null);
+  const [busy, setBusy]   = useState('');
+  const [runs, setRuns]   = useState([]);
+  const [money, setMoney] = useState(null);     // what the bank ledger holds for the period
+
+  const fCount = useRef(null), fTotal = useRef(null);
+
+  const loadRuns = useCallback(async () => {
+    const { data } = await supabase.from('sample_runs').select('*')
+      .order('created_at', { ascending: false }).limit(5);
+    setRuns(data || []);
+  }, []);
+
+  useFocusEffect(useCallback(() => { loadRuns(); }, [loadRuns]));
+
+  // What he has taken in that period and not yet billed — straight out of his
+  // own money-received entries. Nothing is uploaded and nothing is typed.
+  const lookAtMoney = async () => {
+    setBusy('reading');
+    try {
+      const { data, error } = await supabase.rpc('unbilled_receipts',
+        { p_from: from, p_to: to });
+      if (error) throw error;
+      setMoney(Array.isArray(data) ? data : []);
+      return Array.isArray(data) ? data : [];
+    } catch (e) {
+      Alert.alert('Could not read your ledger', sayPlainly(e));
+      return [];
+    } finally { setBusy(''); }
+  };
+
+  const makePlan = async () => {
+    setBusy('planning');
+    try {
+      const [{ data: items }, { data: parties }, { data: stock }, recs] = await Promise.all([
+        supabase.from('items').select('*').eq('is_active', true),
+        supabase.from('parties').select('*'),
+        supabase.rpc('stock_now'),
+        lookAtMoney(),
+      ]);
+
+      const p = planSample({
+        org,
+        items: items || [], parties: parties || [],
+        receipts: recs || [],
+        // A shop that does not keep stock has nothing to run out of; one that
+        // does may never be sold past what is on the shelf.
+        stock: org?.stock_enabled ? (Array.isArray(stock) ? stock : []) : null,
+        from, to,
+        count: Math.max(1, Math.min(500, parseInt(count, 10) || 0)),
+        total: num(total),
+      });
+      if (p.problem) return Alert.alert('Not yet', p.problem);
+      setPlan(p);
+    } catch (e) {
+      Alert.alert('Could not work it out', sayPlainly(e));
+    } finally { setBusy(''); }
+  };
+
+  /* ---------------- writing them ---------------- */
+
+  const write = async () => {
+    if (!plan?.bills?.length) return;
+    setBusy('writing');
+    const madeVouchers = [], madeParties = [], tiedPayments = [];
+    let done = 0, failed = 0, firstError = '';
+
+    try {
+      for (const b of plan.bills) {
+        let party = b.party;
+        if (party && !party.id) {
+          const { data } = await supabase.from('parties')
+            .insert({ org_id: org.id, name: party.name, kind: 'customer',
+                      state_code: org.state_code, state_name: org.state_name })
+            .select().single();
+          if (data) { party = data; madeParties.push(data.id); }
+        }
+
+        // his own rules decide the tax: none if he is unregistered or on
+        // composition, CGST and SGST at home, IGST out of state
+        const mode = org?.mode === 'estimate' ? 'none' : taxModeFor(org, party);
+        const raw = b.lines.map((l) => ({
+          item_id: l.item.id, item_name: l.item.name, hsn: l.item.hsn || null,
+          unit: l.item.unit || 'PCS', qty: l.qty, rate: l.rate,
+          gst_rate: Number(l.item.gst_rate) || 0, disc: l.disc || 0,
+        }));
+        const c = computeBill(raw, mode);
+
+        const { data, error } = await supabase.rpc('save_voucher', {
+          p: {
+            vtype: 'sale', vdate: b.vdate,
+            party_id: party?.id || null,
+            printed_name: party?.name || 'CASH',
+            is_cash: !!b.is_cash,
+            place_of_supply_code: party?.state_code || org.state_code,
+            tax_mode: mode,
+            taxable: c.taxable, cgst: c.cgst, sgst: c.sgst, igst: c.igst,
+            round_off: c.round_off, total: c.total,
+            lines: c.lines.map((l) => ({
+              item_id: l.item_id, item_name: l.item_name, hsn: l.hsn, unit: l.unit,
+              qty: l.qty, rate: l.rate, gst_rate: l.gst_rate, disc: l.disc,
+              taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
+              amount: l.amount,
+            })),
+          },
+        });
+        if (error || !data?.id) {
+          failed++;
+          if (!firstError) firstError = error?.message || 'the server refused it';
+          continue;
+        }
+        madeVouchers.push(data.id);
+        done++;
+
+        // tie the money he already took to the bill it was for, so the
+        // customer's ledger settles exactly as it would have
+        if (b.receipt?.id) {
+          const { error: le } = await supabase.from('payments')
+            .update({ ref_voucher_id: data.id }).eq('id', b.receipt.id);
+          if (!le) tiedPayments.push(b.receipt.id);
+        }
+      }
+
+      if (madeVouchers.length) {
+        await supabase.from('sample_runs').insert({
+          org_id: org.id,
+          note: `${from} to ${to} · ${madeVouchers.length} bills`,
+          voucher_ids: madeVouchers, party_ids: madeParties, payment_ids: tiedPayments,
+        });
+      }
+
+      setPlan(null);
+      setMoney(null);
+      await loadRuns();
+      Alert.alert(failed ? 'Mostly done' : 'Done',
+        `${done} bills are in your books.`
+        + (tiedPayments.length ? `\n${tiedPayments.length} of them are settled against `
+            + 'money you had already received.' : '')
+        + (failed ? `\n\n${failed} could not be written — ${firstError}` : '')
+        + '\n\nLook at Past bills, Reports, Udhar and Stock. This is your own month.');
+    } catch (e) {
+      Alert.alert('Stopped', sayPlainly(e));
+    } finally { setBusy(''); }
+  };
+
+  const undo = (run) => Alert.alert('Take that run back out?',
+    `${run.note || 'That run'} — the bills go, and any money that was tied to them `
+    + 'goes back to standing on its own. Nothing else is touched.',
+    [{ text: 'Leave it' },
+     { text: 'Take it out', style: 'destructive', onPress: async () => {
+         setBusy('undoing');
+         const { error } = await supabase.rpc('undo_sample_run', { p_run: run.id });
+         setBusy('');
+         if (error) return Alert.alert('Could not', sayPlainly(error));
+         await loadRuns();
+         Alert.alert('Out', 'Those bills are gone.');
+       } }]);
+
+  const s = plan?.summary;
+  const moneyTotal = (money || []).reduce((a, x) => a + num(x.amount), 0);
+
+  const Line = ({ k, v, strong }) => (
+    <View style={[S.tline, { paddingVertical: 6 }]}>
+      <Text style={S.tlineK}>{k}</Text>
+      <Text style={[S.tlineV, strong && { fontWeight: '800' }]}>{v}</Text>
+    </View>
+  );
+
+  return (
+    <Screen>
+      <Head navigation={navigation} title="Fill a month" />
+      <ScrollView keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ padding: 14, paddingBottom: 40 }}>
+
+        <View style={S.card}>
+          <Text style={{ fontSize: 16, fontWeight: '800', color: C.ink }}>
+            See your own month, before you bill a day of it
+          </Text>
+          <Text style={{ fontSize: 13, color: C.muted, marginTop: 8, lineHeight: 19 }}>
+            Skwik writes real bills from your own items at your own rates, to your
+            own customers. They carry your numbering and your tax, they print like
+            every other bill, and you can open and change any of them afterwards.
+            {'\n\n'}
+            Where money has already come in and has no bill against it, the bill is
+            built to match that amount to the rupee and tied to it — so the ledger
+            settles exactly as it would have. Nothing is sold that you do not have
+            in stock.
+          </Text>
+        </View>
+
+        <Text style={S.label}>FROM</Text>
+        <Box style={[S.num, { marginTop: 6 }]} value={from} onChangeText={setFrom}
+          placeholder="2026-04-01" next={fCount} />
+
+        <Text style={[S.label, { marginTop: 12 }]}>TO</Text>
+        <Box style={[S.num, { marginTop: 6 }]} value={to} onChangeText={setTo}
+          placeholder="2026-04-30" next={fCount} />
+
+        <TouchableOpacity style={[S.btnGhost, { marginTop: 12 }]} onPress={lookAtMoney}
+          disabled={!!busy}>
+          <Text style={S.ghostText}>
+            {busy === 'reading' ? 'Looking…' : 'What money came in that month?'}
+          </Text>
+        </TouchableOpacity>
+        {money !== null && (
+          <Text style={{ fontSize: 12.5, color: money.length ? C.accent : C.muted,
+                         marginTop: 8, lineHeight: 18 }}>
+            {money.length
+              ? `${money.length} receipts, ₹${fmt0(moneyTotal)}, with no bill against them. `
+                + 'Bills will be built to match each one.'
+              : 'Nothing received in that period is waiting for a bill. The amounts '
+                + 'below will be made up instead.'}
+          </Text>
+        )}
+
+        <View style={[S.row, { gap: 10, marginTop: 16 }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={S.label}>HOW MANY BILLS</Text>
+            <Box ref={fCount} next={fTotal} style={[S.num, { marginTop: 6 }]}
+              keyboardType="number-pad" value={count} onChangeText={setCount} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={S.label}>ADDING UP TO</Text>
+            <Box ref={fTotal} onSubmit={makePlan} style={[S.num, { marginTop: 6 }]}
+              keyboardType="numeric" value={total} onChangeText={setTotal} />
+          </View>
+        </View>
+        {num(count) > 0 && num(total) > 0 && (
+          <Text style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
+            About ₹{fmt0(num(total) / num(count))} a bill. Some much bigger, many
+            smaller — the way a real month goes.
+          </Text>
+        )}
+
+        {!plan ? (
+          <TouchableOpacity style={[S.btn, { marginTop: 20 }]} onPress={makePlan} disabled={!!busy}>
+            <Text style={S.btnText}>
+              {busy === 'planning' ? 'Working it out…' : 'Show me what it will write'}
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={[S.card, { marginTop: 20 }]}>
+            <Text style={S.eyebrow}>About to write</Text>
+            <Line k="Bills" v={s.n} />
+            <Line k="Adding up to" v={`₹${fmt0(s.value)}`} strong />
+            <Line k="Across" v={`${s.days} days`} />
+            <Line k="Different items" v={s.items} />
+            {s.fromReceipts > 0 && (
+              <Line k="Settled against money received"
+                    v={`${s.fromReceipts} · ₹${fmt0(s.receiptValue)}`} />
+            )}
+            <Line k="Cash bills" v={s.cash} />
+
+            {s.capped && (
+              <View style={{ backgroundColor: C.flagSoft, borderWidth: 1, borderColor: C.flagLine,
+                             borderRadius: 10, padding: 10, marginTop: 10 }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.flagInk }}>
+                  Your stock is worth ₹{fmt0(s.stockRoof)}
+                </Text>
+                <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 3, lineHeight: 17 }}>
+                  So it stops at ₹{fmt0(s.value)} rather than send an item negative.
+                  Enter more purchases and run it again for the rest.
+                </Text>
+              </View>
+            )}
+
+            <Text style={[S.eyebrow, { marginTop: 14 }]}>The first few</Text>
+            {plan.bills.slice(0, 5).map((b, i) => (
+              <Text key={i} numberOfLines={1}
+                    style={{ fontSize: 12.5, color: C.ink, marginBottom: 3 }}>
+                {b.vdate} · {b.party?.name || 'CASH'}
+                <Text style={{ color: C.muted }}>
+                  {'  '}{b.lines.length} item{b.lines.length === 1 ? '' : 's'} · ₹
+                  {fmt0(b.total)}
+                  {b.receipt ? ' · against money received' : ''}
+                </Text>
+              </Text>
+            ))}
+
+            <TouchableOpacity style={[S.btn, { marginTop: 16 }]} onPress={write} disabled={!!busy}>
+              <Text style={S.btnText}>
+                {busy === 'writing' ? 'Writing…' : `Write these ${s.n} bills`}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setPlan(null)}
+              style={{ marginTop: 12, alignItems: 'center', paddingVertical: 10 }}>
+              <Text style={{ fontSize: 15, fontWeight: '600', color: C.muted }}>
+                Change something
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {runs.length > 0 && (
+          <>
+            <Text style={[S.eyebrow, { marginTop: 26 }]}>Runs you have made</Text>
+            {runs.map((run) => (
+              <View key={run.id} style={[S.line, { marginBottom: 8 }]}>
+                <View style={S.row}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={S.lineNm}>{run.note || 'A run'}</Text>
+                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
+                      {String(run.created_at).slice(0, 10)} ·
+                      {' '}{(run.voucher_ids || []).length} bills
+                    </Text>
+                  </View>
+                  <TouchableOpacity onPress={() => undo(run)} disabled={!!busy}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={{ fontSize: 12.5, fontWeight: '800', color: C.danger }}>
+                      TAKE OUT
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </>
+        )}
+
+        <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 20, lineHeight: 17 }}>
+          These take real bill numbers, so your numbering moves on. If you take a
+          run back out, set your next bill number under Settings before you start
+          billing for real.
+        </Text>
+      </ScrollView>
+
+      {!!busy && busy !== 'planning' && busy !== 'reading' && (
+        <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+                       backgroundColor: '#3B3A35AA', alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator size="large" color="#fff" />
+          <Text style={{ color: '#fff', fontWeight: '700', marginTop: 12 }}>
+            {busy === 'writing' ? 'Writing the bills…' : 'Taking them out…'}
+          </Text>
+        </View>
+      )}
+    </Screen>
+  );
+}

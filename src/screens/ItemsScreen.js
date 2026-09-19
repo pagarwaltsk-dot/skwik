@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, FlatList, Modal, Alert, ScrollView } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
@@ -7,7 +7,9 @@ import { fmt0, num, settle, hsnApplies } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { checkHsn, hsnExists, hsnDesc } from '../lib/hsn';
 import { HsnField, UomField } from '../components/Pickers';
-import { Foot, Head } from '../components/Chrome';
+import { Box, Foot, Head, KeyForm, Screen } from '../components/Chrome';
+import { ScanSheet } from '../components/Scan';
+import { showVariants } from '../lib/features';
 import { C, S } from '../theme';
 
 const FIELD = {
@@ -15,14 +17,21 @@ const FIELD = {
   purchase_price: 'Purchase price', gst_rate: 'GST rate', search_words: 'Search words',
 };
 
-const empty = { name: '', search_words: '', alias: '', hsn: '', unit: 'PCS',
+const empty = { name: '', search_words: '', alias: '', hsn: '', unit: 'PCS', barcode: '',
                 sale_price: '', price2: '', purchase_price: '', gst_rate: '', opening_stock: '' };
 
 export default function ItemsScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState('');
   const [edit, setEdit] = useState(null);
+
+  // the way through the form: name → also called → search words → GST → the
+  // three prices → opening stock, and the arrow key walks it
+  const fName = useRef(null), fAlias = useRef(null), fWords = useRef(null);
+  const fGst  = useRef(null), fSale  = useRef(null), fTwo   = useRef(null);
+  const fBuy  = useRef(null), fOpen  = useRef(null), fCode = useRef(null);
+  const [scanOpen, setScanOpen] = useState(false);
   const [history, setHistory] = useState([]);
 
   // CHANGING MANY RATES AT ONCE.
@@ -129,6 +138,7 @@ export default function ItemsScreen({ navigation }) {
   };
 
   const save = async () => {
+    const taxed = org?.is_gst_registered && !org?.is_composition;
     if (!edit.name.trim()) return Alert.alert('Name needed', 'Type the item name.');
     if (!edit.unit)        return Alert.alert('Unit needed', 'Choose how this item is counted.');
 
@@ -136,11 +146,24 @@ export default function ItemsScreen({ navigation }) {
     const problem = checkHsn(edit.hsn, org);
     if (problem) return Alert.alert('HSN code', problem);
 
+    // A tax invoice with a 0% line on it undercharges the customer and
+    // understates the return. The rate is the one field on this sheet with
+    // money behind it, so it is the one field nobody may skip past.
+    if (taxed && !num(edit.gst_rate)) {
+      return Alert.alert('GST rate?',
+        'This item has no GST rate. A bill with it on will charge no tax. '
+        + 'Put the rate in, or set it to 0 on purpose.',
+        [{ text: 'Go back' }, { text: 'It really is 0%', onPress: proceed }]);
+    }
+
     const proceed = async () => {
       const body = {
         org_id: org.id,
         name: edit.name.trim(),
         search_words: edit.search_words.trim(),
+        barcode: (edit.barcode || '').trim() || null,
+        variant_of: edit.variant_of || null,
+        variant: (edit.variant || '').trim() || null,
         alias: (edit.alias || '').trim(),
         hsn: edit.hsn.trim(),
         unit: edit.unit,
@@ -172,8 +195,10 @@ export default function ItemsScreen({ navigation }) {
 
   const set = (k) => (v) => setEdit((e) => ({ ...e, [k]: v }));
 
+  const showOpening = !!edit && !edit.id && !!org?.stock_enabled;
+
   return (
-    <View style={S.screen}>
+    <Screen>
       <Head navigation={navigation} title="Items">
         {!bulk && (
           <>
@@ -198,7 +223,7 @@ export default function ItemsScreen({ navigation }) {
 
       <View style={{ padding: 16, paddingBottom: bulk ? 10 : 16 }}>
         <TextInput style={S.input} placeholder="Search" placeholderTextColor={C.faint}
-          value={q} onChangeText={setQ} />
+          value={q} onChangeText={setQ}  returnKeyType="search" />
       </View>
 
       {!bulk && (
@@ -312,24 +337,35 @@ export default function ItemsScreen({ navigation }) {
 
       <Modal visible={!!edit} animationType="slide">
         {!!edit && (
-          <ScrollView style={S.screen} keyboardShouldPersistTaps="handled"
+          <KeyForm style={S.screen} keyboardShouldPersistTaps="handled"
                       contentContainerStyle={{ padding: 20, paddingTop: 54 }}>
             <Text style={{ fontSize: 24, fontWeight: '800', color: C.ink }}>
               {edit.id ? 'Edit item' : 'New item'}
             </Text>
 
             <Text style={[S.label, { marginTop: 18 }]}>ITEM NAME</Text>
-            <TextInput style={[S.input, { marginTop: 6 }]} value={edit.name} onChangeText={set('name')} />
+            <Box ref={fName} next={fAlias} style={{ marginTop: 6 }}
+              value={edit.name} onChangeText={set('name')} />
 
             <Text style={[S.label, { marginTop: 14 }]}>ALSO CALLED</Text>
-            <TextInput style={[S.input, { marginTop: 6 }]} placeholder="balti, bucket, tub"
+            <Box ref={fAlias} next={fCode} style={{ marginTop: 6 }} placeholder="balti, bucket, tub"
               value={edit.alias || ''} onChangeText={set('alias')} />
             <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 5 }}>
               Local names. Any of these words will find this item while billing.
             </Text>
 
+            <Text style={[S.label, { marginTop: 14 }]}>BARCODE</Text>
+            <View style={[S.row, { marginTop: 6, gap: 8 }]}>
+              <Box ref={fCode} next={fWords} style={{ flex: 1 }} value={edit.barcode || ''}
+                onChangeText={set('barcode')} placeholder="Scan it, or type it" />
+              <TouchableOpacity onPress={() => setScanOpen(true)}
+                style={[S.btnGhost, { paddingHorizontal: 16, paddingVertical: 12 }]}>
+                <Text style={S.ghostText}>SCAN</Text>
+              </TouchableOpacity>
+            </View>
+
             <Text style={[S.label, { marginTop: 14 }]}>OTHER SEARCH WORDS</Text>
-            <TextInput style={[S.input, { marginTop: 6 }]} placeholder="thali, plate, steel"
+            <Box ref={fWords} next={fGst} style={{ marginTop: 6 }} placeholder="thali, plate, steel"
               value={edit.search_words} onChangeText={set('search_words')} />
 
             <Text style={[S.label, { marginTop: 14 }]}>UNIT</Text>
@@ -345,7 +381,7 @@ export default function ItemsScreen({ navigation }) {
                 </View>
 
                 <Text style={[S.label, { marginTop: 14 }]}>GST RATE %</Text>
-                <TextInput style={[S.input, { marginTop: 6 }]} keyboardType="numeric"
+                <Box ref={fGst} next={fSale} style={{ marginTop: 6 }} keyboardType="numeric"
                   value={edit.gst_rate} onChangeText={set('gst_rate')} />
               </>
             )}
@@ -353,23 +389,26 @@ export default function ItemsScreen({ navigation }) {
             <Text style={[S.label, { marginTop: 14 }]}>
               {(org?.price1_name || 'Wholesale').toUpperCase()} PRICE
             </Text>
-            <TextInput style={[S.input, { marginTop: 6 }]} keyboardType="numeric"
+            <Box ref={fSale} next={fTwo} style={{ marginTop: 6 }} keyboardType="numeric"
               value={edit.sale_price} onChangeText={set('sale_price')} />
 
             <Text style={[S.label, { marginTop: 14 }]}>
               {(org?.price2_name || 'Retail').toUpperCase()} PRICE
             </Text>
-            <TextInput style={[S.input, { marginTop: 6 }]} keyboardType="numeric"
+            <Box ref={fTwo} next={fBuy} style={{ marginTop: 6 }} keyboardType="numeric"
               value={edit.price2} onChangeText={set('price2')} />
 
-            <Text style={[S.label, { marginTop: 14 }]}>PURCHASE PRICE</Text>
-            <TextInput style={[S.input, { marginTop: 6 }]} keyboardType="numeric"
-              value={edit.purchase_price} onChangeText={set('purchase_price')} />
+            {isOwner && <Text style={[S.label, { marginTop: 14 }]}>PURCHASE PRICE</Text>}
+            {isOwner && (
+              <Box ref={fBuy} next={showOpening ? fOpen : null} onSubmit={save}
+                style={{ marginTop: 6 }} keyboardType="numeric"
+                value={edit.purchase_price} onChangeText={set('purchase_price')} />
+            )}
 
-            {!edit.id && org?.stock_enabled && (
+            {showOpening && (
               <>
                 <Text style={[S.label, { marginTop: 14 }]}>OPENING STOCK</Text>
-                <TextInput style={[S.input, { marginTop: 6 }]} keyboardType="numeric"
+                <Box ref={fOpen} onSubmit={save} style={{ marginTop: 6 }} keyboardType="numeric"
                   value={edit.opening_stock} onChangeText={set('opening_stock')} />
               </>
             )}
@@ -395,6 +434,29 @@ export default function ItemsScreen({ navigation }) {
               </View>
             )}
 
+            {showVariants(org) && !!edit.id && (
+              <TouchableOpacity style={[S.btnGhost, { marginTop: 22 }]}
+                onPress={() => {
+                  // 9x2, 9x3, 10x2 clip tiffin are one product in three sizes.
+                  // Each size keeps its own rate and its own stock, because it
+                  // is its own item; they are simply tied together so the whole
+                  // family is found by typing the name once.
+                  const base = edit.variant ? edit.name.replace(new RegExp(`\\s*${edit.variant}$`), '')
+                                            : edit.name;
+                  setEdit({
+                    ...edit, id: null, variant_of: edit.variant_of || edit.id,
+                    name: `${base} `, variant: '', barcode: '', opening_stock: '',
+                    search_words: edit.search_words || base,
+                  });
+                  Alert.alert('Another size',
+                    'Add the size to the end of the name — Clip Tiffin 9x3 — and put its '
+                    + 'own rate in. It keeps its own stock, and typing the product name '
+                    + 'finds every size.');
+                }}>
+                <Text style={S.ghostText}>+ Another size of this</Text>
+              </TouchableOpacity>
+            )}
+
             <TouchableOpacity style={[S.btn, { marginTop: 26 }]} onPress={save}>
               <Text style={S.btnText}>Save</Text>
             </TouchableOpacity>
@@ -413,9 +475,14 @@ export default function ItemsScreen({ navigation }) {
               <Text style={{ fontSize: 16, fontWeight: '700', color: C.muted }}>Cancel</Text>
             </TouchableOpacity>
             <View style={{ height: 40 }} />
-          </ScrollView>
+          </KeyForm>
         )}
       </Modal>
-    </View>
+
+      <ScanSheet visible={scanOpen} onClose={() => setScanOpen(false)}
+        title="Point at the packet"
+        note="The code is put on this item"
+        onCode={(code) => { setEdit((e) => ({ ...e, barcode: code })); setScanOpen(false); }} />
+    </Screen>
   );
 }

@@ -1,19 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator,
-  KeyboardAvoidingView, Platform, Modal,
+  View, Text, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator, Platform, Modal,
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { computeBill, fmt, fmt0, num, settle } from '../lib/money';
+import { computeBill, fmt, fmt0, num, settle, today } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
 import { uuid } from '../lib/offline';
-import { Bar, Foot, MoreButton, BackButton } from '../components/Chrome';
+import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // GOODS COMING BACK.
@@ -108,7 +107,7 @@ export default function ReturnScreen({ route, navigation }) {
       const payload = {
         id: uuid(),
         vtype: isBuy ? 'purchase_return' : 'sale_return',
-        vdate: new Date().toISOString().slice(0, 10),
+        vdate: today(),
         party_id: bill.party_id, printed_name: bill.printed_name,
         is_cash: isCash,
         ref_voucher_id: bill.id,
@@ -159,8 +158,7 @@ export default function ReturnScreen({ route, navigation }) {
   }
 
   return (
-    <KeyboardAvoidingView style={S.screen}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <Screen>
       <Bar>
         <BackButton navigation={navigation} />
         <View style={{ flex: 1, minWidth: 0 }}>
@@ -328,6 +326,6 @@ export default function ReturnScreen({ route, navigation }) {
           </View>
         </View>
       </Modal>
-    </KeyboardAvoidingView>
+    </Screen>
   );
 }

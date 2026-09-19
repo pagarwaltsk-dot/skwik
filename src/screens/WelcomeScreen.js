@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, Alert, ScrollView, KeyboardAvoidingView, Platform,
+  View, Text, TextInput, TouchableOpacity, Alert, ScrollView, Platform,
 } from 'react-native';
 import { supabase, phoneToEmail } from '../lib/supabase';
+import { Box, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // THE FIRST SCREEN. A name, a number, a password, and in.
 export default function WelcomeScreen({ navigation }) {
   const [phone, setPhone] = useState('');
+  const fPhone = useRef(null), fPw = useRef(null);
   const [pw, setPw]       = useState('');
   const [busy, setBusy]   = useState(false);
 
@@ -30,7 +32,7 @@ export default function WelcomeScreen({ navigation }) {
   };
 
   return (
-    <KeyboardAvoidingView style={S.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <Screen>
       <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 22 }}
                   keyboardShouldPersistTaps="handled">
 
@@ -48,16 +50,15 @@ export default function WelcomeScreen({ navigation }) {
 
         <View style={S.card}>
           <Text style={S.label}>Mobile number</Text>
-          <TextInput style={[S.input, S.num]} keyboardType="number-pad" maxLength={10}
-            placeholder="98640 12345" placeholderTextColor={C.faint}
+          <Box ref={fPhone} next={fPw} style={S.num} keyboardType="number-pad" maxLength={10}
+            placeholder="98640 12345"
             value={phone} onChangeText={setPhone} />
 
           <View style={{ height: 12 }} />
 
           <Text style={S.label}>Password</Text>
-          <TextInput style={S.input} secureTextEntry placeholder="Your password"
-            placeholderTextColor={C.faint} value={pw} onChangeText={setPw}
-            onSubmitEditing={login} returnKeyType="go" />
+          <Box ref={fPw} onSubmit={login} secureTextEntry placeholder="Your password"
+            value={pw} onChangeText={setPw} />
 
           <TouchableOpacity style={[S.btn, { marginTop: 18 }, busy && { backgroundColor: C.faint }]}
             onPress={login} disabled={busy}>
@@ -74,6 +75,6 @@ export default function WelcomeScreen({ navigation }) {
         </View>
 
       </ScrollView>
-    </KeyboardAvoidingView>
+    </Screen>
   );
 }

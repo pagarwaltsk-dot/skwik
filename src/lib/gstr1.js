@@ -7,7 +7,7 @@
 //
 // What goes where, in the portal's own words:
 //   b2b    sold to someone with a GST number
-//   b2cl   sold to someone without one, ANOTHER state, over 2.5 lakh
+//   b2cl   sold to someone without one, ANOTHER state, over 1 lakh
 //   b2cs   everything else to people without a GST number, added up
 //   cdnr   credit and debit notes against a registered buyer
 //   cdnur  credit notes against everyone else
@@ -17,9 +17,22 @@
 // This builds the file. It does not file the return — that is still done on
 // the portal, by whoever files it, who should read it first.
 
-import { n2, num } from './money';
+import { extraAsLine, n2, num } from './money';
+import { guessUqc, isUqc } from './uqc';
 
-const B2CL_LIMIT = 250000;
+// One lakh, not the two and a half it used to be: Notification 12/2024 cut it
+// with effect from 1 August 2024, so bills between 1 and 2.5 lakh that used to
+// sit in the b2cs summary now have to be listed one by one.
+const B2CL_LIMIT = 100000;
+
+// A unit the portal will accept. Anything it does not know becomes OTH, which
+// it does, rather than three letters of a word it has never heard of.
+const uqcOf = (unit) => {
+  const u = String(unit || '').trim();
+  if (!u) return 'OTH';
+  if (isUqc(u)) return u.toUpperCase();
+  return guessUqc(u) || 'OTH';
+};
 
 // The portal wants 01-09-2026, not 2026-09-01.
 const gstDate = (d) => {
@@ -98,7 +111,7 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
     });
   }
 
-  /* ---------- b2cl: unregistered, other state, over 2.5 lakh ---------- */
+  /* ---------- b2cl: unregistered, other state, over 1 lakh ---------- */
   const b2clMap = {};
   /* ---------- b2cs: everything else, added up by rate and state ---------- */
   const b2csMap = {};
@@ -167,11 +180,17 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
   const hsnMap = {};
   for (const v of [...sales, ...returns]) {
     const sign = v.vtype === 'sale_return' ? -1 : 1;
-    for (const l of lines(v)) {
+    const withFreight = (() => {
+      const f = extraAsLine(v, lines(v));
+      return f ? [...lines(v), f] : lines(v);
+    })();
+    for (const l of withFreight) {
       const code = String(l.hsn || '').trim();
       const key = `${code}|${rate(l)}|${l.unit || ''}`;
       hsnMap[key] = hsnMap[key] || {
-        hsn_sc: code, desc: l.item_name, uqc: String(l.unit || 'OTH').toUpperCase().slice(0, 3),
+        // The portal takes only its own list of unit codes. "Bottles" cut to
+        // "BOT" is not on it, and the file is refused for it.
+        hsn_sc: code, desc: l.item_name, uqc: uqcOf(l.unit),
         qty: 0, rt: rate(l), txval: 0, iamt: 0, camt: 0, samt: 0, csamt: 0,
       };
       const e = hsnMap[key];
@@ -184,6 +203,18 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
   }
   const hsn = Object.values(hsnMap).map((e, i) => ({ num: i + 1, ...e }));
 
+  // the portal wants 4 digits from a firm under 5 crore and 6 from one above,
+  // and it rejects the return outright if a code is shorter than that
+  const need = org?.turnover_above_5cr ? 6 : 4;
+  const short = [...new Set(Object.values(hsnMap)
+    .filter((e) => e.hsn_sc && String(e.hsn_sc).replace(/\D/g, '').length < need)
+    .map((e) => `${e.desc} (${e.hsn_sc})`))];
+  if (short.length) {
+    problems.push(`${short.length} item${short.length === 1 ? ' has an HSN' : 's have HSN codes'} `
+      + `shorter than the ${need} digits your turnover needs: `
+      + short.slice(0, 5).join(', ') + (short.length > 5 ? '…' : ''));
+  }
+
   // an HSN code is compulsory for a registered firm — say which items lack one
   const noHsn = [...new Set(Object.values(hsnMap).filter((e) => !e.hsn_sc).map((e) => e.desc))];
   if (noHsn.length) {
@@ -192,8 +223,25 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
   }
 
   /* ---------- the numbers used, so the portal sees no gaps ---------- */
+  // "10" sorts before "2" as text, so a book of bills 1 to 12 would declare a
+  // range of 1 to 9 against a count of 12 — exactly the gap this table exists
+  // to show. Compare the digits as numbers, and the rest as text.
+  const natural = (a, b) => {
+    const ax = String(a).match(/(\d+|\D+)/g) || [];
+    const bx = String(b).match(/(\d+|\D+)/g) || [];
+    for (let i = 0; i < Math.max(ax.length, bx.length); i++) {
+      const x = ax[i], y = bx[i];
+      if (x === undefined) return -1;
+      if (y === undefined) return 1;
+      const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+      if (nx && ny) { if (+x !== +y) return +x - +y; }
+      else if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  };
+
   const docRange = (list) => {
-    const nums = list.map((v) => String(v.voucher_no || '')).filter(Boolean).sort();
+    const nums = list.map((v) => String(v.voucher_no || '')).filter(Boolean).sort(natural);
     if (!nums.length) return null;
     return { num: 1, from: nums[0], to: nums[nums.length - 1],
              totnum: nums.length, cancel: 0, net_issue: nums.length };

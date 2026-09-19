@@ -1,12 +1,12 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { num, fmt0, settle } from '../lib/money';
-import { Head } from '../components/Chrome';
+import { fmt0, num, settle, today } from '../lib/money';
+import { Box, Head, KeyForm, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // MONEY IN, MONEY OUT — and putting it right when it was typed wrong.
@@ -34,6 +34,9 @@ export default function MoneyScreen({ route, navigation }) {
   const [note, setNote]   = useState('');
   const [editing, setEditing] = useState(null);   // the entry being corrected
   const [busy, setBusy]   = useState(false);
+
+  // who → how much → what it was against
+  const fWho = useRef(null), fAmt = useRef(null), fNote = useRef(null);
 
   const load = useCallback(async () => {
     const [{ data: ps }, { data: rs }] = await Promise.all([
@@ -117,7 +120,7 @@ export default function MoneyScreen({ route, navigation }) {
         Alert.alert('Changed', `Now ₹${fmt0(num(amount))}.`);
       } else {
         const { error } = await supabase.from('payments')
-          .insert({ ...body, pdate: new Date().toISOString().slice(0, 10) });
+          .insert({ ...body, pdate: today() });
         if (error) throw error;
         navigation.navigate('Ledger', { partyId: p.id });
       }
@@ -156,9 +159,9 @@ export default function MoneyScreen({ route, navigation }) {
   );
 
   return (
-    <View style={S.screen}>
+    <Screen>
       <Head navigation={navigation} title={received ? 'Money received' : 'Money paid'} />
-      <ScrollView keyboardShouldPersistTaps="handled"
+      <KeyForm
                   contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
 
       {!!editing && (
@@ -177,8 +180,7 @@ export default function MoneyScreen({ route, navigation }) {
 
       <View style={{ height: 18 }} />
       <Text style={S.label}>{received ? 'Received from' : 'Paid to'}</Text>
-      <TextInput style={[S.input, { marginTop: 6 }]} placeholder="Type a name"
-        placeholderTextColor={C.faint}
+      <Box ref={fWho} next={fAmt} style={{ marginTop: 6 }} placeholder="Type a name"
         value={text} onChangeText={(t) => { setText(t); setParty(null); }} />
 
       {matches.map((p) => (
@@ -198,16 +200,16 @@ export default function MoneyScreen({ route, navigation }) {
 
       <View style={{ height: 18 }} />
       <Text style={S.label}>How much?</Text>
-      <TextInput
-        style={[S.input, { marginTop: 6, fontSize: 32, paddingVertical: 14 }, S.num]}
-        keyboardType="numeric" placeholder="0" placeholderTextColor={C.faint}
+      <Box ref={fAmt} next={fNote}
+        style={[{ marginTop: 6, fontSize: 32, paddingVertical: 14 }, S.num]}
+        keyboardType="numeric" placeholder="0"
         value={amount} onChangeText={setAmount}
         onBlur={() => setAmount(settle(amount))} />
 
       <View style={{ height: 18 }} />
       <Text style={S.label}>What for (optional)</Text>
-      <TextInput style={[S.input, { marginTop: 6 }]} placeholder="Against bill 41"
-        placeholderTextColor={C.faint} value={note} onChangeText={setNote} />
+      <Box ref={fNote} onSubmit={save} style={{ marginTop: 6 }} placeholder="Against bill 41"
+        value={note} onChangeText={setNote} />
 
       <TouchableOpacity style={[S.btn, { marginTop: 22 }, busy && { backgroundColor: C.faint }]}
         onPress={save} disabled={busy}>
@@ -249,7 +251,7 @@ export default function MoneyScreen({ route, navigation }) {
           ))}
         </>
       )}
-      </ScrollView>
-    </View>
+      </KeyForm>
+    </Screen>
   );
 }

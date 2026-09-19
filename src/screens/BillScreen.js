@@ -1,14 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Modal, Platform,
-  KeyboardAvoidingView, BackHandler,
+  View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Modal, Platform, BackHandler,
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { computeBill, taxModeFor, fmt, fmt0, num, settle, hsnApplies } from '../lib/money';
+import {
+  computeBill, fmt, fmt0, hsnApplies, num, pct, settle, taxModeFor, today, topRate,
+} from '../lib/money';
+import { STATES } from '../lib/states';
+import { showBatch, showExpiry, showGodowns } from '../lib/features';
 import { searchItems, parseQuery, highlightParts, tok } from '../lib/search';
 import { uqcShort } from '../lib/uqc';
 import { checkHsn, hsnExists } from '../lib/hsn';
@@ -19,7 +22,8 @@ import {
   uuid, withTimeout, looksOffline, cacheItems, cacheParties,
   cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue,
 } from '../lib/offline';
-import { Bar, Foot, MoreButton, BackButton } from '../components/Chrome';
+import { BackButton, Bar, Box, Foot, KeyForm, MoreButton, Screen } from '../components/Chrome';
+import { ScanSheet, ScanButton } from '../components/Scan';
 import { C, S } from '../theme';
 
 // Matched letters shown marked, the way the estimate app does it.
@@ -61,9 +65,15 @@ export default function BillScreen({ route, navigation }) {
   const [extra, setExtra] = useState('');
   const [extraNote, setExtraNote] = useState('');
   const [showExtra, setShowExtra] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [pendingCode, setPendingCode] = useState('');   // a code waiting for an item
+  const [partySheet, setPartySheet] = useState(null);   // the sheet for a name not in the book
+  const [godowns, setGodowns] = useState([]);
+  const [godown, setGodown] = useState(null);           // which store the goods move through
+  const [extraGst, setExtraGst] = useState('');    // '' = the dearest rate on the bill
   const [supNo, setSupNo] = useState('');
-  const [supDate, setSupDate] = useState(new Date().toISOString().slice(0, 10));
-  const [vdate, setVdate] = useState(new Date().toISOString().slice(0, 10));
+  const [supDate, setSupDate] = useState(today());
+  const [vdate, setVdate] = useState(today());
   const [loadingBill, setLoadingBill] = useState(!!route.params?.voucherId);
 
   const [busy, setBusy]   = useState(false);
@@ -71,6 +81,11 @@ export default function BillScreen({ route, navigation }) {
   const [saved, setSaved] = useState(null);
   const [quick, setQuick] = useState(null);
   const qRef = useRef(null);
+  const xRef = useRef(null);                       // freight amount
+  const qName = useRef(null), qAlias = useRef(null);
+  const npName = useRef(null), npPhone = useRef(null), npAddr = useRef(null);
+  const npGst = useRef(null), npState = useRef(null);
+  const qGst  = useRef(null), qRate  = useRef(null);
   const seq  = useRef(0);
   // Every qty and rate box on the bill, so the keyboard's next key can
   // walk from one to the next without anybody tapping.
@@ -95,6 +110,12 @@ export default function BillScreen({ route, navigation }) {
         setItems(i.data || []);
         setParties(p.data || []);
         setOffline(false);
+        if (showGodowns(org)) {
+          const { data: gs } = await supabase.from('godowns').select('*').order('name');
+          setGodowns(gs || []);
+          setGodown(org?.default_godown_id
+            || (gs || []).find((g) => g.is_main)?.id || (gs || [])[0]?.id || null);
+        }
         cacheItems(i.data || []);
         cacheParties(p.data || []);
       } catch (e) {
@@ -125,8 +146,9 @@ export default function BillScreen({ route, navigation }) {
       setCust(v.parties || { name: v.printed_name || 'CASH' });
       setIsCash(!!v.is_cash);
       setExtra(Number(v.extra_amount) ? String(v.extra_amount) : '');
+      setExtraGst(Number(v.extra_gst_rate) ? String(v.extra_gst_rate) : '');
       setExtraNote(v.extra_note || '');
-      setShowExtra(Number(v.extra_amount) > 0);
+      setShowExtra(!!Number(v.extra_amount));
       setSupNo(v.supplier_invoice_no || '');
       if (v.supplier_invoice_date) setSupDate(v.supplier_invoice_date);
 
@@ -136,6 +158,8 @@ export default function BillScreen({ route, navigation }) {
           key: seq.current, item_id: l.item_id, item_name: l.item_name,
           hsn: l.hsn || '', unit: l.unit || 'PCS', gst_rate: Number(l.gst_rate) || 0,
           qty: String(Number(l.qty)), rate: String(Number(l.rate)),
+          disc: Number(l.disc) || 0,
+          batch: l.batch || '', expiry: l.expiry || '',
           rateEdited: true, flag: !!l.flag, checked: !!l.checked, note: l.note || '',
         };
       }));
@@ -156,10 +180,19 @@ export default function BillScreen({ route, navigation }) {
   // by name OR phone number
   // Only what he is typing towards. A shop with three hundred customers does
   // not want the first eight of them in alphabetical order.
+  // A purchase is to a supplier and a bill is to a customer, and nobody wants
+  // to scroll past the wrong half of his book to find either. Anyone marked
+  // "both" shows on both sides, and so does anyone never marked at all.
+  const forThisBill = (p) => {
+    const k = String(p.kind || '').toLowerCase();
+    if (!k || k === 'both') return true;
+    return isBuy ? k === 'supplier' : k === 'customer';
+  };
+
   const custHits = cq.trim()
     ? parties.filter((p) => {
         const s = cashInfo.name.toLowerCase();
-        if (!s) return false;
+        if (!s || !forThisBill(p)) return false;
         return p.name.toLowerCase().indexOf(s) > -1 || String(p.phone || '').indexOf(s) > -1;
       }).slice(0, 8)
     : [];
@@ -170,10 +203,40 @@ export default function BillScreen({ route, navigation }) {
     setTimeout(() => qRef.current?.focus(), 150);   // known name: straight to products
   };
   const newCust = () => {
-    setCust({ name: cashInfo.name || 'CASH', isNew: true, phone: '',
-              state_code: org?.state_code, state_name: org?.state_name });
+    // Asked once, here, rather than left for later — a customer with no phone
+    // number is a reminder that can never be sent, and one with no state is a
+    // bill that may carry the wrong tax.
+    setPartySheet({
+      name: cashInfo.name || 'CASH',
+      kind: isBuy ? 'supplier' : 'customer',
+      phone: '', address: '', gstin: '',
+      price_list: String(priceList || 1),
+      state_code: String(org?.state_code || ''),
+    });
     setIsCash(cashInfo.isCash);
     setCustOpen(false);
+  };
+
+  // What the sheet collected, taken as the customer for this bill. He is
+  // written to the book when the bill is saved, not before — a sheet closed
+  // halfway leaves nothing behind.
+  const takeNewParty = () => {
+    const np = partySheet;
+    if (!np?.name?.trim()) return Alert.alert('Name', 'Type the name.');
+    const code = String(np.state_code || '').trim();
+    setCust({
+      name: np.name.trim(), isNew: true,
+      kind: np.kind,
+      phone: String(np.phone || '').replace(/\D/g, '').slice(-10),
+      address: np.address?.trim() || '',
+      gstin: String(np.gstin || '').toUpperCase().trim(),
+      price_list: Number(np.price_list) === 2 ? 2 : 1,
+      state_code: code || org?.state_code,
+      state_name: STATES[code] || org?.state_name,
+    });
+    if (!isBuy) applyList(Number(np.price_list) === 2 ? 2 : 1);
+    setPartySheet(null);
+    setTimeout(() => qRef.current?.focus(), 150);
   };
 
   /* ---------------- product entry ---------------- */
@@ -188,6 +251,28 @@ export default function BillScreen({ route, navigation }) {
     return (list || priceList) === 2 ? (p.price2 || p.sale_price) : p.sale_price;
   };
 
+  // A packet scanned at the counter. Known code: the line goes on and the
+  // quantity box is waiting. Scanned twice: the quantity goes up by one
+  // instead of a second line appearing, which is what a shop actually wants.
+  // Unknown code: he is asked once what it is, and it is remembered.
+  const scanned = (code) => {
+    const hit = items.find((it) => String(it.barcode || '').trim() === code);
+    if (hit) {
+      const already = lines.find((l) => l.item_id === hit.id);
+      if (already) {
+        setLine(already.key, { qty: String(num(already.qty) + 1) });
+      } else {
+        addHit({ p: hit, qty: 1, toks: [] });
+      }
+      return;
+    }
+    setScanOpen(false);
+    Alert.alert('New barcode',
+      'No item in your book carries that code. Add it to an item now?',
+      [{ text: 'Not now' },
+       { text: 'Yes', onPress: () => { setPendingCode(code); setQ(''); qRef.current?.focus(); } }]);
+  };
+
   const addHit = (h) => {
     const rate = listRate(h.p);
     seq.current += 1;
@@ -195,7 +280,8 @@ export default function BillScreen({ route, navigation }) {
       key: seq.current, item_id: h.p.id, item_name: h.p.name, hsn: h.p.hsn || '',
       unit: h.p.unit || 'PCS', gst_rate: Number(h.p.gst_rate) || 0,
       qty: h.qty == null ? '' : String(h.qty), rate: String(rate || ''),
-      rateEdited: false, flag: false, checked: false, note: '',
+      rateEdited: false, flag: false, checked: false, note: '', disc: 0,
+      batch: '', expiry: '',
     };
     setLines((ls) => [line, ...ls]);                 // newest at the TOP
     setQ('');
@@ -214,7 +300,14 @@ export default function BillScreen({ route, navigation }) {
       .eq('item_id', itemId).eq('vouchers.party_id', cust.id)
       .in('vouchers.vtype', isBuy ? ['purchase'] : ['sale', 'estimate'])
       .order('vdate', { foreignTable: 'vouchers', ascending: false }).limit(1);
-    if (data?.[0]?.rate) setLine(key, { rate: String(data[0].rate) });
+    // This comes back seconds later, by which time he may already be typing
+    // the rate himself. Whatever he has put in wins — a box that changes under
+    // his finger is worse than no help at all.
+    if (!data?.[0]?.rate) return;
+    setLines((ls) => ls.map((l) => (
+      l.key === key && !l.rateEdited && !l.rateTouched
+        ? { ...l, rate: String(data[0].rate), fromHistory: true }
+        : l)));
   };
 
   const applyList = (list) => {
@@ -251,16 +344,21 @@ export default function BillScreen({ route, navigation }) {
 
   const mode = estimateMode ? 'none' : taxModeFor(org, cust);
   const good = lines.filter((l) => l.item_name.trim() && num(l.qty) > 0);
-  const calc = computeBill(good, mode);
-  const extraAmt = num(extra);
-  const grandExact = calc.taxable + calc.cgst + calc.sgst + calc.igst + extraAmt;
-  const grand = Math.round(grandExact);
-  const roundOff = Math.round((grand - grandExact) * 100) / 100;
+  const extraAmt  = num(extra);
+  // Freight carries the dearest rate on the bill unless he says otherwise.
+  const extraRate = extraGst === '' ? topRate(good) : num(extraGst);
+  const calc = computeBill(good, mode, { amount: extraAmt, gst_rate: extraRate });
+  const grand = calc.total;
+  const roundOff = calc.round_off;
   const checked = lines.filter((l) => l.checked).length;
+  const discTotal = good.reduce((t, l) => t + num(l.disc), 0);
+  const wantBatch  = showBatch(org);
+  const wantExpiry = showExpiry(org);
 
   /* ---------------- new product, mid-bill ---------------- */
 
   const saveQuick = async () => {
+    const taxed = org?.is_gst_registered && !org?.is_composition;
     if (!quick.name.trim()) return Alert.alert('Name needed', 'Type the item name.');
     if (!quick.unit) return Alert.alert('Unit needed', 'Choose how this item is counted.');
     const problem = checkHsn(quick.hsn, org);
@@ -271,6 +369,7 @@ export default function BillScreen({ route, navigation }) {
         id: uuid(),
         org_id: org.id, name: quick.name.trim(), alias: quick.alias.trim(),
         unit: quick.unit, hsn: quick.hsn.trim(), gst_rate: num(quick.gst_rate),
+        barcode: pendingCode || null,
         sale_price: isBuy ? 0 : num(quick.rate),
         purchase_price: isBuy ? num(quick.rate) : 0,
         is_active: true,
@@ -288,8 +387,20 @@ export default function BillScreen({ route, navigation }) {
       }
       setItems((xs) => [...xs, saved]);
       setQuick(null);
+      setPendingCode('');
       addHit({ p: saved, qty: quick.qty ? Number(quick.qty) : null, toks: [] });
     };
+
+    // A tax invoice with a 0% line on it undercharges the customer and
+    // understates the return. The rate is the one field on this sheet with
+    // money behind it, so it is the one field nobody may skip past.
+    if (taxed && !num(quick.gst_rate)) {
+      return Alert.alert('GST rate?',
+        'This item has no GST rate. A bill with it on will charge no tax. '
+        + 'Put the rate in, or set it to 0 on purpose.',
+        [{ text: 'Go back' }, { text: 'It really is 0%', onPress: write }]);
+    }
+
     if (hsnApplies(org) && quick.hsn && !hsnExists(quick.hsn)) {
       return Alert.alert('Check this HSN', `${quick.hsn} is not in our list. Save it anyway?`,
         [{ text: 'Let me check' }, { text: 'Save anyway', onPress: write }]);
@@ -305,13 +416,18 @@ export default function BillScreen({ route, navigation }) {
 
     // The phone decides the id, so the same customer cannot be created twice
     // when the queue is sent.
+    const code = String(cust?.state_code || org.state_code || '').trim();
     const body = {
       id: uuid(),
-      org_id: org.id, name, kind: isBuy ? 'supplier' : 'customer',
+      org_id: org.id, name,
+      kind: cust?.kind || (isBuy ? 'supplier' : 'customer'),
       phone: cust?.phone || null,
-      price_list: isBuy ? 1 : priceList,
-      state_code: cust?.state_code || org.state_code,
-      state_name: cust?.state_name || org.state_name,
+      address: cust?.address || null,
+      gstin: cust?.gstin || null,
+      is_registered: !!cust?.gstin,
+      price_list: isBuy ? 1 : (Number(cust?.price_list) || priceList),
+      state_code: code,
+      state_name: STATES[code] || cust?.state_name || org.state_name,
     };
 
     try {
@@ -347,9 +463,8 @@ export default function BillScreen({ route, navigation }) {
     try {
       const pty = cust.id ? cust : await findOrCreateParty(cust.name);
       const m = estimateMode ? 'none' : taxModeFor(org, pty);
-      const c = computeBill(good, m);
-      const exact = c.taxable + c.cgst + c.sgst + c.igst + extraAmt;
-      const total = Math.round(exact);
+      const c = computeBill(good, m, { amount: extraAmt, gst_rate: extraRate });
+      const total = c.total;
 
       const payload = {
         id: editId || uuid(),
@@ -358,18 +473,21 @@ export default function BillScreen({ route, navigation }) {
         // enters August's bills in September, and they must land in August.
         vdate: editId ? vdate
              : (isBuy && supDate) ? supDate
-             : new Date().toISOString().slice(0, 10),
+             : today(),
         party_id: pty.id, printed_name: cust.name, is_cash: isCash,
         supplier_invoice_no: isBuy ? supNo : null,
         supplier_invoice_date: isBuy ? supDate : null,
         place_of_supply_code: pty.state_code || org.state_code,
+        godown_id: godown || null,
         tax_mode: m,
         taxable: c.taxable, cgst: c.cgst, sgst: c.sgst, igst: c.igst,
-        extra_amount: extraAmt, extra_note: extraNote,
-        round_off: Math.round((total - exact) * 100) / 100, total,
+        extra_amount: extraAmt, extra_note: extraNote, extra_gst_rate: c.extra_gst_rate,
+        round_off: c.round_off, total,
         lines: c.lines.map((l) => ({
           item_id: l.item_id, item_name: l.item_name, hsn: l.hsn, unit: l.unit,
-          qty: num(l.qty), rate: num(l.rate), gst_rate: l.gst_rate,
+          qty: num(l.qty), rate: num(l.rate), gst_rate: l.gst_rate, disc: l.disc || 0,
+          batch: (l.batch || '').trim() || null,
+          expiry: (l.expiry || '').trim() || null,
           taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
           amount: l.amount, flag: !!l.flag, checked: !!l.checked,
           note: (l.note || '').trim() || null,
@@ -463,7 +581,7 @@ export default function BillScreen({ route, navigation }) {
   /* ---------------- screen ---------------- */
 
   return (
-    <KeyboardAvoidingView style={S.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <Screen>
 
       {/* PINNED HEAD — who it is for, and what it comes to */}
       <Bar>
@@ -475,6 +593,7 @@ export default function BillScreen({ route, navigation }) {
           </Text>
           <Text numberOfLines={1} style={S.barSub}>{docName}</Text>
         </TouchableOpacity>
+        {!!cust && <ScanButton light onPress={() => setScanOpen(true)} />}
         <View style={{ alignItems: 'flex-end' }}>
           <Text style={S.barTotL}>TOTAL</Text>
           <Text style={[S.barTot, S.num]}>₹{fmt0(grand)}</Text>
@@ -502,13 +621,13 @@ export default function BillScreen({ route, navigation }) {
               <TextInput style={S.cell} value={supNo} onChangeText={setSupNo}
                 placeholder="e.g. 1024" placeholderTextColor={C.faint}
                 autoCapitalize="characters"
-                returnKeyType="next" blurOnSubmit={false} />
+                returnKeyType="next" submitBehavior="submit" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={S.cellLabel}>Its date</Text>
               <TextInput style={[S.cell, S.num]} value={supDate} onChangeText={setSupDate}
                 placeholder="2026-09-19" placeholderTextColor={C.faint}
-                returnKeyType="next" blurOnSubmit={false}
+                returnKeyType="next" submitBehavior="submit"
                 onSubmitEditing={() => qRef.current?.focus()} />
             </View>
           </View>
@@ -531,7 +650,7 @@ export default function BillScreen({ route, navigation }) {
             placeholder="Type item and quantity — thali 12"
             placeholderTextColor={C.faint}
             value={q} onChangeText={setQ}
-            returnKeyType="next" blurOnSubmit={false}
+            returnKeyType="next" submitBehavior="submit"
             onSubmitEditing={() => {
               if (hits.length) addHit(hits[0]);
               else if (q.trim()) setQuick({ name: parsed.base || parsed.full, alias: '',
@@ -660,7 +779,9 @@ export default function BillScreen({ route, navigation }) {
               {swapFor === l.key && (
                 <View style={{ marginBottom: 9 }}>
                   <TextInput style={[S.input, { paddingVertical: 9 }]} autoFocus
-                    placeholder="Change to another item" value={sq} onChangeText={setSq} />
+                    placeholder="Change to another item" value={sq} onChangeText={setSq}
+                    returnKeyType="next" submitBehavior="submit"
+                    onSubmitEditing={() => { if (swapHits.length) doSwap(swapHits[0]); }} />
                   <ScrollView style={{ maxHeight: 180 }} keyboardShouldPersistTaps="handled">
                     {swapHits.map((h) => (
                       <TouchableOpacity key={h.p.id} onPress={() => doSwap(h)}
@@ -681,7 +802,7 @@ export default function BillScreen({ route, navigation }) {
                   <TextInput style={[S.cell, S.num]} keyboardType="numeric" value={String(l.qty)}
                     ref={(r) => { cell.current[`${l.key}:qty`] = r; }}
                     selectTextOnFocus
-                    returnKeyType="next" blurOnSubmit={false}
+                    returnKeyType="next" submitBehavior="submit"
                     onBlur={() => setLine(l.key, { qty: settle(l.qty) })}
                     onSubmitEditing={() => {
                       setLine(l.key, { qty: settle(l.qty) });
@@ -695,12 +816,13 @@ export default function BillScreen({ route, navigation }) {
                   <TextInput style={[S.cell, S.num]} keyboardType="numeric" value={String(l.rate)}
                     ref={(r) => { cell.current[`${l.key}:rate`] = r; }}
                     selectTextOnFocus
-                    returnKeyType="next" blurOnSubmit={false}
+                    returnKeyType="next" submitBehavior="submit"
                     onBlur={() => setLine(l.key, { rate: settle(l.rate) })}
                     onSubmitEditing={() => {
                       setLine(l.key, { rate: settle(l.rate) });
                       qRef.current?.focus();
                     }}
+                    onFocus={() => setLine(l.key, { rateTouched: true })}
                     onChangeText={(t) => setLine(l.key, { rate: t, rateEdited: true })} />
                 </View>
                 <Text style={[S.amt, S.num, { paddingBottom: 10, minWidth: 74 }]}>
@@ -708,31 +830,110 @@ export default function BillScreen({ route, navigation }) {
                 </Text>
               </View>
 
+              {(wantBatch || wantExpiry) && (
+                <View style={[S.row, { marginTop: 10, gap: 8 }]}>
+                  {wantBatch && (
+                    <View style={{ flex: 1 }}>
+                      <Text style={S.cellLabel}>Batch</Text>
+                      <TextInput style={S.cell} value={l.batch || ''}
+                        placeholder="B-77" placeholderTextColor={C.faint}
+                        autoCapitalize="characters"
+                        returnKeyType="next" submitBehavior="submit"
+                        onChangeText={(t) => setLine(l.key, { batch: t })} />
+                    </View>
+                  )}
+                  {wantExpiry && (
+                    <View style={{ flex: 1 }}>
+                      <Text style={S.cellLabel}>Expiry</Text>
+                      <TextInput style={[S.cell, S.num]} value={l.expiry || ''}
+                        placeholder="2027-03-31" placeholderTextColor={C.faint}
+                        keyboardType="numbers-and-punctuation"
+                        returnKeyType="next" submitBehavior="submit"
+                        onSubmitEditing={() => qRef.current?.focus()}
+                        onChangeText={(t) => setLine(l.key, { expiry: t })} />
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* what came off this line. Hidden until he wants it, because
+                  most lines have none, and the tax is worked out after it. */}
+              {(l.disc > 0 || l.discOpen) ? (
+                <View style={[S.row, { marginTop: 10, gap: 8 }]}>
+                  <Text style={{ fontSize: 13, color: C.muted }}>Less</Text>
+                  <TextInput style={[S.cell, S.num, { flex: 1 }]} keyboardType="numeric"
+                    placeholder="0" placeholderTextColor={C.faint}
+                    value={l.disc ? String(l.disc) : ''}
+                    selectTextOnFocus
+                    returnKeyType="next" submitBehavior="submit"
+                    onSubmitEditing={() => qRef.current?.focus()}
+                    onChangeText={(t) => setLine(l.key, { disc: num(t) })} />
+                  <Text style={{ fontSize: 13, color: C.muted }}>
+                    = {fmt(Math.max(0, num(l.qty) * num(l.rate) - num(l.disc)))}
+                  </Text>
+                </View>
+              ) : null}
+
               {/* a word about this line, printed under it on the bill */}
               {l.noteOpen || l.note ? (
                 <TextInput
                   style={[S.cell, { marginTop: 10, paddingVertical: 9, fontSize: 14 }]}
                   placeholder="Size, colour, anything the customer should see"
                   placeholderTextColor={C.faint} value={l.note || ''} autoFocus={!l.note}
+                  returnKeyType="next" submitBehavior="submit"
+                  onSubmitEditing={() => qRef.current?.focus()}
                   onChangeText={(t) => setLine(l.key, { note: t })} />
               ) : (
-                <TouchableOpacity style={[S.tapPill, { alignSelf: 'flex-start', marginTop: 10,
-                                                       paddingVertical: 6, paddingHorizontal: 12 }]}
-                  onPress={() => setLine(l.key, { noteOpen: true })}>
-                  <Text style={S.tapPillText}>+ note</Text>
-                </TouchableOpacity>
+                <View style={[S.row, { gap: 8, marginTop: 10 }]}>
+                  <TouchableOpacity style={[S.tapPill, { paddingVertical: 6, paddingHorizontal: 12 }]}
+                    onPress={() => setLine(l.key, { noteOpen: true })}>
+                    <Text style={S.tapPillText}>+ note</Text>
+                  </TouchableOpacity>
+                  {!l.disc && !l.discOpen && (
+                    <TouchableOpacity style={[S.tapPill, { paddingVertical: 6, paddingHorizontal: 12 }]}
+                      onPress={() => setLine(l.key, { discOpen: true })}>
+                      <Text style={S.tapPillText}>+ less</Text>
+                    </TouchableOpacity>
+                  )}
+                  <View style={{ flex: 1 }} />
+                </View>
               )}
             </View>
           );
         })}
 
+        {godowns.length > 1 && (
+          <View style={[S.card, { paddingVertical: 10 }]}>
+            <Text style={S.eyebrow}>{isBuy ? 'Goods came into' : 'Goods went out of'}</Text>
+            <View style={[S.row, { gap: 8, flexWrap: 'wrap' }]}>
+              {godowns.map((g) => {
+                const on = godown === g.id;
+                return (
+                  <TouchableOpacity key={g.id} onPress={() => setGodown(g.id)}
+                    style={{ paddingHorizontal: 13, paddingVertical: 8, borderRadius: 9,
+                             borderWidth: 1, borderColor: on ? C.accent : C.line,
+                             backgroundColor: on ? C.accentSoft : C.surface }}>
+                    <Text style={{ fontSize: 13, fontWeight: '700',
+                                   color: on ? C.accent : C.muted }}>{g.name}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        )}
+
         {!!lines.length && (
           <View style={S.card}>
             <Text style={S.eyebrow}>Totals</Text>
-            <Row k="Items total" v={fmt(calc.taxable)} />
+            {!!discTotal && <Row k="Items" v={fmt(calc.taxable - extraAmt + discTotal)} />}
+            {!!discTotal && <Row k="Less" v={`- ${fmt(discTotal)}`} />}
+            <Row k={extraAmt ? 'Taxable value' : 'Items total'} v={fmt(calc.taxable)} />
             {mode === 'cgst_sgst' && (<><Row k="CGST" v={fmt(calc.cgst)} /><Row k="SGST" v={fmt(calc.sgst)} /></>)}
             {mode === 'igst' && <Row k="IGST" v={fmt(calc.igst)} />}
-            {!!extraAmt && <Row k={extraNote || 'Extra'} v={fmt(extraAmt)} />}
+            {!!extraAmt && (
+              <Row k={`${extraNote || 'Freight'}${mode !== 'none' && extraRate
+                        ? ` (in the ${pct(extraRate)}% above)` : ''}`} v={fmt(extraAmt)} />
+            )}
             {!!roundOff && <Row k="Round off" v={fmt(roundOff)} />}
 
             {!showExtra ? (
@@ -744,9 +945,33 @@ export default function BillScreen({ route, navigation }) {
             ) : (
               <View style={[S.row, { marginTop: 10 }]}>
                 <TextInput style={[S.input, { flex: 1 }]} placeholder="What for?"
-                  value={extraNote} onChangeText={setExtraNote} />
-                <TextInput style={[S.input, { width: 110 }, S.num]}
-                  keyboardType="numeric" placeholder="0" value={extra} onChangeText={setExtra} />
+                  value={extraNote} onChangeText={setExtraNote}
+                  returnKeyType="next" submitBehavior="submit"
+                  onSubmitEditing={() => xRef.current?.focus()} />
+                <TextInput style={[S.input, { width: 110 }, S.num]} ref={xRef}
+                  keyboardType="numeric" placeholder="0" value={extra} onChangeText={setExtra}
+                  returnKeyType="done" onBlur={() => setExtra(settle(extra))} />
+              </View>
+            )}
+
+            {/* Freight is part of what is being supplied, so it carries tax
+                like the goods do. The dearest rate on the bill is the usual
+                answer and is offered; he can say otherwise. */}
+            {showExtra && mode !== 'none' && !!extraAmt && (
+              <View style={[S.row, { marginTop: 8, gap: 8, flexWrap: 'wrap' }]}>
+                <Text style={{ fontSize: 12.5, color: C.muted }}>GST on it</Text>
+                {[...new Set([topRate(good), 0, 5, 12, 18, 28])].map((r) => {
+                  const on = extraRate === r;
+                  return (
+                    <TouchableOpacity key={r} onPress={() => setExtraGst(String(r))}
+                      style={{ paddingHorizontal: 11, paddingVertical: 6, borderRadius: 8,
+                               borderWidth: 1, borderColor: on ? C.accent : C.line,
+                               backgroundColor: on ? C.accentSoft : C.surface }}>
+                      <Text style={{ fontSize: 12.5, fontWeight: '700',
+                                     color: on ? C.accent : C.muted }}>{pct(r)}%</Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
 
@@ -797,7 +1022,7 @@ export default function BillScreen({ route, navigation }) {
           <TextInput style={[S.input, { marginTop: 14 }]} autoFocus
             placeholder={isOut ? 'Name, phone, or CASH' : 'Supplier name or phone'}
             placeholderTextColor={C.faint}
-            returnKeyType="next" blurOnSubmit={false}
+            returnKeyType="next" submitBehavior="submit"
             onSubmitEditing={() => { if (custHits.length) chooseCust(custHits[0]);
                                      else if (cashInfo.name) newCust(); }}
             value={cq} onChangeText={setCq} />
@@ -836,6 +1061,112 @@ export default function BillScreen({ route, navigation }) {
         </View>
       </Modal>
 
+      {/* ---------- a name that is not in the book yet ---------- */}
+      <Modal visible={!!partySheet} transparent animationType="slide"
+             onRequestClose={() => setPartySheet(null)}>
+        <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end' }}>
+          <KeyForm style={{ maxHeight: '92%' }}
+            contentContainerStyle={{ backgroundColor: C.bg, borderTopLeftRadius: 26,
+                                     borderTopRightRadius: 26, padding: 20 }}>
+            {!!partySheet && (
+              <>
+                <Text style={{ fontSize: 21, fontWeight: '800', color: C.ink }}>
+                  New {partySheet.kind === 'supplier' ? 'supplier' : 'customer'}
+                </Text>
+                <Text style={{ fontSize: 13, fontWeight: '600', color: C.muted, marginTop: 4 }}>
+                  Asked once. Everything here can be changed later under Customers.
+                </Text>
+
+                <Text style={[S.label, { marginTop: 16 }]}>NAME</Text>
+                <Box ref={npName} next={npPhone} style={{ marginTop: 6 }} autoFocus
+                  value={partySheet.name}
+                  onChangeText={(t) => setPartySheet((x) => ({ ...x, name: t }))} />
+
+                <Text style={[S.label, { marginTop: 14 }]}>PHONE — FOR WHATSAPP</Text>
+                <Box ref={npPhone} next={npAddr} style={[S.num, { marginTop: 6 }]}
+                  keyboardType="phone-pad" maxLength={10} placeholder="98640 12345"
+                  value={partySheet.phone}
+                  onChangeText={(t) => setPartySheet((x) => ({ ...x, phone: t }))} />
+                <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                  Without it his bill cannot be sent and no reminder can reach him.
+                </Text>
+
+                <Text style={[S.label, { marginTop: 14 }]}>ADDRESS</Text>
+                <Box ref={npAddr} next={npGst} style={{ marginTop: 6 }}
+                  placeholder="Shop and street"
+                  value={partySheet.address}
+                  onChangeText={(t) => setPartySheet((x) => ({ ...x, address: t }))} />
+
+                {!!org?.is_gst_registered && (
+                  <>
+                    <Text style={[S.label, { marginTop: 14 }]}>GST NUMBER</Text>
+                    <Box ref={npGst} next={npState} style={{ marginTop: 6 }}
+                      autoCapitalize="characters" maxLength={15}
+                      placeholder="Leave empty if he is unregistered"
+                      value={partySheet.gstin}
+                      onChangeText={(t) => {
+                        const g = t.toUpperCase().trim();
+                        setPartySheet((x) => ({ ...x, gstin: g,
+                          state_code: g.length >= 2 && STATES[g.slice(0, 2)]
+                            ? g.slice(0, 2) : x.state_code }));
+                      }} />
+
+                    <Text style={[S.label, { marginTop: 14 }]}>STATE CODE</Text>
+                    <Box ref={npState} onSubmit={takeNewParty} style={[S.num, { marginTop: 6 }]}
+                      keyboardType="number-pad" maxLength={2}
+                      value={String(partySheet.state_code || '')}
+                      onChangeText={(t) => setPartySheet((x) => ({ ...x, state_code: t }))} />
+                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                      {STATES[partySheet.state_code]
+                        ? `${STATES[partySheet.state_code]} — ${
+                            String(partySheet.state_code) === String(org?.state_code)
+                              ? 'his bills carry CGST and SGST'
+                              : 'his bills carry IGST'}`
+                        : 'This decides whether his bill carries CGST and SGST, or IGST.'}
+                    </Text>
+                  </>
+                )}
+
+                {!isBuy && (
+                  <>
+                    <Text style={[S.label, { marginTop: 14 }]}>WHICH PRICE LIST</Text>
+                    <View style={[S.row, { gap: 8, marginTop: 6 }]}>
+                      {[[1, org?.price1_name || 'Wholesale'], [2, org?.price2_name || 'Retail']]
+                        .map(([v, label]) => {
+                          const on = Number(partySheet.price_list) === v;
+                          return (
+                            <TouchableOpacity key={v}
+                              onPress={() => setPartySheet((x) => ({ ...x, price_list: String(v) }))}
+                              style={{ flex: 1, paddingVertical: 11, borderRadius: 9,
+                                       alignItems: 'center', borderWidth: 1,
+                                       borderColor: on ? C.accent : C.line,
+                                       backgroundColor: on ? C.accentSoft : C.surface }}>
+                              <Text style={{ fontSize: 14, fontWeight: '700',
+                                             color: on ? C.accent : C.muted }}>{label}</Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                    </View>
+                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                      Chosen once. Every bill for him uses that list from now on.
+                    </Text>
+                  </>
+                )}
+
+                <TouchableOpacity style={[S.btn, { marginTop: 22 }]} onPress={takeNewParty}>
+                  <Text style={S.btnText}>Start his bill</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => { setPartySheet(null); setCustOpen(true); }}
+                  style={{ marginTop: 12, alignItems: 'center', paddingVertical: 10 }}>
+                  <Text style={{ fontSize: 16, fontWeight: '700', color: C.muted }}>Back</Text>
+                </TouchableOpacity>
+                <View style={{ height: 30 }} />
+              </>
+            )}
+          </KeyForm>
+        </View>
+      </Modal>
+
       {/* ---------- new item, mid-bill ---------- */}
       <Modal visible={!!quick} transparent animationType="slide" onRequestClose={() => setQuick(null)}>
         <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end' }}>
@@ -850,11 +1181,12 @@ export default function BillScreen({ route, navigation }) {
                 </Text>
 
                 <Text style={[S.label, { marginTop: 16 }]}>ITEM NAME</Text>
-                <TextInput style={[S.input, { marginTop: 6 }]} value={quick.name}
+                <Box ref={qName} next={qAlias} style={{ marginTop: 6 }} value={quick.name}
                   onChangeText={(t) => setQuick((x) => ({ ...x, name: t }))} />
 
                 <Text style={[S.label, { marginTop: 14 }]}>ALSO CALLED</Text>
-                <TextInput style={[S.input, { marginTop: 6 }]} placeholder="balti, bucket, tub"
+                <Box ref={qAlias} next={hsnApplies(org) ? qGst : qRate} style={{ marginTop: 6 }}
+                  placeholder="balti, bucket, tub"
                   value={quick.alias} onChangeText={(t) => setQuick((x) => ({ ...x, alias: t }))} />
                 <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 5 }}>
                   Any of these words will find this item later.
@@ -876,14 +1208,14 @@ export default function BillScreen({ route, navigation }) {
                         onRate={(v) => setQuick((x) => ({ ...x, gst_rate: v }))} />
                     </View>
                     <Text style={[S.label, { marginTop: 14 }]}>GST RATE %</Text>
-                    <TextInput style={[S.input, { marginTop: 6 }]} keyboardType="numeric"
+                    <Box ref={qGst} next={qRate} style={{ marginTop: 6 }} keyboardType="numeric"
                       value={quick.gst_rate}
                       onChangeText={(t) => setQuick((x) => ({ ...x, gst_rate: t }))} />
                   </>
                 )}
 
                 <Text style={[S.label, { marginTop: 14 }]}>{isBuy ? 'PURCHASE RATE' : 'RATE'}</Text>
-                <TextInput style={[S.input, { marginTop: 6 }]} keyboardType="numeric"
+                <Box ref={qRate} onSubmit={saveQuick} style={{ marginTop: 6 }} keyboardType="numeric"
                   value={quick.rate} onChangeText={(t) => setQuick((x) => ({ ...x, rate: t }))} />
 
                 <TouchableOpacity style={[S.btn, { marginTop: 22 }]} onPress={saveQuick}>
@@ -930,7 +1262,10 @@ export default function BillScreen({ route, navigation }) {
           </View>
         </View>
       </Modal>
-    </KeyboardAvoidingView>
+      <ScanSheet visible={scanOpen} onClose={() => setScanOpen(false)} onCode={scanned}
+        title="Point at the barcode"
+        note="Scan the same packet twice and the quantity goes up" />
+    </Screen>
   );
 }
 

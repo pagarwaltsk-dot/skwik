@@ -3,9 +3,9 @@ import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { fmt0 } from '../lib/money';
-import { Bar, MoreButton } from '../components/Chrome';
-import { showPurchase, showReports, showStock } from '../lib/features';
+import { fmt0, today } from '../lib/money';
+import { Bar, MoreButton, Screen } from '../components/Chrome';
+import { showExpenses, showPurchase, showRecon, showReports, showStock } from '../lib/features';
 import { C, S } from '../theme';
 
 const Tile = ({ label, onPress }) => (
@@ -17,7 +17,7 @@ const Tile = ({ label, onPress }) => (
 );
 
 export default function HomeScreen({ navigation }) {
-  const { org, pending, countPending, sendPending } = useApp();
+  const { org, pending, countPending, sendPending, isOwner } = useApp();
   const [sending, setSending] = useState(false);
   const [today, setToday] = useState({ total: 0, count: 0 });
   const [fyTotal, setFyTotal] = useState(0);
@@ -27,7 +27,7 @@ export default function HomeScreen({ navigation }) {
     let on = true;
     (async () => {
       countPending?.();
-      const d = new Date().toISOString().slice(0, 10);
+      const d = today();
       const { data } = await supabase.from('vouchers')
         .select('total').in('vtype', ['sale', 'estimate']).eq('vdate', d);
       if (on && data) {
@@ -56,6 +56,17 @@ export default function HomeScreen({ navigation }) {
       Alert.alert('Some could not be sent',
         `${r.sent} went through. ${r.failed} were refused by the server and are `
         + 'still here. Tell me the bill and I can look at it.');
+    } else if (r.renumbered?.length) {
+      // The bill was already in the books under the server's own number: the
+      // phone had given up waiting on a slow line after the server had in fact
+      // saved it. The customer is holding paper with the other number on it.
+      const one = r.renumbered[0];
+      Alert.alert('One bill has two numbers',
+        `Bill ${one.printed} is in your books as ${one.saved}`
+        + (r.renumbered.length > 1 ? `, and ${r.renumbered.length - 1} more like it` : '')
+        + '.\n\nThis happens when the line drops just as a bill is saved. Open it '
+        + 'under Past bills and tell the customer the correct number, or write him '
+        + 'a fresh one.');
     } else if (r.sent) {
       Alert.alert('Sent', `${r.sent} bill${r.sent === 1 ? '' : 's'} reached your books.`);
     }
@@ -71,8 +82,11 @@ export default function HomeScreen({ navigation }) {
     { label: 'Paid',      go: () => navigation.navigate('Money', { ptype: 'payment' }) },
     { label: 'Customers', go: () => navigation.navigate('Parties') },
     { label: 'Items',     go: () => navigation.navigate('Items') },
-    showReports(org) && { label: 'Reports', go: () => navigation.navigate('Reports') },
-    showStock(org)   && { label: 'Stock',   go: () => navigation.navigate('Stock') },
+    { label: 'Udhar',     go: () => navigation.navigate('Udhar') },
+    showExpenses(org) && isOwner && { label: 'Money out', go: () => navigation.navigate('Expenses') },
+    showReports(org)  && isOwner && { label: 'Reports',   go: () => navigation.navigate('Reports') },
+    showStock(org)    && { label: 'Stock',   go: () => navigation.navigate('Stock') },
+    showRecon(org)    && isOwner && { label: 'Supplier credit', go: () => navigation.navigate('Recon') },
   ].filter(Boolean);
 
   const rows = tiles.reduce((acc, t, i) => {
@@ -84,7 +98,7 @@ export default function HomeScreen({ navigation }) {
     ? Math.ceil((new Date(org.trial_ends_at) - new Date()) / 86400000) : null;
 
   return (
-    <View style={S.screen}>
+    <Screen>
       <Bar>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text numberOfLines={1} style={S.barName}>{org?.name}</Text>
@@ -167,6 +181,6 @@ export default function HomeScreen({ navigation }) {
         ))}
 
       </ScrollView>
-    </View>
+    </Screen>
   );
 }

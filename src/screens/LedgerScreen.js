@@ -1,14 +1,15 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
 import { supabase } from '../lib/supabase';
+import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, n2 } from '../lib/money';
 import { ledgerHtml } from '../lib/invoice';
-import { Head } from '../components/Chrome';
+import { Head, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 export default function LedgerScreen({ route, navigation }) {
@@ -16,16 +17,26 @@ export default function LedgerScreen({ route, navigation }) {
   const { org } = useApp();
   const [party, setParty] = useState(null);
   const [data, setData]   = useState({ rows: [], opening: 0, opening_type: 'owes_you' });
+  // An account that could not be fetched must never be drawn as zero. A
+  // shopkeeper standing at the counter reading "owes you ₹0" acts on it.
+  const [failed, setFailed] = useState(false);
 
   useFocusEffect(useCallback(() => {
+    let on = true;
     (async () => {
-      const [{ data: p }, { data: led }] = await Promise.all([
-        supabase.from('parties').select('*').eq('id', partyId).maybeSingle(),
-        supabase.rpc('party_ledger', { p_party: partyId }),
-      ]);
-      setParty(p);
-      if (led) setData(led);
+      try {
+        const [{ data: p, error: pe }, { data: led, error: le }] = await Promise.all([
+          supabase.from('parties').select('*').eq('id', partyId).maybeSingle(),
+          supabase.rpc('party_ledger', { p_party: partyId }),
+        ]);
+        if (!on) return;
+        if (pe || le || !led) { setFailed(true); return; }
+        setParty(p);
+        setData(led);
+        setFailed(false);
+      } catch (e) { if (on) setFailed(true); }
     })();
+    return () => { on = false; };
   }, [partyId]));
 
   const rows = data.rows || [];
@@ -40,10 +51,22 @@ export default function LedgerScreen({ route, navigation }) {
   const owes = balance >= 0;
 
   const share = async () => {
-    const html = ledgerHtml({ org, party, rows, opening: open,
-                              openingType: data.opening_type, balance });
-    const { uri } = await Print.printToFileAsync({ html });
-    await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send account' });
+    try {
+      if (!party) {
+        return Alert.alert('Not loaded yet', 'This account has not come down from the '
+          + 'server yet. Check your internet and open it again.');
+      }
+      const html = ledgerHtml({ org, party, rows, opening: open,
+                                openingType: data.opening_type, balance });
+      const { uri } = await Print.printToFileAsync({ html });
+      if (!(await Sharing.isAvailableAsync())) {
+        return Alert.alert('Nothing to share with',
+          'This phone has no app set up to receive the file.');
+      }
+      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send account' });
+    } catch (e) {
+      Alert.alert('Could not send', sayPlainly(e));
+    }
   };
 
   // EVERY LINE GOES SOMEWHERE.
@@ -90,12 +113,24 @@ export default function LedgerScreen({ route, navigation }) {
   );
 
   return (
-    <View style={S.screen}>
+    <Screen>
       <Head navigation={navigation} title={party?.name || ''} />
 
-      <Text style={{ fontSize: 12, color: C.muted, textAlign: 'center', marginTop: 10 }}>
-        Tap any amount to open the bill or the entry behind it.
-      </Text>
+      {failed ? (
+        <View style={{ margin: 12, padding: 12, backgroundColor: C.flagSoft,
+                       borderWidth: 1, borderColor: C.flagLine, borderRadius: 12 }}>
+          <Text style={{ fontSize: 13.5, fontWeight: '700', color: C.flagInk }}>
+            This account could not be loaded
+          </Text>
+          <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 3, lineHeight: 17 }}>
+            What you see below is not his balance. Check your internet and open it again.
+          </Text>
+        </View>
+      ) : (
+        <Text style={{ fontSize: 12, color: C.muted, textAlign: 'center', marginTop: 10 }}>
+          Tap any amount to open the bill or the entry behind it.
+        </Text>
+      )}
 
       <View style={{ margin: 16, padding: 15, borderRadius: 18, borderWidth: 1.5,
                      backgroundColor: owes ? C.redL : C.greenL,
@@ -163,6 +198,6 @@ export default function LedgerScreen({ route, navigation }) {
           <Text style={S.btnText}>SEND THIS ACCOUNT</Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </Screen>
   );
 }
