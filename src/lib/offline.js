@@ -68,7 +68,27 @@ export function looksOffline(e) {
       || m.includes('fetch')
       || m.includes('timeout')
       || m.includes('failed to connect')
-      || m.includes('connection');
+      || m.includes('connection')
+      // what Android itself says when the phone has wifi but no way out:
+      // NoRouteToHostException, UnknownHostException, ConnectException.
+      || m.includes('route to host')
+      || m.includes('unreachable')
+      || m.includes('unable to resolve host')
+      || m.includes('econnrefused')
+      || m.includes('econnreset');
+}
+
+// NOBODY SHOULD EVER READ A JAVA ERROR.
+//
+// When the phone cannot get out, Android hands up things like
+// "java.net.NoRouteToHostException: Host unreachable". A shopkeeper looking at
+// that has no idea his wifi is the problem, and assumes Skwik is broken.
+export function sayPlainly(e) {
+  if (looksOffline(e)) {
+    return 'Skwik could not reach the internet. Check your wifi or mobile data '
+         + 'and try once more. Nothing you typed has been lost.';
+  }
+  return String(e?.message || e || 'Something went wrong. Try once more.');
 }
 
 /* ---------------- the copy on the phone ---------------- */
