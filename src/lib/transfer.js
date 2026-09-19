@@ -9,12 +9,32 @@
 import { n2 } from './money';
 import { STATES } from './states';
 
+/* ===================== making sense of the bytes ===================== */
+
+// Tally writes its XML as UTF-16 more often than not. Read as ordinary text
+// that arrives with a NUL between every single letter, so "<ENVELOPE" looks
+// like "<\0E\0N\0V\0..." and nothing matches. Dropping the NULs turns it
+// straight back into readable XML. The marks Excel and Notepad leave at the
+// very start go the same way.
+export function cleanText(raw) {
+  let t = String(raw ?? '');
+  if (t.indexOf('\u0000') !== -1) t = t.replace(/\u0000/g, '');
+  return t.replace(/^[\uFEFF\uFFFE]+/, '');
+}
+
+// The first hundred or so readable characters, for showing him when we cannot
+// make head or tail of a file. Far more use than "could not read that file".
+export function peek(raw, n = 120) {
+  return cleanText(raw).replace(/\s+/g, ' ').trim().slice(0, n);
+}
+
 /* ===================== CSV, read ===================== */
 
 // A CSV a shopkeeper actually has is not a tidy CSV. It may be saved from
 // Excel with quoted fields, commas inside names, \r\n endings, and a stray
 // blank line at the end. All of that is handled here.
 export function parseCsv(text) {
+  text = cleanText(text);
   const rows = [];
   let row = [], field = '', quoted = false;
   const s = String(text || '').replace(/^﻿/, '');   // Excel's byte-order mark
@@ -105,7 +125,10 @@ const money = (x) => {
 
 export function itemsFromCsv(text) {
   const rows = parseCsv(text);
-  if (rows.length < 2) return { rows: [], problem: 'That file has no rows under the headings.' };
+  if (rows.length < 2) {
+    return { rows: [], problem: `That file has no rows under the headings. `
+      + `It begins: ${peek(text, 90)}` };
+  }
   const cols = mapColumns(rows[0], ['name', 'alias', 'hsn', 'unit', 'sale_price', 'price2',
                                     'purchase_price', 'gst_rate', 'opening_stock']);
   if (cols.name === undefined) {
@@ -132,7 +155,10 @@ export function itemsFromCsv(text) {
 
 export function partiesFromCsv(text) {
   const rows = parseCsv(text);
-  if (rows.length < 2) return { rows: [], problem: 'That file has no rows under the headings.' };
+  if (rows.length < 2) {
+    return { rows: [], problem: `That file has no rows under the headings. `
+      + `It begins: ${peek(text, 90)}` };
+  }
   const cols = mapColumns(rows[0], ['name', 'gstin', 'phone', 'address', 'state_name', 'opening_balance']);
   if (cols.name === undefined) {
     return { rows: [], problem: 'No column looks like the name. One heading must say Name or Party.' };
@@ -182,6 +208,7 @@ const nameAttr = (chunk) => {
 };
 
 export function itemsFromTallyXml(xml) {
+  xml = cleanText(xml);
   const out = [];
   for (const b of blocksOf(xml, 'STOCKITEM')) {
     const name = tagOf(b, 'NAME') || nameAttr(b);
@@ -203,10 +230,12 @@ export function itemsFromTallyXml(xml) {
       opening_stock: money(String(tagOf(b, 'OPENINGBALANCE')).replace(/[a-zA-Z]/g, '')),
     });
   }
-  return { rows: out, problem: out.length ? null : 'No stock items found in that file.' };
+  return { rows: out, problem: out.length ? null
+    : `No stock items in that file. It begins: ${peek(xml, 90)}` };
 }
 
 export function partiesFromTallyXml(xml) {
+  xml = cleanText(xml);
   const out = [];
   for (const b of blocksOf(xml, 'LEDGER')) {
     const name = tagOf(b, 'NAME') || nameAttr(b);
@@ -230,17 +259,21 @@ export function partiesFromTallyXml(xml) {
       opening_type: bal > 0 ? 'you_owe' : 'owes_you',
     });
   }
-  return { rows: out, problem: out.length ? null : 'No customers or suppliers found in that file.' };
+  return { rows: out, problem: out.length ? null
+    : 'No customers or suppliers in that file. Tally only counts a name as one '
+      + 'if it sits under Sundry Debtors or Sundry Creditors. '
+      + `It begins: ${peek(xml, 90)}` };
 }
 
-// Which kind of file did he just hand us?
+// Which kind of file did he just hand us? Only two answers matter — the
+// caller already knows whether it asked for items or for customers.
 export function sniff(text) {
-  const head = String(text || '').slice(0, 4000).toUpperCase();
-  if (head.includes('<ENVELOPE') || head.includes('<TALLYMESSAGE')) {
-    if (head.includes('<STOCKITEM')) return 'tally-items';
-    if (head.includes('<LEDGER')) return 'tally-parties';
-    return 'tally-unknown';
-  }
+  const t = cleanText(text);
+  const head = t.slice(0, 8000).toUpperCase();
+  if (head.includes('<ENVELOPE') || head.includes('<TALLYMESSAGE')
+      || head.includes('<STOCKITEM') || head.includes('<LEDGER')
+      || head.includes('<?XML')
+      || t.trimStart().startsWith('<')) return 'xml';
   return 'csv';
 }
 
