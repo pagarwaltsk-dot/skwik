@@ -187,65 +187,158 @@ export function partiesFromCsv(text) {
 
 // Tally's own export. Not a real XML parser — a tag reader, which is all that
 // is needed and cannot blow up on the odd characters Tally writes.
+//
+// Two things about real Tally files that catch people out. An item's name is
+// on the STOCKITEM tag itself, not in a <NAME> element. And most items carry
+// no HSN or GST rate of their own — those sit on the stock GROUP the item
+// belongs to, so the groups have to be read first and the item told to look
+// up its parent.
+
+// The tag must end right after its name, or carry a space before attributes.
+// Without that, asking for NAME also matches <NAME.LIST> and brings back
+// rubbish.
 const tagOf = (chunk, tag) => {
-  const m = chunk.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i'));
+  const m = chunk.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'i'));
   return m ? unesc(m[1].trim()) : '';
 };
+
 const unesc = (s) => String(s)
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-  .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#4;/g, '');
+  .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+  .replace(/&#\d+;/g, ' ')            // Tally's own markers, e.g. &#4;
+  .replace(/\s+/g, ' ').trim();
 
 const blocksOf = (xml, tag) => {
   const out = [];
-  const re = new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?</${tag}>`, 'gi');
+  const re = new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*?</${tag}>`, 'gi');
   let m;
   while ((m = re.exec(xml))) out.push(m[0]);
   return out;
 };
+
 const nameAttr = (chunk) => {
-  const m = chunk.match(/\bNAME\s*=\s*"([^"]*)"/i);
+  const m = chunk.match(/^<[A-Z.]+\s[^>]*?\bNAME\s*=\s*"([^"]*)"/i);
   return m ? unesc(m[1]) : '';
 };
 
+// "116.95/Doz", " 29.50 Doz", " 6", "-3450.03" — pull the number out of any of them.
+const numOf = (x) => {
+  const m = String(x ?? '').match(/-?[\d,]*\.?\d+/);
+  return m ? Number(m[0].replace(/,/g, '')) || 0 : 0;
+};
+
+// GST lives in repeated blocks, one per date it changed. Take the latest, then
+// prefer the IGST head — that is the whole rate. CGST alone is only half.
+function gstRateOf(chunk) {
+  const blocks = blocksOf(chunk, 'GSTDETAILS.LIST');
+  if (!blocks.length) return 0;
+
+  let best = null, bestFrom = '';
+  for (const b of blocks) {
+    const from = tagOf(b, 'APPLICABLEFROM') || '';
+    if (!best || from >= bestFrom) { best = b; bestFrom = from; }
+  }
+
+  let cgst = 0, igst = 0;
+  for (const r of blocksOf(best, 'RATEDETAILS.LIST')) {
+    const head = tagOf(r, 'GSTRATEDUTYHEAD').toUpperCase();
+    const rate = numOf(tagOf(r, 'GSTRATE'));
+    if (!rate) continue;
+    if (head.startsWith('IGST')) igst = rate;
+    else if (head.startsWith('CGST')) cgst = rate;
+  }
+  return igst || cgst * 2;
+}
+
+const hsnOf = (chunk) => String(tagOf(chunk, 'HSNCODE') || tagOf(chunk, 'GSTHSNCODE'))
+  .replace(/[^0-9]/g, '');
+
+// What a stock group can lend its items: an HSN code and a GST rate.
+function groupsFromTallyXml(xml) {
+  const map = {};
+  for (const b of blocksOf(xml, 'STOCKGROUP')) {
+    const name = nameAttr(b) || tagOf(b, 'NAME');
+    if (!name) continue;
+    map[name.toLowerCase()] = {
+      hsn: hsnOf(b),
+      gst_rate: gstRateOf(b),
+      parent: tagOf(b, 'PARENT'),
+    };
+  }
+  return map;
+}
+
+// Follow the chain upwards until something has the answer: an item may sit in
+// a group inside another group.
+function inherited(groups, parent, field, depth = 0) {
+  if (!parent || depth > 6) return '';
+  const g = groups[String(parent).toLowerCase()];
+  if (!g) return '';
+  if (g[field]) return g[field];
+  return inherited(groups, g.parent, field, depth + 1);
+}
+
 export function itemsFromTallyXml(xml) {
   xml = cleanText(xml);
+  const groups = groupsFromTallyXml(xml);
   const out = [];
+
   for (const b of blocksOf(xml, 'STOCKITEM')) {
-    const name = tagOf(b, 'NAME') || nameAttr(b);
+    const name = nameAttr(b) || tagOf(b, 'NAME');
     if (!name) continue;
-    const hsn = tagOf(b, 'HSNCODE') || tagOf(b, 'GSTHSNCODE');
-    // Tally writes the rate as "6" inside a duty-head block; take the first one
-    const rateM = b.match(/<GSTRATE>([\d.]+)<\/GSTRATE>/i);
-    const igstM = b.match(/<RATE>([\d.]+)<\/RATE>/i);
-    const gst = rateM ? Number(rateM[1]) * 2 : (igstM ? Number(igstM[1]) : 0);
+
+    const parent = tagOf(b, 'PARENT');
+    const hsn = hsnOf(b) || inherited(groups, parent, 'hsn');
+    const gst = gstRateOf(b) || inherited(groups, parent, 'gst_rate');
+
+    // The rate he sells at: the newest price level, if he keeps price lists.
+    let sale = 0;
+    let newest = '';
+    for (const pl of blocksOf(b, 'FULLPRICELIST.LIST')) {
+      const date = tagOf(pl, 'DATE') || '';
+      const rate = numOf(tagOf(pl, 'RATE'));
+      if (rate && date >= newest) { sale = rate; newest = date; }
+    }
+
+    const cost = numOf(tagOf(b, 'OPENINGRATE'));
+
     out.push({
       name,
-      alias: tagOf(b, 'ALIAS'),
-      hsn: String(hsn).replace(/[^0-9]/g, ''),
+      alias: '',
+      hsn,
       unit: (tagOf(b, 'BASEUNITS') || 'PCS').toUpperCase(),
-      sale_price: money(tagOf(b, 'STANDARDPRICE') || tagOf(b, 'OPENINGRATE')),
+      sale_price: sale || cost,
       price2: 0,
-      purchase_price: money(tagOf(b, 'STANDARDCOST')),
-      gst_rate: gst > 28 ? gst / 2 : gst,
-      opening_stock: money(String(tagOf(b, 'OPENINGBALANCE')).replace(/[a-zA-Z]/g, '')),
+      purchase_price: cost,
+      gst_rate: gst,
+      opening_stock: numOf(tagOf(b, 'OPENINGBALANCE')),
+      group: parent,
     });
   }
-  return { rows: out, problem: out.length ? null
+
+  if (out.length) return { rows: out, problem: null };
+  return { rows: [], problem: blocksOf(xml, 'LEDGER').length
+    ? 'That file holds customers and suppliers, not items. Use it under '
+      + '"Customers and suppliers" instead.'
     : `No stock items in that file. It begins: ${peek(xml, 90)}` };
 }
 
 export function partiesFromTallyXml(xml) {
   xml = cleanText(xml);
   const out = [];
+
   for (const b of blocksOf(xml, 'LEDGER')) {
-    const name = tagOf(b, 'NAME') || nameAttr(b);
+    const name = nameAttr(b) || tagOf(b, 'NAME');
     if (!name) continue;
+
     const parent = tagOf(b, 'PARENT').toLowerCase();
     // only people who owe money or are owed it — not Sales, Duties, Bank
     if (!/debtor|creditor/.test(parent)) continue;
+
     const gstin = (tagOf(b, 'PARTYGSTIN') || tagOf(b, 'GSTIN')).toUpperCase().replace(/\s/g, '');
     const code  = gstin.slice(0, 2);
-    const bal   = money(tagOf(b, 'OPENINGBALANCE'));
+    const bal   = numOf(tagOf(b, 'OPENINGBALANCE'));
+
     out.push({
       name,
       kind: /creditor/.test(parent) ? 'supplier' : 'customer',
@@ -259,7 +352,12 @@ export function partiesFromTallyXml(xml) {
       opening_type: bal > 0 ? 'you_owe' : 'owes_you',
     });
   }
-  return { rows: out, problem: out.length ? null
+
+  if (out.length) return { rows: out, problem: null };
+  return { rows: [], problem: blocksOf(xml, 'STOCKITEM').length
+    ? `That file holds ${blocksOf(xml, 'STOCKITEM').length} items and no customers. `
+      + 'In Tally, export the ledgers separately: Gateway → Chart of Accounts → '
+      + 'Ledgers → Export.'
     : 'No customers or suppliers in that file. Tally only counts a name as one '
       + 'if it sits under Sundry Debtors or Sundry Creditors. '
       + `It begins: ${peek(xml, 90)}` };
