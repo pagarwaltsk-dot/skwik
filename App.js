@@ -12,6 +12,8 @@ import RegisterScreen from './src/screens/RegisterScreen';
 import OnboardScreen from './src/screens/OnboardScreen';
 import HomeScreen    from './src/screens/HomeScreen';
 import BillScreen    from './src/screens/BillScreen';
+import BillsScreen   from './src/screens/BillsScreen';
+import TransferScreen from './src/screens/TransferScreen';
 import MoneyScreen   from './src/screens/MoneyScreen';
 import PartiesScreen from './src/screens/PartiesScreen';
 import LedgerScreen  from './src/screens/LedgerScreen';
@@ -46,6 +48,8 @@ function Routes() {
         <>
           <Stack.Screen name="Home"    component={HomeScreen} />
           <Stack.Screen name="Bill"    component={BillScreen} />
+          <Stack.Screen name="Bills"   component={BillsScreen} />
+          <Stack.Screen name="Transfer" component={TransferScreen} />
           <Stack.Screen name="Money"   component={MoneyScreen} />
           <Stack.Screen name="Parties" component={PartiesScreen} />
           <Stack.Screen name="Ledger"  component={LedgerScreen} />
