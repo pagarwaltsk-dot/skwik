@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { sayPlainly } from '../lib/offline';
 import { supabase, phoneToEmail } from '../lib/supabase';
 import { C, S } from '../theme';
 
@@ -22,7 +23,8 @@ export default function LoginScreen() {
     setBusy(false);
 
     if (error) {
-      Alert.alert(isNew ? 'Could not create account' : 'Could not log in', error.message);
+      Alert.alert(isNew ? 'Could not create account' : 'Could not log in',
+        sayPlainly(error));
       return;
     }
     if (isNew) {
