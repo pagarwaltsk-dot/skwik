@@ -4,6 +4,7 @@ import {
   BackHandler,
 } from 'react-native';
 import { useApp } from '../AppContext';
+import { sayPlainly } from '../lib/offline';
 import { STATES } from '../lib/states';
 import { C, S } from '../theme';
 
@@ -84,7 +85,7 @@ export default function RegisterScreen({ navigation }) {
     try {
       await register(d);
     } catch (e) {
-      Alert.alert('Could not register', e.message || String(e));
+      Alert.alert('Could not register', sayPlainly(e));
     }
   };
 
