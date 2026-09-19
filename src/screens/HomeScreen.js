@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
@@ -15,7 +15,8 @@ const Tile = ({ label, onPress }) => (
 );
 
 export default function HomeScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, pending, countPending, sendPending } = useApp();
+  const [sending, setSending] = useState(false);
   const [today, setToday] = useState({ total: 0, count: 0 });
   const [fyTotal, setFyTotal] = useState(0);
   const estimate = org?.mode === 'estimate';
@@ -23,6 +24,7 @@ export default function HomeScreen({ navigation }) {
   useFocusEffect(useCallback(() => {
     let on = true;
     (async () => {
+      countPending?.();
       const d = new Date().toISOString().slice(0, 10);
       const { data } = await supabase.from('vouchers')
         .select('total').in('vtype', ['sale', 'estimate']).eq('vdate', d);
@@ -38,7 +40,24 @@ export default function HomeScreen({ navigation }) {
       }
     })();
     return () => { on = false; };
-  }, [org?.is_composition]));
+  }, [org?.is_composition, countPending]));
+
+  // Bills written with no signal. Tapping tries them again there and then.
+  const pushNow = async () => {
+    setSending(true);
+    const r = await sendPending();
+    setSending(false);
+    if (r.stillOffline) {
+      Alert.alert('Still no internet',
+        'Your bills are safe on this phone. Try again when you have signal.');
+    } else if (r.failed) {
+      Alert.alert('Some could not be sent',
+        `${r.sent} went through. ${r.failed} were refused by the server and are `
+        + 'still here. Tell me the bill and I can look at it.');
+    } else if (r.sent) {
+      Alert.alert('Sent', `${r.sent} bill${r.sent === 1 ? '' : 's'} reached your books.`);
+    }
+  };
 
   const trialLeft = org?.trial_ends_at && org?.plan === 'trial'
     ? Math.ceil((new Date(org.trial_ends_at) - new Date()) / 86400000) : null;
@@ -57,6 +76,19 @@ export default function HomeScreen({ navigation }) {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 30 }}>
+        {pending > 0 && (
+          <TouchableOpacity onPress={pushNow} disabled={sending}
+            style={{ backgroundColor: C.flagSoft, borderWidth: 1, borderColor: C.flagLine,
+                     borderRadius: 12, padding: 12, marginBottom: 12 }}>
+            <Text style={{ fontSize: 13.5, fontWeight: '700', color: C.flagInk }}>
+              {pending} bill{pending === 1 ? '' : 's'} waiting on this phone
+            </Text>
+            <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 3 }}>
+              {sending ? 'Sending…' : 'Written with no internet. Tap to send them now.'}
+            </Text>
+          </TouchableOpacity>
+        )}
+
         {trialLeft !== null && (
           <View style={{ backgroundColor: trialLeft > 2 ? C.accentSoft : C.editSoft,
                          borderWidth: 1, borderColor: trialLeft > 2 ? '#C9E4DF' : '#E8D7A8',
@@ -85,7 +117,7 @@ export default function HomeScreen({ navigation }) {
           </View>
         )}
 
-        <View style={S.card}>
+        <TouchableOpacity style={S.card} onPress={() => navigation.navigate('Bills')}>
           <Text style={S.eyebrow}>Today</Text>
           <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
             <Text style={[{ flex: 1, fontSize: 30, fontWeight: '700', color: C.ink,
@@ -96,7 +128,10 @@ export default function HomeScreen({ navigation }) {
               {today.count} {today.count === 1 ? 'bill' : 'bills'}
             </Text>
           </View>
-        </View>
+          <Text style={{ fontSize: 12, fontWeight: '600', color: C.accent, marginTop: 8 }}>
+            See all bills ›
+          </Text>
+        </TouchableOpacity>
 
         <TouchableOpacity
           onPress={() => navigation.navigate('Bill', { vtype: 'sale' })}
@@ -107,15 +142,18 @@ export default function HomeScreen({ navigation }) {
         </TouchableOpacity>
 
         <View style={[S.row, { marginBottom: 10 }]}>
-          <Tile label="Purchase" onPress={() => navigation.navigate('Bill',  { vtype: 'purchase' })} />
-          <Tile label="Received" onPress={() => navigation.navigate('Money', { ptype: 'receipt' })} />
+          <Tile label="Past bills" onPress={() => navigation.navigate('Bills')} />
+          <Tile label="Purchase"   onPress={() => navigation.navigate('Bill',  { vtype: 'purchase' })} />
         </View>
         <View style={[S.row, { marginBottom: 10 }]}>
-          <Tile label="Paid"      onPress={() => navigation.navigate('Money', { ptype: 'payment' })} />
+          <Tile label="Received" onPress={() => navigation.navigate('Money', { ptype: 'receipt' })} />
+          <Tile label="Paid"     onPress={() => navigation.navigate('Money', { ptype: 'payment' })} />
+        </View>
+        <View style={[S.row, { marginBottom: 10 }]}>
           <Tile label="Customers" onPress={() => navigation.navigate('Parties')} />
+          <Tile label="Items"     onPress={() => navigation.navigate('Items')} />
         </View>
         <View style={S.row}>
-          <Tile label="Items" onPress={() => navigation.navigate('Items')} />
           {org?.stock_enabled
             ? <Tile label="Stock" onPress={() => navigation.navigate('Stock')} />
             : <View style={{ flex: 1 }} />}
