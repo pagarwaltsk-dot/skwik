@@ -8,12 +8,16 @@ import * as Sharing from 'expo-sharing';
 
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { computeBill, taxModeFor, fmt, fmt0, num, hsnApplies } from '../lib/money';
+import { computeBill, taxModeFor, fmt, fmt0, num, settle, hsnApplies } from '../lib/money';
 import { searchItems, parseQuery, highlightParts, tok } from '../lib/search';
 import { uqcShort } from '../lib/uqc';
 import { checkHsn, hsnExists } from '../lib/hsn';
 import { HsnField, UomField } from '../components/Pickers';
 import { invoiceHtml } from '../lib/invoice';
+import {
+  uuid, withTimeout, looksOffline, cacheItems, cacheParties,
+  cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue,
+} from '../lib/offline';
 import { C, S } from '../theme';
 
 // Matched letters shown marked, the way the estimate app does it.
@@ -29,16 +33,20 @@ const Marked = ({ text, toks, style }) => (
 
 export default function BillScreen({ route, navigation }) {
   const vtypeParam = route.params?.vtype || 'sale';
+  const editId = route.params?.voucherId || null;    // set when opening a saved bill
   const { org } = useApp();
   const estimateMode = org?.mode === 'estimate';
-  const vtype  = vtypeParam === 'sale' && estimateMode ? 'estimate' : vtypeParam;
+  // A saved bill keeps the kind it was saved as, whatever the screen was opened with.
+  const [loadedType, setLoadedType] = useState(null);
+  const vtype  = loadedType
+    || (vtypeParam === 'sale' && estimateMode ? 'estimate' : vtypeParam);
   const isOut  = vtype === 'sale' || vtype === 'estimate';     // going out of the shop
   const isBuy  = vtype === 'purchase';
 
   const [items, setItems]     = useState([]);
   const [parties, setParties] = useState([]);
 
-  const [custOpen, setCustOpen] = useState(true);
+  const [custOpen, setCustOpen] = useState(!route.params?.voucherId);
   const [cq, setCq]       = useState('');
   const [cust, setCust]   = useState(null);          // {id?, name, phone, state_code…}
   const [isCash, setIsCash] = useState(false);
@@ -53,6 +61,8 @@ export default function BillScreen({ route, navigation }) {
   const [showExtra, setShowExtra] = useState(false);
   const [supNo, setSupNo] = useState('');
   const [supDate, setSupDate] = useState(new Date().toISOString().slice(0, 10));
+  const [vdate, setVdate] = useState(new Date().toISOString().slice(0, 10));
+  const [loadingBill, setLoadingBill] = useState(!!route.params?.voucherId);
 
   const [busy, setBusy]   = useState(false);
   const [nudged, setNudged] = useState(false);
@@ -66,16 +76,71 @@ export default function BillScreen({ route, navigation }) {
   const focusCell = (key, which) =>
     setTimeout(() => cell.current[`${key}:${which}`]?.focus(), 60);
 
+  // Items and customers are kept on the phone as well, so this screen opens
+  // and bills can be written whether or not there is any signal.
+  const [offline, setOffline] = useState(false);
+  const newParty = useRef(null);     // a customer invented with no signal
+  const newItems = useRef([]);       // items added mid-bill with no signal
+
   useEffect(() => {
     (async () => {
-      const [i, p] = await Promise.all([
-        supabase.from('items').select('*').eq('is_active', true).order('name'),
-        supabase.from('parties').select('*').order('name'),
-      ]);
-      setItems(i.data || []);
-      setParties(p.data || []);
+      try {
+        const [i, p] = await withTimeout(Promise.all([
+          supabase.from('items').select('*').eq('is_active', true).order('name'),
+          supabase.from('parties').select('*').order('name'),
+        ]));
+        if (i.error || p.error) throw (i.error || p.error);
+        setItems(i.data || []);
+        setParties(p.data || []);
+        setOffline(false);
+        cacheItems(i.data || []);
+        cacheParties(p.data || []);
+      } catch (e) {
+        // no signal, or the server is not answering: use what we copied last time
+        const [ci, cp] = await Promise.all([cachedItems(), cachedParties()]);
+        setItems(ci); setParties(cp);
+        setOffline(true);
+      }
     })();
   }, []);
+
+  // Opening a bill that was already saved: put it back on the screen exactly
+  // as it was written, ready to be changed.
+  useEffect(() => {
+    if (!editId) return;
+    let alive = true;
+    (async () => {
+      const [{ data: v }, { data: ls }] = await Promise.all([
+        supabase.from('vouchers').select('*, parties(*)').eq('id', editId).maybeSingle(),
+        supabase.from('voucher_lines').select('*').eq('voucher_id', editId).order('line_no'),
+      ]);
+      if (!alive) return;
+      if (!v) { setLoadingBill(false);
+                return Alert.alert('Not found', 'That bill is no longer in your books.'); }
+
+      setLoadedType(v.vtype);
+      setVdate(v.vdate);
+      setCust(v.parties || { name: v.printed_name || 'CASH' });
+      setIsCash(!!v.is_cash);
+      setExtra(Number(v.extra_amount) ? String(v.extra_amount) : '');
+      setExtraNote(v.extra_note || '');
+      setShowExtra(Number(v.extra_amount) > 0);
+      setSupNo(v.supplier_invoice_no || '');
+      if (v.supplier_invoice_date) setSupDate(v.supplier_invoice_date);
+
+      setLines((ls || []).map((l) => {
+        seq.current += 1;
+        return {
+          key: seq.current, item_id: l.item_id, item_name: l.item_name,
+          hsn: l.hsn || '', unit: l.unit || 'PCS', gst_rate: Number(l.gst_rate) || 0,
+          qty: String(Number(l.qty)), rate: String(Number(l.rate)),
+          rateEdited: true, flag: !!l.flag, checked: !!l.checked,
+        };
+      }));
+      setLoadingBill(false);
+    })();
+    return () => { alive = false; };
+  }, [editId]);
 
   /* ---------------- customer ---------------- */
 
@@ -198,16 +263,28 @@ export default function BillScreen({ route, navigation }) {
     if (problem) return Alert.alert('HSN code', problem);
 
     const write = async () => {
-      const { data, error } = await supabase.from('items').insert({
+      const body = {
+        id: uuid(),
         org_id: org.id, name: quick.name.trim(), alias: quick.alias.trim(),
         unit: quick.unit, hsn: quick.hsn.trim(), gst_rate: num(quick.gst_rate),
         sale_price: isBuy ? 0 : num(quick.rate),
         purchase_price: isBuy ? num(quick.rate) : 0,
-      }).select().single();
-      if (error) return Alert.alert('Could not save', error.message);
-      setItems((xs) => [...xs, data]);
+        is_active: true,
+      };
+      let saved = body;
+      try {
+        const { data, error } = await withTimeout(
+          supabase.from('items').insert(body).select().single());
+        if (error) throw error;
+        saved = data;
+      } catch (e) {
+        if (!looksOffline(e)) return Alert.alert('Could not save', e.message || String(e));
+        newItems.current = [...newItems.current, body];   // saved when the line comes back
+        setOffline(true);
+      }
+      setItems((xs) => [...xs, saved]);
       setQuick(null);
-      addHit({ p: data, qty: quick.qty ? Number(quick.qty) : null, toks: [] });
+      addHit({ p: saved, qty: quick.qty ? Number(quick.qty) : null, toks: [] });
     };
     if (hsnApplies(org) && quick.hsn && !hsnExists(quick.hsn)) {
       return Alert.alert('Check this HSN', `${quick.hsn} is not in our list. Save it anyway?`,
@@ -221,16 +298,31 @@ export default function BillScreen({ route, navigation }) {
   const findOrCreateParty = async (name) => {
     const hit = parties.find((p) => p.name.toLowerCase() === name.toLowerCase());
     if (hit) return hit;
-    const { data, error } = await supabase.from('parties').insert({
+
+    // The phone decides the id, so the same customer cannot be created twice
+    // when the queue is sent.
+    const body = {
+      id: uuid(),
       org_id: org.id, name, kind: isBuy ? 'supplier' : 'customer',
       phone: cust?.phone || null,
       price_list: isBuy ? 1 : priceList,
       state_code: cust?.state_code || org.state_code,
       state_name: cust?.state_name || org.state_name,
-    }).select().single();
-    if (error) throw error;
-    setParties((ps) => [...ps, data]);
-    return data;
+    };
+
+    try {
+      const { data, error } = await withTimeout(
+        supabase.from('parties').insert(body).select().single());
+      if (error) throw error;
+      setParties((ps) => [...ps, data]);
+      return data;
+    } catch (e) {
+      if (!looksOffline(e)) throw e;
+      newParty.current = body;              // created when the line comes back
+      setParties((ps) => [...ps, body]);
+      setOffline(true);
+      return body;
+    }
   };
 
   const save = async (holdOnly) => {
@@ -256,7 +348,8 @@ export default function BillScreen({ route, navigation }) {
       const total = Math.round(exact);
 
       const payload = {
-        vtype, vdate: new Date().toISOString().slice(0, 10),
+        id: editId || uuid(),
+        vtype, vdate: editId ? vdate : new Date().toISOString().slice(0, 10),
         party_id: pty.id, printed_name: cust.name, is_cash: isCash,
         supplier_invoice_no: isBuy ? supNo : null,
         supplier_invoice_date: isBuy ? supDate : null,
@@ -272,14 +365,40 @@ export default function BillScreen({ route, navigation }) {
           amount: l.amount, flag: !!l.flag, checked: !!l.checked,
         })),
       };
-      const { data, error } = await supabase.rpc('save_voucher', { p: payload });
-      if (error) throw error;
+      // Try the server. If there is no signal the bill is written into a
+      // queue on this phone with its own number, printed straight away, and
+      // sent by itself the next time anything gets through.
+      let data, queued = false;
+      try {
+        const r = await withTimeout(supabase.rpc(
+          editId ? 'update_voucher' : 'save_voucher', { p: payload }));
+        if (r.error) throw r.error;
+        data = r.data;
+        setOffline(false);
+        flushQueue(supabase);            // we have signal; send anything waiting
+      } catch (e) {
+        if (!looksOffline(e)) throw e;
+        if (editId) {
+          throw new Error('Changing a bill needs the internet. '
+            + 'This bill is already saved and is safe — try again when you have signal.');
+        }
+        const localNo = await takeLocalNumber(org, vtype);
+        payload.voucher_no = localNo;
+        await queueAdd({
+          id: payload.id, kind: 'bill', payload,
+          newParty: newParty.current, newItems: newItems.current,
+        });
+        data = { voucher_no: localNo };
+        queued = true;
+        setOffline(true);
+      }
 
       const rec = {
         voucher: { ...payload, voucher_no: data.voucher_no || supNo,
                    place_of_supply_name: pty.state_name || org.state_name },
-        party: pty, lines: c.lines,
+        party: pty, lines: c.lines, queued,
       };
+      newParty.current = null; newItems.current = [];
       if (holdOnly) { setSaved(null); navigation.navigate('Home'); }
       else setSaved(rec);
     } catch (e) {
@@ -294,7 +413,9 @@ export default function BillScreen({ route, navigation }) {
   };
   const onPrint = () => Print.printAsync({ html: html() });
 
-  const docName = vtype === 'estimate' ? 'Estimate' : isBuy ? 'Purchase' : 'New Bill';
+  const docName = editId
+    ? (vtype === 'estimate' ? 'Editing estimate' : isBuy ? 'Editing purchase' : 'Editing bill')
+    : (vtype === 'estimate' ? 'Estimate' : isBuy ? 'Purchase' : 'New Bill');
 
   /* ---------------- going back ---------------- */
 
@@ -348,6 +469,15 @@ export default function BillScreen({ route, navigation }) {
           <Text style={[S.barTot, S.num]}>₹{fmt0(grand)}</Text>
         </View>
       </View>
+
+      {offline && (
+        <View style={{ backgroundColor: C.flagSoft, borderBottomWidth: 1,
+                       borderBottomColor: C.flagLine, paddingHorizontal: 12, paddingVertical: 7 }}>
+          <Text style={{ fontSize: 12.5, fontWeight: '600', color: C.flagInk }}>
+            No internet — carry on billing. It sends itself when the line comes back.
+          </Text>
+        </View>
+      )}
 
       {/* THE ENTRY LINE — one box, product and quantity together */}
       {!!cust && (
@@ -497,7 +627,11 @@ export default function BillScreen({ route, navigation }) {
                     ref={(r) => { cell.current[`${l.key}:qty`] = r; }}
                     selectTextOnFocus
                     returnKeyType="next" blurOnSubmit={false}
-                    onSubmitEditing={() => focusCell(l.key, 'rate')}
+                    onBlur={() => setLine(l.key, { qty: settle(l.qty) })}
+                    onSubmitEditing={() => {
+                      setLine(l.key, { qty: settle(l.qty) });
+                      focusCell(l.key, 'rate');
+                    }}
                     onChangeText={(t) => setLine(l.key, { qty: t })} />
                 </View>
                 <Text style={{ fontSize: 13, color: C.muted, paddingBottom: 12 }}>×</Text>
@@ -507,7 +641,11 @@ export default function BillScreen({ route, navigation }) {
                     ref={(r) => { cell.current[`${l.key}:rate`] = r; }}
                     selectTextOnFocus
                     returnKeyType="next" blurOnSubmit={false}
-                    onSubmitEditing={() => qRef.current?.focus()}
+                    onBlur={() => setLine(l.key, { rate: settle(l.rate) })}
+                    onSubmitEditing={() => {
+                      setLine(l.key, { rate: settle(l.rate) });
+                      qRef.current?.focus();
+                    }}
                     onChangeText={(t) => setLine(l.key, { rate: t, rateEdited: true })} />
                 </View>
                 <Text style={[S.amt, S.num, { paddingBottom: 11, minWidth: 74 }]}>
@@ -581,7 +719,9 @@ export default function BillScreen({ route, navigation }) {
         </TouchableOpacity>
         <TouchableOpacity onPress={() => save(false)} disabled={busy}
           style={[S.btn, busy && { backgroundColor: C.faint }]}>
-          <Text style={S.btnText}>{busy ? 'Saving…' : 'Save & send'}</Text>
+          <Text style={S.btnText}>
+            {busy ? 'Saving…' : editId ? 'Save changes' : 'Save & send'}
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -698,6 +838,12 @@ export default function BillScreen({ route, navigation }) {
             <Text style={{ fontSize: 13, color: C.muted, letterSpacing: 1 }}>
               {docName.toUpperCase()} {saved?.voucher?.voucher_no || ''}
             </Text>
+            {saved?.queued && (
+              <Text style={{ fontSize: 12.5, fontWeight: '600', color: C.flagInk, marginTop: 6 }}>
+                Saved on this phone. Give the customer the bill as usual — it
+                reaches your books by itself when the internet is back.
+              </Text>
+            )}
             <Text style={[{ fontSize: 30, fontWeight: '700', color: C.ink, marginTop: 6, marginBottom: 16 },
                           S.num]}>
               ₹{fmt0(saved?.voucher?.total || 0)}
