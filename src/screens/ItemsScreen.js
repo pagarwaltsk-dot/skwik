@@ -28,6 +28,7 @@ export default function ItemsScreen({ navigation }) {
   // Opening every item one by one to put prices up 5% is an evening's work.
   // Here the list itself becomes editable: type over the rates you want, or
   // move the whole lot by a percentage, and save once.
+  const [showGone, setShowGone] = useState(false);   // retired items
   const [bulk, setBulk]       = useState(false);
   const [draft, setDraft]     = useState({});     // item id -> the rate typed
   const [which, setWhich]     = useState('sale_price');
@@ -99,9 +100,32 @@ export default function ItemsScreen({ navigation }) {
       .then(({ data }) => setHistory(data || []));
   }, [edit?.id]);
 
-  const load = () => supabase.from('items').select('*').eq('is_active', true)
+  // Retired items are kept, never deleted — old bills must still be able to
+  // show what was sold and at what rate.
+  const load = () => supabase.from('items').select('*')
+    .eq('is_active', !showGone)
     .order('name').then(({ data }) => setRows(data || []));
-  useFocusEffect(useCallback(() => { load(); }, []));
+  useFocusEffect(useCallback(() => { load(); }, [showGone]));
+  useEffect(() => { load(); }, [showGone]);
+
+  const retire = (item, back) => {
+    const gone = !back;
+    Alert.alert(
+      gone ? `Stop using ${item.name}?` : `Use ${item.name} again?`,
+      gone
+        ? 'It disappears from billing and from this list. Nothing on a bill '
+          + 'already written changes, and you can bring it back any time.'
+        : 'It will show up while billing again.',
+      [{ text: 'Cancel' },
+       { text: gone ? 'Stop using it' : 'Bring it back',
+         style: gone ? 'destructive' : 'default',
+         onPress: async () => {
+           const { error } = await supabase.from('items')
+             .update({ is_active: back }).eq('id', item.id);
+           if (error) return Alert.alert('Could not save', error.message);
+           setEdit(null); load();
+         } }]);
+  };
 
   const save = async () => {
     if (!edit.name.trim()) return Alert.alert('Name needed', 'Type the item name.');
@@ -181,6 +205,15 @@ export default function ItemsScreen({ navigation }) {
         <TextInput style={S.input} placeholder="Search" placeholderTextColor={C.faint}
           value={q} onChangeText={setQ} />
       </View>
+
+      {!bulk && (
+        <TouchableOpacity onPress={() => setShowGone(!showGone)}
+          style={{ paddingHorizontal: 16, paddingBottom: 10 }}>
+          <Text style={{ fontSize: 13, fontWeight: '600', color: C.accent }}>
+            {showGone ? '‹ Back to the items you use' : 'Show items you stopped using'}
+          </Text>
+        </TouchableOpacity>
+      )}
 
       {bulk && (
         <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
@@ -368,8 +401,18 @@ export default function ItemsScreen({ navigation }) {
             )}
 
             <TouchableOpacity style={[S.btn, { marginTop: 26 }]} onPress={save}>
-              <Text style={S.btnText}>SAVE</Text>
+              <Text style={S.btnText}>Save</Text>
             </TouchableOpacity>
+
+            {!!edit.id && (
+              <TouchableOpacity onPress={() => retire(edit, edit.is_active === false)}
+                style={{ marginTop: 18, alignItems: 'center', paddingVertical: 10 }}>
+                <Text style={{ fontSize: 14.5, fontWeight: '700',
+                               color: edit.is_active === false ? C.accent : C.danger }}>
+                  {edit.is_active === false ? 'Use this item again' : 'Stop using this item'}
+                </Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity onPress={() => setEdit(null)}
               style={{ marginTop: 14, alignItems: 'center', paddingVertical: 10 }}>
               <Text style={{ fontSize: 16, fontWeight: '700', color: C.muted }}>Cancel</Text>

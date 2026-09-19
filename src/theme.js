@@ -38,7 +38,7 @@ export const C = {
   grey:     '#F4F6F8',
 };
 
-export const R = 12;
+export const R = 14;
 
 export const S = {
   screen:  { flex: 1, backgroundColor: C.bg },
@@ -97,6 +97,34 @@ export const S = {
   hint:    { fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 16 },
 
   row:     { flexDirection: 'row', alignItems: 'center', gap: 10 },
+
+  // ---- the small parts, so every screen says the same thing the same way ----
+  //
+  // One weight for a name (600), one for a number that matters (700), and
+  // nothing heavier anywhere. Uppercase is for section labels only. A pill is
+  // either a fact about the line (its unit) or something to press (change,
+  // note) — and those two never look alike.
+
+  // its unit: a fact, quiet, never pressed
+  unitPill: { fontSize: 10.5, letterSpacing: 0.4, fontWeight: '700', overflow: 'hidden',
+              backgroundColor: C.accentSoft, color: C.accent,
+              paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20 },
+
+  // something to press, sitting inside a line: outlined, never filled
+  tapPill: { borderWidth: 1, borderColor: C.greyB, borderStyle: 'dashed', borderRadius: 20,
+             paddingHorizontal: 10, paddingVertical: 3 },
+  tapPillText: { fontSize: 11, fontWeight: '600', color: C.muted },
+
+  // a whole row to press: the same shape, full width
+  wideBtn: { borderWidth: 1, borderColor: C.line, borderRadius: 12, paddingVertical: 14,
+             alignItems: 'center', backgroundColor: C.surface, marginBottom: 12 },
+  wideBtnText: { fontSize: 14.5, fontWeight: '600', color: C.muted },
+
+  // the box a number is typed into, with its name above it
+  cellLabel: { fontSize: 11.5, color: C.muted, marginBottom: 5 },
+  cell:      { fontSize: 16, color: C.ink, paddingHorizontal: 11, paddingVertical: 10,
+               borderWidth: 1, borderColor: C.line, borderRadius: 10,
+               backgroundColor: '#FFFFFF' },
   num:     { fontVariant: ['tabular-nums'] },
 
   // kept for screens not yet restyled

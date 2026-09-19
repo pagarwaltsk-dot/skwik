@@ -64,7 +64,8 @@ export function invoiceHtml({ org, voucher, party, lines }) {
   const itemRows = lines.map((l, i) => `
     <tr${l.flag ? ' style="background:#FFF6D9"' : ''}>
       <td>${i + 1}</td>
-      <td class="l"><b>${esc(l.item_name)}</b></td>
+      <td class="l"><b>${esc(l.item_name)}</b>${l.note
+        ? `<div style="font-size:9px;color:#444;font-style:italic">${esc(l.note)}</div>` : ''}</td>
       ${showHsn ? `<td class="rt">${esc(l.hsn || '')}</td>` : ''}
       <td class="rt">${fmt0(l.qty)} ${esc(uqcShort(l.unit))}</td>
       <td class="rt">${fmt(l.rate)}</td>

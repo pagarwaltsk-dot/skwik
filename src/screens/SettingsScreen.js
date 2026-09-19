@@ -58,16 +58,36 @@ export default function SettingsScreen({ navigation }) {
 
   // Bill numbering goes through the database, which refuses any number that
   // would repeat a bill already issued.
+  // April to March, the way a bill is labelled: 26-27.
+  const fyNow = () => {
+    const d = new Date();
+    const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
+    return `${String(y).slice(2)}-${String(y + 1).slice(2)}`;
+  };
+
+  const nextLooksLike = () => {
+    const pre = f.invoice_prefix || '';
+    const yr  = f.restart_each_year && f.year_in_prefix !== false ? `${fyNow()}/` : '';
+    return `${pre}${yr}${f.next_invoice_no || ''}`;
+  };
+
   const saveNumbering = async () => {
     const n = parseInt(String(f.next_invoice_no), 10);
     if (!n || n < 1) return Alert.alert('Check the number', 'The next bill number must be 1 or more.');
     setBusy(true);
     const { error } = await supabase.rpc('set_invoice_start',
       { p_next: n, p_prefix: f.invoice_prefix || '' });
+    if (!error) {
+      // Starting again each April is kept on the firm, not in the counter.
+      await supabase.from('orgs').update({
+        restart_each_year: !!f.restart_each_year,
+        year_in_prefix: f.year_in_prefix !== false,
+      }).eq('id', org.id);
+    }
     setBusy(false);
     if (error) return Alert.alert('Could not change numbering', error.message);
     await reloadOrg();
-    Alert.alert('Saved', `Your next bill will be ${f.invoice_prefix || ''}${n}.`);
+    Alert.alert('Saved', `Your next bill will be ${nextLooksLike()}.`);
   };
 
   return (
@@ -130,15 +150,93 @@ export default function SettingsScreen({ navigation }) {
         </TouchableOpacity>
       </Section>
 
+      <Section title="Printing"
+               note="A4 for the file and the accountant. A roll for the counter — the bill is drawn again for the narrow paper, not squeezed onto it.">
+        {[['a4', 'A4 sheet', 'The full tax invoice'],
+          ['80', '80mm roll', 'The usual counter printer'],
+          ['58', '58mm roll', 'The small handheld ones']].map(([v, name, note]) => {
+          const on = String(f.print_width || 'a4') === v;
+          return (
+            <TouchableOpacity key={v} onPress={() => setF((x) => ({ ...x, print_width: v }))}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12,
+                       borderBottomWidth: 1, borderBottomColor: C.line }}>
+              <View style={{ width: 22, height: 22, borderRadius: 11, borderWidth: 1.5,
+                             alignItems: 'center', justifyContent: 'center',
+                             borderColor: on ? C.accent : C.line }}>
+                {on && <View style={{ width: 11, height: 11, borderRadius: 6,
+                                      backgroundColor: C.accent }} />}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 15, fontWeight: '600', color: C.ink }}>{name}</Text>
+                <Text style={{ fontSize: 12, color: C.muted, marginTop: 1 }}>{note}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+        <TouchableOpacity style={[S.btn, { marginTop: 16 }]} disabled={busy}
+          onPress={async () => {
+            setBusy(true);
+            const { error } = await supabase.from('orgs')
+              .update({ print_width: f.print_width || 'a4' }).eq('id', org.id);
+            setBusy(false);
+            if (error) return Alert.alert('Could not save', error.message);
+            await reloadOrg();
+            Alert.alert('Saved', 'Bills will print on that from now on.');
+          }}>
+          <Text style={S.btnText}>Save printing</Text>
+        </TouchableOpacity>
+      </Section>
+
       <Section title="Bill numbering"
                note="Carry on from the number your book has reached. A number you have already used will be refused.">
         <Field label="PREFIX (OPTIONAL)" value={f.invoice_prefix} onChange={set('invoice_prefix')}
                placeholder="SGS/26-27/" autoCapitalize="characters" />
         <Field label="NEXT BILL NUMBER" value={String(f.next_invoice_no ?? '')}
                onChange={set('next_invoice_no')} keyboardType="number-pad" />
-        <View style={{ padding: 12, backgroundColor: C.soft, borderRadius: 14, marginTop: 10 }}>
+        <TouchableOpacity
+          onPress={() => setF((x) => ({ ...x, restart_each_year: !x.restart_each_year }))}
+          style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 14 }}>
+          <View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1.5,
+                         alignItems: 'center', justifyContent: 'center', marginTop: 1,
+                         borderColor: f.restart_each_year ? C.accent : C.line,
+                         backgroundColor: f.restart_each_year ? C.accent : 'transparent' }}>
+            <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>
+              {f.restart_each_year ? '✓' : ''}
+            </Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 14.5, fontWeight: '600', color: C.ink }}>
+              Start again at 1 every April
+            </Text>
+            <Text style={{ fontSize: 12, color: C.muted, marginTop: 2, lineHeight: 17 }}>
+              Skwik does the switch on the 1st of April by itself. Bills already
+              written keep the numbers they were given.
+            </Text>
+          </View>
+        </TouchableOpacity>
+
+        {!!f.restart_each_year && (
+          <TouchableOpacity
+            onPress={() => setF((x) => ({ ...x, year_in_prefix: x.year_in_prefix === false }))}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12,
+                     paddingLeft: 32 }}>
+            <View style={{ width: 20, height: 20, borderRadius: 6, borderWidth: 1.5,
+                           alignItems: 'center', justifyContent: 'center',
+                           borderColor: f.year_in_prefix !== false ? C.accent : C.line,
+                           backgroundColor: f.year_in_prefix !== false ? C.accent : 'transparent' }}>
+              <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                {f.year_in_prefix !== false ? '✓' : ''}
+              </Text>
+            </View>
+            <Text style={{ flex: 1, fontSize: 14, color: C.ink }}>
+              Put the year on the bill — {fyNow()}/1
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        <View style={{ padding: 12, backgroundColor: C.soft, borderRadius: 14, marginTop: 14 }}>
           <Text style={{ fontSize: 13, fontWeight: '700', color: C.ink }}>
-            Your next bill will be: {(f.invoice_prefix || '') + (f.next_invoice_no || '')}
+            Your next bill will be: {nextLooksLike()}
           </Text>
         </View>
         <TouchableOpacity style={[S.btn, { marginTop: 14 }]} onPress={saveNumbering} disabled={busy}>

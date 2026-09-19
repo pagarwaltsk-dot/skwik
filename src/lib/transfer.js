@@ -574,6 +574,98 @@ export function tallyVouchersXml({ org, vouchers, linesByVoucher }) {
 </ENVELOPE>`;
 }
 
+/* ===================== a copy he owns ===================== */
+
+// THE WHOLE BOOK, IN ONE FILE.
+//
+// Everything lives on a server he does not own, and the honest answer to
+// "what happens to my books if you disappear?" has to be better than a shrug.
+// This writes the lot — firm, items, customers, every bill and every line,
+// receipts and payments — into a single file he can keep on his own phone,
+// his own Drive, his own computer.
+//
+// It is also the way back. Every bill carries the id it had, and saving a
+// bill that is already there does nothing, so a restore can be run twice, or
+// half way, or on top of a book that is partly rebuilt, without making
+// duplicates.
+
+export const BACKUP_VERSION = 1;
+
+export function buildBackup({ org, items, parties, vouchers, lines, payments }) {
+  return JSON.stringify({
+    skwik_backup: BACKUP_VERSION,
+    taken_at: new Date().toISOString(),
+    firm: org?.name || '',
+    counts: {
+      items: (items || []).length,
+      parties: (parties || []).length,
+      vouchers: (vouchers || []).length,
+      lines: (lines || []).length,
+      payments: (payments || []).length,
+    },
+    org: org || null,
+    items: items || [],
+    parties: parties || [],
+    vouchers: vouchers || [],
+    lines: lines || [],
+    payments: payments || [],
+  }, null, 1);
+}
+
+// Read a backup file back in, and say plainly what is in it before a single
+// row is written.
+export function readBackup(text) {
+  let d;
+  try { d = JSON.parse(cleanText(text)); }
+  catch (e) { return { problem: `That is not a Skwik backup. It begins: ${peek(text, 80)}` }; }
+
+  if (!d || !d.skwik_backup) {
+    return { problem: 'That file is not a Skwik backup.' };
+  }
+  if (d.skwik_backup > BACKUP_VERSION) {
+    return { problem: 'That backup was made by a newer version of Skwik than this one.' };
+  }
+  return {
+    problem: null,
+    taken_at: d.taken_at || '',
+    firm: d.firm || '',
+    org: d.org || null,
+    items: d.items || [],
+    parties: d.parties || [],
+    vouchers: d.vouchers || [],
+    lines: d.lines || [],
+    payments: d.payments || [],
+  };
+}
+
+// Turn a backed-up bill back into something save_voucher understands. Its own
+// id and number go with it, so the bill comes back as it was and cannot be
+// written twice.
+export function backupVoucherPayload(v, linesFor) {
+  return {
+    id: v.id,
+    vtype: v.vtype,
+    vdate: v.vdate,
+    voucher_no: v.voucher_no,
+    party_id: v.party_id || null,
+    printed_name: v.printed_name,
+    is_cash: !!v.is_cash,
+    supplier_invoice_no: v.supplier_invoice_no,
+    supplier_invoice_date: v.supplier_invoice_date,
+    place_of_supply_code: v.place_of_supply_code,
+    tax_mode: v.tax_mode,
+    taxable: v.taxable, cgst: v.cgst, sgst: v.sgst, igst: v.igst,
+    extra_amount: v.extra_amount, extra_note: v.extra_note,
+    round_off: v.round_off, total: v.total, notes: v.notes,
+    lines: (linesFor || []).map((l) => ({
+      item_id: l.item_id, item_name: l.item_name, hsn: l.hsn, unit: l.unit,
+      qty: l.qty, rate: l.rate, gst_rate: l.gst_rate,
+      taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
+      amount: l.amount, flag: l.flag, checked: l.checked,
+    })),
+  };
+}
+
 /* ===================== the blank forms ===================== */
 
 export const ITEMS_TEMPLATE =

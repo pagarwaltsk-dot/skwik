@@ -10,6 +10,7 @@ import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt0 } from '../lib/money';
 import { invoiceHtml } from '../lib/invoice';
+import { thermalHtml } from '../lib/receipt';
 import { C, S } from '../theme';
 
 // EVERY BILL EVER WRITTEN. Find one, read it, send it again, fix it, remove it.
@@ -87,12 +88,16 @@ export default function BillsScreen({ navigation }) {
     setLines(data || []);
   };
 
-  const html = () => invoiceHtml({
-    org,
-    voucher: { ...open, place_of_supply_name: open.parties?.state_name || org?.state_name || '' },
-    party: open.parties,
-    lines: lines || [],
-  });
+  const html = () => {
+    const args = {
+      org,
+      voucher: { ...open, place_of_supply_name: open.parties?.state_name || org?.state_name || '' },
+      party: open.parties,
+      lines: lines || [],
+    };
+    const paper = String(org?.print_width || 'a4');
+    return paper === 'a4' ? invoiceHtml(args) : thermalHtml({ ...args, width: paper });
+  };
 
   const resend = async () => {
     if (!lines) return;

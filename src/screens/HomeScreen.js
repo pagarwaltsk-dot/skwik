@@ -153,11 +153,13 @@ export default function HomeScreen({ navigation }) {
           <Tile label="Customers" onPress={() => navigation.navigate('Parties')} />
           <Tile label="Items"     onPress={() => navigation.navigate('Items')} />
         </View>
-        <View style={S.row}>
+        <View style={[S.row, { marginBottom: 10 }]}>
+          <Tile label="Reports" onPress={() => navigation.navigate('Reports')} />
           {org?.stock_enabled
             ? <Tile label="Stock" onPress={() => navigation.navigate('Stock')} />
             : <View style={{ flex: 1 }} />}
         </View>
+
       </ScrollView>
     </View>
   );

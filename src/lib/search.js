@@ -2,6 +2,7 @@
 //
 //   "thali 12"        12 thali. A number at the END is always the quantity.
 //   "thali x12"       the same, said plainly.
+//   "thali 45x2"      90 thali. A sum at the end is worked out as you type.
 //   "thali 12 pc"     the same again, with the unit spoken.
 //   "5 ltr cooker"    a product whose own name has a number: put it first.
 //   ".75 kg"          a fraction. Weighed goods float to the top, because
@@ -9,6 +10,8 @@
 //
 // Every word you type must appear somewhere in the product — its name, its
 // search words, its local names. Order never matters.
+
+import { calc } from './money';
 
 export const tok = (s) =>
   String(s || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -23,6 +26,15 @@ export function parseQuery(raw) {
   const out = { full: q, base: q, qty: null, bare: false };
   if (!q) return out;
   let m;
+
+  // thali 45x2  /  cooker 12+8  —  a sum at the end, worked out as he types,
+  // so the count he does on paper can be typed exactly as he does it.
+  const N = '(?:\\d+(?:\\.\\d+)?|\\.\\d+)';
+  m = q.match(new RegExp(`^(.*?)\\s+(${N}(?:\\s*[x*+\\-/]\\s*${N})+)$`));
+  if (m && m[1]) {
+    const v = calc(m[2]);
+    if (v > 0) { out.base = m[1].trim(); out.qty = v; return out; }
+  }
 
   // thali x12  /  thali * 12
   m = q.match(/^(.*?)\s*[x*]\s*(\d+(?:\.\d+)?|\.\d+)$/);

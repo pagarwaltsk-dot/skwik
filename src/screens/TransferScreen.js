@@ -14,6 +14,7 @@ import {
   sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml,
   itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml,
   looksMangled, base64ToBytes, decodeBytes,
+  buildBackup, readBackup, backupVoucherPayload,
   ITEMS_TEMPLATE, PARTIES_TEMPLATE,
 } from '../lib/transfer';
 import { C, S } from '../theme';
@@ -193,6 +194,116 @@ export default function TransferScreen({ navigation }) {
     finally { setBusy(''); }
   };
 
+  /* ---------------- the whole book ---------------- */
+
+  // Everything, in one file he keeps himself. Fetched in pieces so a big
+  // book does not arrive as one enormous request.
+  const saveBackup = async () => {
+    setBusy('backup');
+    try {
+      const grab = async (table, cols = '*') => {
+        const out = [];
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await supabase.from(table).select(cols)
+            .range(from, from + 999);
+          if (error) throw error;
+          out.push(...(data || []));
+          if (!data || data.length < 1000) break;
+        }
+        return out;
+      };
+
+      const [items, parties, vouchers, lines, payments] = await Promise.all([
+        grab('items'), grab('parties'), grab('vouchers'),
+        grab('voucher_lines'), grab('payments'),
+      ]);
+
+      const text = buildBackup({ org, items, parties, vouchers, lines, payments });
+      const day = new Date().toISOString().slice(0, 10);
+      await send(`skwik-backup-${day}.json`, text, 'application/json');
+
+      Alert.alert('Backup made',
+        `${vouchers.length} bills, ${items.length} items, ${parties.length} names.\n\n`
+        + 'Keep it somewhere that is not this phone — Drive, or send it to '
+        + 'yourself on WhatsApp.');
+    } catch (e) {
+      Alert.alert('Could not make the backup', e.message || String(e));
+    } finally { setBusy(''); }
+  };
+
+  // Putting a book back. Safe to run twice: a bill that is already there is
+  // left alone rather than written again.
+  const restoreBackup = async () => {
+    setBusy('restore');
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: false, type: '*/*',
+      });
+      if (res.canceled) return;
+      const asset = res.assets?.[0];
+      if (!asset?.uri) return;
+
+      const b = readBackup(await readPickedFile(asset.uri));
+      if (b.problem) return Alert.alert('Cannot use that file', b.problem);
+
+      Alert.alert(
+        `Restore ${b.firm || 'this book'}?`,
+        `Taken ${String(b.taken_at).slice(0, 10)}.\n\n`
+        + `${b.vouchers.length} bills, ${b.items.length} items, ${b.parties.length} names.\n\n`
+        + 'Anything already here is left as it is. Nothing is deleted.',
+        [{ text: 'Not now' },
+         { text: 'Put it back', onPress: () => doRestore(b) }]);
+    } catch (e) {
+      Alert.alert('Could not read that file', e.message || String(e));
+    } finally { setBusy(''); }
+  };
+
+  const doRestore = async (b) => {
+    setBusy('saving');
+    try {
+      const mine = (r) => ({ ...r, org_id: org.id });
+
+      for (let i = 0; i < b.parties.length; i += 100) {
+        const { error } = await supabase.from('parties')
+          .upsert(b.parties.slice(i, i + 100).map(mine), { onConflict: 'id' });
+        if (error) throw error;
+      }
+      for (let i = 0; i < b.items.length; i += 100) {
+        const { error } = await supabase.from('items')
+          .upsert(b.items.slice(i, i + 100).map(mine), { onConflict: 'id' });
+        if (error) throw error;
+      }
+
+      const byVoucher = {};
+      b.lines.forEach((l) => { (byVoucher[l.voucher_id] = byVoucher[l.voucher_id] || []).push(l); });
+
+      let bills = 0, already = 0;
+      for (const v of b.vouchers) {
+        const { data, error } = await supabase.rpc('save_voucher',
+          { p: backupVoucherPayload(v, byVoucher[v.id]) });
+        if (error) throw error;
+        if (data?.already) already++; else bills++;
+      }
+
+      // Receipts and payments he entered himself. The ones a cash bill wrote
+      // are left out — saving the bill writes those again by itself.
+      const manual = b.payments.filter((pm) => !pm.ref_voucher_id);
+      for (let i = 0; i < manual.length; i += 100) {
+        const { error } = await supabase.from('payments')
+          .upsert(manual.slice(i, i + 100).map(mine), { onConflict: 'id' });
+        if (error) throw error;
+      }
+
+      Alert.alert('Put back',
+        `${bills} bills restored${already ? `, ${already} were already here` : ''}.\n`
+        + `${b.items.length} items and ${b.parties.length} names checked.`);
+    } catch (e) {
+      Alert.alert('Stopped part way',
+        `${e.message || String(e)}\n\nWhat went back before the problem is saved. `
+        + 'Running the restore again carries on from there without duplicating anything.');
+    } finally { setBusy(''); }
+  };
+
   /* ---------------- in ---------------- */
 
   const pick = async (what) => {
@@ -361,6 +472,20 @@ export default function TransferScreen({ navigation }) {
           note="Your whole item list, in the same shape it can be brought back in." />
         <Row label="Customers and suppliers" busyKey="parties" onPress={exportParties} tone="quiet"
           note="Names, GST numbers, phones and balances." />
+
+        <View style={{ height: 26 }} />
+
+        <Text style={S.eyebrow}>Your own copy</Text>
+        <Text style={{ fontSize: 13, color: C.muted, marginBottom: 6, lineHeight: 19 }}>
+          Your book lives on Skwik's server. This is your own copy of all of
+          it, in one file, that nobody can take away. Worth making one every
+          month, and keeping it off this phone.
+        </Text>
+
+        <Row label="Save a full backup" busyKey="backup" onPress={saveBackup}
+          note="Firm, items, customers, every bill and every line, receipts and payments." />
+        <Row label="Put a backup back" busyKey="restore" onPress={restoreBackup} tone="quiet"
+          note="Adds anything missing. Nothing here is deleted, and a bill already in your books is left alone." />
 
         <View style={{ height: 26 }} />
 

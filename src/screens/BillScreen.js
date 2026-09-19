@@ -14,6 +14,7 @@ import { uqcShort } from '../lib/uqc';
 import { checkHsn, hsnExists } from '../lib/hsn';
 import { HsnField, UomField } from '../components/Pickers';
 import { invoiceHtml } from '../lib/invoice';
+import { thermalHtml } from '../lib/receipt';
 import {
   uuid, withTimeout, looksOffline, cacheItems, cacheParties,
   cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue,
@@ -134,7 +135,7 @@ export default function BillScreen({ route, navigation }) {
           key: seq.current, item_id: l.item_id, item_name: l.item_name,
           hsn: l.hsn || '', unit: l.unit || 'PCS', gst_rate: Number(l.gst_rate) || 0,
           qty: String(Number(l.qty)), rate: String(Number(l.rate)),
-          rateEdited: true, flag: !!l.flag, checked: !!l.checked,
+          rateEdited: true, flag: !!l.flag, checked: !!l.checked, note: l.note || '',
         };
       }));
       setLoadingBill(false);
@@ -191,7 +192,7 @@ export default function BillScreen({ route, navigation }) {
       key: seq.current, item_id: h.p.id, item_name: h.p.name, hsn: h.p.hsn || '',
       unit: h.p.unit || 'PCS', gst_rate: Number(h.p.gst_rate) || 0,
       qty: h.qty == null ? '' : String(h.qty), rate: String(rate || ''),
-      rateEdited: false, flag: false, checked: false,
+      rateEdited: false, flag: false, checked: false, note: '',
     };
     setLines((ls) => [line, ...ls]);                 // newest at the TOP
     setQ('');
@@ -363,6 +364,7 @@ export default function BillScreen({ route, navigation }) {
           qty: num(l.qty), rate: num(l.rate), gst_rate: l.gst_rate,
           taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
           amount: l.amount, flag: !!l.flag, checked: !!l.checked,
+          note: (l.note || '').trim() || null,
         })),
       };
       // Try the server. If there is no signal the bill is written into a
@@ -406,7 +408,12 @@ export default function BillScreen({ route, navigation }) {
     } finally { setBusy(false); }
   };
 
-  const html = () => invoiceHtml({ org, voucher: saved.voucher, party: saved.party, lines: saved.lines });
+  // A4 for the file, a roll for the counter. The shop says which in Settings.
+  const paper = String(org?.print_width || 'a4');
+  const html = () => (paper === 'a4'
+    ? invoiceHtml({ org, voucher: saved.voucher, party: saved.party, lines: saved.lines })
+    : thermalHtml({ org, voucher: saved.voucher, party: saved.party, lines: saved.lines,
+                    width: paper }));
   const onShare = async () => {
     const { uri } = await Print.printToFileAsync({ html: html() });
     await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send' });
@@ -479,7 +486,9 @@ export default function BillScreen({ route, navigation }) {
         </View>
       )}
 
-      {/* THE ENTRY LINE — one box, product and quantity together */}
+      {/* THE ENTRY LINE — one box, product and quantity together.
+          Its key is the arrow, not the tick: every box on a bill carries you
+          forward to the next one, so they all show the same thing. */}
       {!!cust && (
         <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                        borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -489,7 +498,7 @@ export default function BillScreen({ route, navigation }) {
             placeholder="Type item and quantity — thali 12"
             placeholderTextColor={C.faint}
             value={q} onChangeText={setQ}
-            returnKeyType="done" blurOnSubmit={false}
+            returnKeyType="next" blurOnSubmit={false}
             onSubmitEditing={() => {
               if (hits.length) addHit(hits[0]);
               else if (q.trim()) setQuick({ name: parsed.base || parsed.full, alias: '',
@@ -574,30 +583,43 @@ export default function BillScreen({ route, navigation }) {
               borderLeftWidth: (l.flag || l.checked) ? 4 : 1,
               borderLeftColor: l.flag ? C.flag : l.checked ? C.ok : C.line }]}>
 
-              <View style={[S.row, { alignItems: 'flex-start', gap: 4, marginBottom: 10 }]}>
-                <TouchableOpacity onPress={() => toggleCheck(l.key)} accessibilityLabel="I have re-checked this line"
-                  style={{ borderWidth: 1.5, borderRadius: 7, paddingHorizontal: 6, paddingVertical: 3,
-                           borderColor: l.checked ? C.ok : C.line,
+              {/* the name line: what it is, and the two things you can do to it */}
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+                             marginBottom: 12 }}>
+                <TouchableOpacity onPress={() => toggleCheck(l.key)}
+                  accessibilityLabel="I have re-checked this line"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
+                  style={{ width: 24, height: 24, borderWidth: 1.5, borderRadius: 7,
+                           alignItems: 'center', justifyContent: 'center', marginTop: 1,
+                           borderColor: l.checked ? C.ok : C.greyB,
                            backgroundColor: l.checked ? C.ok : 'transparent' }}>
-                  <Text style={{ fontSize: 15, fontWeight: '700', color: l.checked ? '#fff' : C.greyB }}>✓</Text>
+                  <Text style={{ fontSize: 14, fontWeight: '700',
+                                 color: l.checked ? '#fff' : C.greyB }}>✓</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity onPress={() => toggleFlag(l.key)} accessibilityLabel="Highlight this line on the bill"
-                  style={{ paddingHorizontal: 3, paddingTop: 1 }}>
-                  <Text style={{ fontSize: 21, color: l.flag ? C.flag : C.greyB }}>{l.flag ? '★' : '☆'}</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={{ flex: 1, paddingLeft: 4 }}
-                  onPress={() => { setSwapFor(swapFor === l.key ? null : l.key); setSq(''); }}>
-                  <Text numberOfLines={2} style={S.lineNm}>
-                    {l.item_name}
-                    <Text style={{ fontSize: 10, fontWeight: '600', color: C.muted }}>{'  change'}</Text>
+                <TouchableOpacity onPress={() => toggleFlag(l.key)}
+                  accessibilityLabel="Highlight this line on the bill"
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                  style={{ paddingHorizontal: 2 }}>
+                  <Text style={{ fontSize: 20, color: l.flag ? C.flag : C.greyB }}>
+                    {l.flag ? '★' : '☆'}
                   </Text>
-                  <Text style={[S.chip, { alignSelf: 'flex-start', marginTop: 4 }]}>{uqcShort(l.unit)}</Text>
                 </TouchableOpacity>
+
+                <View style={{ flex: 1, minWidth: 0, paddingLeft: 2 }}>
+                  <Text numberOfLines={2} style={S.lineNm}>{l.item_name}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                    <TouchableOpacity style={S.tapPill}
+                      onPress={() => { setSwapFor(swapFor === l.key ? null : l.key); setSq(''); }}>
+                      <Text style={S.tapPillText}>change</Text>
+                    </TouchableOpacity>
+                    <Text style={S.unitPill}>{uqcShort(l.unit)}</Text>
+                  </View>
+                </View>
 
                 <TouchableOpacity onPress={() => removeLine(l.key)} accessibilityLabel="Remove line"
-                  style={{ paddingHorizontal: 6, paddingVertical: 2 }}>
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  style={{ paddingHorizontal: 4 }}>
                   <Text style={{ fontSize: 22, color: C.danger }}>×</Text>
                 </TouchableOpacity>
               </View>
@@ -622,8 +644,8 @@ export default function BillScreen({ route, navigation }) {
 
               <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8 }}>
                 <View style={{ flex: 1 }}>
-                  <Text style={S.label}>Qty</Text>
-                  <TextInput style={[S.input, S.num]} keyboardType="numeric" value={String(l.qty)}
+                  <Text style={S.cellLabel}>Qty</Text>
+                  <TextInput style={[S.cell, S.num]} keyboardType="numeric" value={String(l.qty)}
                     ref={(r) => { cell.current[`${l.key}:qty`] = r; }}
                     selectTextOnFocus
                     returnKeyType="next" blurOnSubmit={false}
@@ -634,10 +656,10 @@ export default function BillScreen({ route, navigation }) {
                     }}
                     onChangeText={(t) => setLine(l.key, { qty: t })} />
                 </View>
-                <Text style={{ fontSize: 13, color: C.muted, paddingBottom: 12 }}>×</Text>
+                <Text style={{ fontSize: 14, color: C.muted, paddingBottom: 11 }}>×</Text>
                 <View style={{ flex: 1 }}>
-                  <Text style={S.label}>Rate</Text>
-                  <TextInput style={[S.input, S.num]} keyboardType="numeric" value={String(l.rate)}
+                  <Text style={S.cellLabel}>Rate</Text>
+                  <TextInput style={[S.cell, S.num]} keyboardType="numeric" value={String(l.rate)}
                     ref={(r) => { cell.current[`${l.key}:rate`] = r; }}
                     selectTextOnFocus
                     returnKeyType="next" blurOnSubmit={false}
@@ -648,10 +670,25 @@ export default function BillScreen({ route, navigation }) {
                     }}
                     onChangeText={(t) => setLine(l.key, { rate: t, rateEdited: true })} />
                 </View>
-                <Text style={[S.amt, S.num, { paddingBottom: 11, minWidth: 74 }]}>
-                  {amt ? fmt0(amt) : '–'}
+                <Text style={[S.amt, S.num, { paddingBottom: 10, minWidth: 74 }]}>
+                  {amt ? `₹${fmt0(amt)}` : '–'}
                 </Text>
               </View>
+
+              {/* a word about this line, printed under it on the bill */}
+              {l.noteOpen || l.note ? (
+                <TextInput
+                  style={[S.cell, { marginTop: 10, paddingVertical: 9, fontSize: 14 }]}
+                  placeholder="Size, colour, anything the customer should see"
+                  placeholderTextColor={C.faint} value={l.note || ''} autoFocus={!l.note}
+                  onChangeText={(t) => setLine(l.key, { note: t })} />
+              ) : (
+                <TouchableOpacity style={[S.tapPill, { alignSelf: 'flex-start', marginTop: 10,
+                                                       paddingVertical: 6, paddingHorizontal: 12 }]}
+                  onPress={() => setLine(l.key, { noteOpen: true })}>
+                  <Text style={S.tapPillText}>+ note</Text>
+                </TouchableOpacity>
+              )}
             </View>
           );
         })}
@@ -671,6 +708,7 @@ export default function BillScreen({ route, navigation }) {
 
         {!!lines.length && (
           <View style={S.card}>
+            <Text style={S.eyebrow}>Totals</Text>
             <Row k="Items total" v={fmt(calc.taxable)} />
             {mode === 'cgst_sgst' && (<><Row k="CGST" v={fmt(calc.cgst)} /><Row k="SGST" v={fmt(calc.sgst)} /></>)}
             {mode === 'igst' && <Row k="IGST" v={fmt(calc.igst)} />}
@@ -680,7 +718,7 @@ export default function BillScreen({ route, navigation }) {
             {!showExtra ? (
               <TouchableOpacity onPress={() => setShowExtra(true)} style={{ paddingTop: 8 }}>
                 <Text style={{ fontSize: 13, fontWeight: '600', color: C.accent }}>
-                  + Add freight or other charge
+                  + Freight or other charge
                 </Text>
               </TouchableOpacity>
             ) : (
