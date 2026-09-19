@@ -44,6 +44,8 @@ export default function MoreScreen({ navigation }) {
       </View>
 
       <View style={{ marginTop: 10 }}>
+        <Item label="Past bills"            onPress={() => navigation.navigate('Bills')} />
+        <Item label="Import &amp; export"       onPress={() => navigation.navigate('Transfer')} />
         <Item label="Settings"              onPress={() => navigation.navigate('Settings')} />
         <Item label="Items"                 onPress={() => navigation.navigate('Items')} />
         <Item label="Customers & suppliers" onPress={() => navigation.navigate('Parties')} />
