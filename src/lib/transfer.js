@@ -22,10 +22,79 @@ export function cleanText(raw) {
   return t.replace(/^[\uFEFF\uFFFE]+/, '');
 }
 
+// WHEN THE PHONE HANDS BACK NONSENSE.
+//
+// Tally writes its XML as UTF-16. Android reads files as UTF-8 unless told
+// otherwise, and the two do not agree: the mark at the start of the file comes
+// back as a pair of question marks and the rest arrives with a hole between
+// every letter. Rather than argue with the phone, we take the raw bytes and
+// work out the encoding ourselves, which is the only way to be sure.
+
+// Did the text come back mangled, or is it fine as it is?
+export function looksMangled(text) {
+  const head = String(text ?? '').slice(0, 400);
+  return head.indexOf('\u0000') !== -1 || head.indexOf('\uFFFD') !== -1;
+}
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+export function base64ToBytes(b64) {
+  const s = String(b64 || '').replace(/[^A-Za-z0-9+/]/g, '');
+  const out = new Uint8Array((s.length * 3) >> 2);
+  let o = 0, acc = 0, bits = 0;
+  for (let i = 0; i < s.length; i++) {
+    acc = (acc << 6) | B64.indexOf(s[i]);
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out[o++] = (acc >> bits) & 0xFF; }
+  }
+  return out.subarray(0, o);
+}
+
+// Bytes in, readable text out. Handles UTF-16 either way round, with or
+// without a mark at the start, and plain UTF-8.
+export function decodeBytes(bytes) {
+  const b = bytes;
+  if (!b || !b.length) return '';
+
+  const utf16 = (start, little) => {
+    const parts = [];
+    const chunk = 8192;
+    const codes = new Array(chunk);
+    let n = 0;
+    for (let i = start; i + 1 < b.length; i += 2) {
+      codes[n++] = little ? (b[i] | (b[i + 1] << 8)) : ((b[i] << 8) | b[i + 1]);
+      if (n === chunk) { parts.push(String.fromCharCode.apply(null, codes)); n = 0; }
+    }
+    if (n) parts.push(String.fromCharCode.apply(null, codes.slice(0, n)));
+    return parts.join('');
+  };
+
+  if (b[0] === 0xFF && b[1] === 0xFE) return utf16(2, true);    // UTF-16, low byte first
+  if (b[0] === 0xFE && b[1] === 0xFF) return utf16(2, false);   // UTF-16, high byte first
+
+  // No mark, but a hole after every letter means UTF-16 all the same.
+  let holes = 0, looked = 0;
+  for (let i = 1; i < Math.min(b.length, 400); i += 2) { looked++; if (b[i] === 0) holes++; }
+  if (looked && holes / looked > 0.8) return utf16(0, true);
+
+  // Plain bytes. Tally masters are ASCII in practice, and anything higher is
+  // stitched back together here rather than lost.
+  const parts = [];
+  const chunk = 8192;
+  for (let i = 0; i < b.length; i += chunk) {
+    parts.push(String.fromCharCode.apply(null, b.subarray(i, i + chunk)));
+  }
+  let t = parts.join('');
+  try { t = decodeURIComponent(escape(t)); } catch (e) { /* already readable */ }
+  return t;
+}
+
 // The first hundred or so readable characters, for showing him when we cannot
 // make head or tail of a file. Far more use than "could not read that file".
 export function peek(raw, n = 120) {
-  return cleanText(raw).replace(/\s+/g, ' ').trim().slice(0, n);
+  const t = cleanText(raw);
+  const shown = t.replace(/\s+/g, ' ').trim().slice(0, n);
+  return `${shown || '(nothing readable)'}  [${String(raw ?? '').length} characters read]`;
 }
 
 /* ===================== CSV, read ===================== */
