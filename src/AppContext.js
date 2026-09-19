@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { supabase, phoneToEmail } from './lib/supabase';
 import { STATES } from './lib/states';
+import { cacheOrg, cachedOrg, noteServerCounters, queueCount, flushQueue } from './lib/offline';
 
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
@@ -10,29 +11,51 @@ export function AppProvider({ children }) {
   const [org, setOrg]         = useState(null);
   const [loading, setLoading] = useState(true);
   const [registering, setRegistering] = useState(false);
+  const [pending, setPending] = useState(0);        // bills waiting on this phone
 
   const loadOrg = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { setOrg(null); return null; }
 
-    const { data: prof } = await supabase
-      .from('profiles').select('org_id').eq('id', user.id).maybeSingle();
+    try {
+      const { data: prof } = await supabase
+        .from('profiles').select('org_id').eq('id', user.id).maybeSingle();
 
-    if (!prof?.org_id) { setOrg(null); return null; }
+      if (!prof?.org_id) { setOrg(null); return null; }
 
-    const { data: o } = await supabase
-      .from('orgs').select('*').eq('id', prof.org_id).maybeSingle();
+      const { data: o } = await supabase
+        .from('orgs').select('*').eq('id', prof.org_id).maybeSingle();
 
-    setOrg(o || null);
-    return o || null;
+      if (o) { cacheOrg(o); noteServerCounters(o); }
+      setOrg(o || null);
+      return o || null;
+    } catch (e) {
+      // no signal: the firm as it was last seen is enough to keep billing
+      const o = await cachedOrg();
+      setOrg(o);
+      return o;
+    }
   }, []);
+
+  // How many bills are sitting on this phone, and a way to push them.
+  const countPending = useCallback(async () => {
+    const n = await queueCount();
+    setPending(n);
+    return n;
+  }, []);
+
+  const sendPending = useCallback(async () => {
+    const r = await flushQueue(supabase);
+    await countPending();
+    return r;
+  }, [countPending]);
 
   useEffect(() => {
     let alive = true;
     supabase.auth.getSession().then(async ({ data }) => {
       if (!alive) return;
       setSession(data.session);
-      if (data.session) await loadOrg();
+      if (data.session) { await loadOrg(); await sendPending(); }
       setLoading(false);
     });
 
@@ -137,6 +160,7 @@ export function AppProvider({ children }) {
 
   return (
     <Ctx.Provider value={{ session, org, loading, registering, register, reloadOrg: loadOrg,
+                           pending, countPending, sendPending,
                            signOut: () => supabase.auth.signOut() }}>
       {children}
     </Ctx.Provider>
