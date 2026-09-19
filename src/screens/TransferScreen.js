@@ -5,6 +5,7 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
+import * as LegacyFS from 'expo-file-system/legacy';
 
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
@@ -30,6 +31,27 @@ const RANGES = [
 ];
 
 const firstOfMonth = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+
+// READING THE FILE HE PICKED.
+//
+// Android hands a picked file over as a content:// address rather than a real
+// path, and the two ways of reading one do not work in the same places. Inside
+// Expo Go the newer reader is fenced off from anything outside the app's own
+// folder, which is exactly where a picked file lands. So: try the modern way,
+// and if it will not have it, go through Android's own content reader, which
+// always can. One of the two always works.
+async function readPickedFile(uri) {
+  let firstProblem;
+  try {
+    return await new File(uri).text();
+  } catch (e) { firstProblem = e; }
+
+  try {
+    return await LegacyFS.readAsStringAsync(uri, { encoding: 'utf8' });
+  } catch (e) {
+    throw firstProblem || e;
+  }
+}
 
 function rangeDates(k) {
   const now = new Date();
@@ -156,16 +178,18 @@ export default function TransferScreen({ navigation }) {
   const pick = async (what) => {
     setBusy(what === 'items' ? 'in-items' : 'in-parties');
     try {
+      // Left where it is on purpose. Copying it into the app's cache is what
+      // makes Expo Go refuse to read it, and Tally's XML is often reported as
+      // a plain unknown file, so nothing is filtered out by type either.
       const res = await DocumentPicker.getDocumentAsync({
-        copyToCacheDirectory: true,
-        type: ['text/csv', 'text/comma-separated-values', 'text/plain',
-               'application/xml', 'text/xml', 'application/vnd.ms-excel', '*/*'],
+        copyToCacheDirectory: false,
+        type: '*/*',
       });
       if (res.canceled) return;
       const asset = res.assets?.[0];
       if (!asset?.uri) return Alert.alert('Could not open that', 'No file came back.');
 
-      const text = await new File(asset.uri).text();
+      const text = await readPickedFile(asset.uri);
       const kind = sniff(text);
 
       let read;
@@ -181,7 +205,12 @@ export default function TransferScreen({ navigation }) {
       setReady({ what, rows: read.rows, name: asset.name || 'the file',
                  kind: kind === 'csv' ? 'a spreadsheet' : 'a Tally export' });
     } catch (e) {
-      Alert.alert('Could not read that file', e.message || String(e));
+      const msg = String(e?.message || e);
+      Alert.alert('Could not read that file',
+        /permission/i.test(msg)
+          ? 'Android would not let Skwik open that file. Copy it into your '
+            + 'phone\'s Downloads folder and pick it from there.'
+          : msg);
     } finally { setBusy(''); }
   };
 
