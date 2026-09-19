@@ -3,7 +3,7 @@
     "name": "Skwik",
     "slug": "skwik",
     "scheme": "skwik",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "backgroundColor": "#FAF9F5",
@@ -14,7 +14,7 @@
     ],
     "android": {
       "package": "com.skwik.billing",
-      "versionCode": 1,
+      "versionCode": 2,
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -33,11 +33,6 @@
     "androidStatusBar": {
       "barStyle": "dark-content",
       "backgroundColor": "#FAF9F5"
-    },
-    "extra": {
-      "eas": {
-        "projectId": "5115ad52-fc75-467b-9e88-aee4fd044ffc"
-      }
     }
   }
 }
