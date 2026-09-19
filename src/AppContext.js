@@ -12,6 +12,10 @@ export function AppProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [registering, setRegistering] = useState(false);
   const [pending, setPending] = useState(0);        // bills waiting on this phone
+  // True while we are fetching the firm after a login. Without it there is a
+  // moment where there is a session but no firm yet, and the app takes that to
+  // mean "this login has no shop" and flashes the set-up screen.
+  const [checking, setChecking] = useState(false);
 
   const loadOrg = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -61,7 +65,12 @@ export function AppProvider({ children }) {
 
     const { data: sub } = supabase.auth.onAuthStateChange(async (_e, s) => {
       setSession(s);
-      if (s) await loadOrg(); else setOrg(null);
+      if (s) {
+        setChecking(true);
+        try { await loadOrg(); } finally { setChecking(false); }
+      } else {
+        setOrg(null);
+      }
     });
     return () => { alive = false; sub.subscription.unsubscribe(); };
   }, [loadOrg]);
@@ -159,8 +168,8 @@ export function AppProvider({ children }) {
   };
 
   return (
-    <Ctx.Provider value={{ session, org, loading, registering, register, reloadOrg: loadOrg,
-                           pending, countPending, sendPending,
+    <Ctx.Provider value={{ session, org, loading, registering, checking, register,
+                           reloadOrg: loadOrg, pending, countPending, sendPending,
                            signOut: () => supabase.auth.signOut() }}>
       {children}
     </Ctx.Provider>

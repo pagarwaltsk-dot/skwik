@@ -26,9 +26,11 @@ import SettingsScreen from './src/screens/SettingsScreen';
 const Stack = createNativeStackNavigator();
 
 function Routes() {
-  const { session, org, loading, registering } = useApp();
+  const { session, org, loading, registering, checking } = useApp();
 
-  if (loading || registering) {
+  // The set-up screen is only for a login with genuinely no shop behind it —
+  // never for the second it takes to find out.
+  if (loading || registering || (session && checking && !org)) {
     return (
       <View style={{ flex: 1, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator size="large" color={C.green} />

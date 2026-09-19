@@ -9,7 +9,9 @@
     "backgroundColor": "#FAF9F5",
     "primaryColor": "#0B7A6B",
     "icon": "./assets/icon.png",
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "android": {
       "package": "com.skwik.billing",
       "versionCode": 1,
@@ -31,6 +33,11 @@
     "androidStatusBar": {
       "barStyle": "dark-content",
       "backgroundColor": "#FAF9F5"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "5115ad52-fc75-467b-9e88-aee4fd044ffc"
+      }
     }
   }
 }
