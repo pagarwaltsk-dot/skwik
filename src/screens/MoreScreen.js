@@ -63,7 +63,7 @@ export default function MoreScreen({ navigation }) {
           Skwik
         </Text>
         <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>Smooth & Quick</Text>
-        <Text style={{ fontSize: 10.5, color: C.muted, marginTop: 2, opacity: 0.8 }}>version 1.0</Text>
+        <Text style={{ fontSize: 10.5, color: C.muted, marginTop: 2, opacity: 0.8 }}>version 1.0.1</Text>
       </View>
       </ScrollView>
     </View>
