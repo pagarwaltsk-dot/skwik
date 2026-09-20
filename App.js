@@ -11,6 +11,7 @@ import { C } from './src/theme';
 
 import WelcomeScreen  from './src/screens/WelcomeScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
+import ForgotScreen   from './src/screens/ForgotScreen';
 import OnboardScreen from './src/screens/OnboardScreen';
 import HomeScreen    from './src/screens/HomeScreen';
 import BillScreen    from './src/screens/BillScreen';
@@ -96,6 +97,7 @@ function Routes() {
         <>
           <Stack.Screen name="Welcome"  component={WelcomeScreen} />
           <Stack.Screen name="Register" component={RegisterScreen} />
+          <Stack.Screen name="Forgot"   component={ForgotScreen} />
         </>
       ) : !org ? (
         <Stack.Screen name="Onboard" component={OnboardScreen} />
