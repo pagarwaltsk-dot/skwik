@@ -1,10 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Modal, Platform, BackHandler,
+  Linking,
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
+import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import {
@@ -43,6 +46,7 @@ export default function BillScreen({ route, navigation }) {
   const vtypeParam = route.params?.vtype || 'sale';
   const editId = route.params?.voucherId || null;    // set when opening a saved bill
   const { org } = useApp();
+  const insets = useSafeAreaInsets();
   const estimateMode = org?.mode === 'estimate';
   // A saved bill keeps the kind it was saved as, whatever the screen was opened with.
   const [loadedType, setLoadedType] = useState(null);
@@ -598,6 +602,53 @@ export default function BillScreen({ route, navigation }) {
     const { uri } = await Print.printToFileAsync({ html: html() });
     await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send' });
   };
+
+  // STRAIGHT INTO HIS CHAT.
+  //
+  // WhatsApp will open a named person's chat from a link, but it will NOT
+  // carry a file in with it — no app can hand WhatsApp an attachment and a
+  // recipient at the same time; only the sharing sheet can attach a file, and
+  // the sharing sheet cannot choose the person. So there are two ways out of
+  // this screen, and they do different jobs:
+  //
+  //   the chat      opens his own conversation with the figures written out,
+  //                 no picking a name from a list, no typing
+  //   the PDF       the sharing sheet, where he picks the chat himself
+  //
+  // Most counters want the first: the customer wants to know what he owes,
+  // and the printed copy is already in his hand.
+  const waNumber = () => {
+    const raw = String(saved?.party?.phone || '').replace(/\D/g, '');
+    if (!raw) return null;
+    if (raw.length === 10) return `91${raw}`;             // an Indian number as everyone writes it
+    if (raw.length === 12 && raw.startsWith('91')) return raw;
+    if (raw.length > 12) return raw.slice(-12);
+    return raw;
+  };
+
+  const onWhatsApp = async () => {
+    const to = waNumber();
+    const v = saved?.voucher || {};
+    const body = [
+      `${org?.name || 'Bill'}`,
+      `${docName.replace('Editing ', '')} ${v.voucher_no || ''}`.trim(),
+      `Amount: ₹${fmt0(v.total || 0)}`,
+      v.vdate ? `Date: ${String(v.vdate).split('-').reverse().join('/')}` : null,
+      '',
+      'Thank you.',
+    ].filter((x) => x !== null).join('\n');
+
+    const url = to
+      ? `whatsapp://send?phone=${to}&text=${encodeURIComponent(body)}`
+      : `whatsapp://send?text=${encodeURIComponent(body)}`;
+    try {
+      await Linking.openURL(url);
+    } catch (e) {
+      Alert.alert('WhatsApp did not open',
+        to ? 'This phone may not have WhatsApp installed. Use “Send the PDF” instead.'
+           : 'Use “Send the PDF” instead.');
+    }
+  };
   const onPrint = () => Print.printAsync({ html: html() });
 
   const docName = editId
@@ -627,10 +678,23 @@ export default function BillScreen({ route, navigation }) {
     return true;
   };
 
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', leave);
+  // ONLY WHILE THIS SCREEN IS THE ONE IN FRONT.
+  //
+  // A bill screen stays alive underneath whatever is opened on top of it, so a
+  // listener registered for as long as it is mounted goes on answering the
+  // phone's back button from the ledger, from Stock, from anywhere — which is
+  // how "Leave this bill?" ended up appearing on screens that have no bill on
+  // them. useFocusEffect ties it to being in front instead of to being alive.
+  //
+  // The handler is read through a ref so it always runs the newest `leave`
+  // without the listener being torn down and rebuilt on every keystroke.
+  const leaveRef = useRef(leave);
+  leaveRef.current = leave;
+  useFocusEffect(useCallback(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress',
+      () => leaveRef.current());
     return () => sub.remove();
-  });
+  }, []));
 
   /* ---------------- screen ---------------- */
 
@@ -780,6 +844,7 @@ export default function BillScreen({ route, navigation }) {
       )}
 
       <ScrollView keyboardShouldPersistTaps="handled"
+                  style={{ flex: 1 }}
                   contentContainerStyle={{ paddingBottom: 30 }}>
 
         {!lines.length && !!cust && (
@@ -1416,7 +1481,8 @@ export default function BillScreen({ route, navigation }) {
       {/* ---------- saved ---------- */}
       <Modal visible={!!saved} transparent animationType="slide">
         <View style={{ flex: 1, backgroundColor: '#3B3A35EE', justifyContent: 'flex-end' }}>
-          <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 14, borderTopRightRadius: 14, padding: 20 }}>
+          <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 18, borderTopRightRadius: 18,
+                         padding: 20, paddingBottom: 20 + Math.max(insets.bottom, 10) }}>
             <Text style={{ fontSize: 13, color: C.muted, letterSpacing: 1 }}>
               {docName.toUpperCase()} {saved?.voucher?.voucher_no || ''}
             </Text>
@@ -1430,12 +1496,29 @@ export default function BillScreen({ route, navigation }) {
                           S.num]}>
               ₹{fmt0(saved?.voucher?.total || 0)}
             </Text>
-            <TouchableOpacity style={[S.btn, { backgroundColor: C.wa }]} onPress={onShare}>
-              <Text style={S.btnText}>Send on WhatsApp</Text>
+            <TouchableOpacity style={[S.btn, { backgroundColor: C.wa }]} onPress={onWhatsApp}>
+              <Text style={S.btnText}>
+                {saved?.party?.phone
+                  ? `WhatsApp ${String(saved.party.name || '').split(' ')[0]}`
+                  : 'Send on WhatsApp'}
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[S.btnGhost, { marginTop: 10, paddingVertical: 14 }]} onPress={onPrint}>
-              <Text style={[S.ghostText, { fontSize: 16 }]}>Print</Text>
-            </TouchableOpacity>
+            {!saved?.party?.phone && (
+              <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 16 }}>
+                No phone number on his record, so you will have to pick the chat.
+                Put his number under Customers and it opens straight into it.
+              </Text>
+            )}
+            <View style={[S.row, { marginTop: 10, gap: 10 }]}>
+              <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
+                onPress={onShare}>
+                <Text style={[S.ghostText, { fontSize: 15 }]}>Send the PDF</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
+                onPress={onPrint}>
+                <Text style={[S.ghostText, { fontSize: 15 }]}>Print</Text>
+              </TouchableOpacity>
+            </View>
             <TouchableOpacity onPress={() => { setSaved(null); navigation.navigate('Home'); }}
               style={{ marginTop: 16, alignItems: 'center', paddingVertical: 10 }}>
               <Text style={{ fontSize: 16, fontWeight: '600', color: C.muted }}>Done</Text>

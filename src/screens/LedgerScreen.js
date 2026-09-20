@@ -144,31 +144,10 @@ export default function LedgerScreen({ route, navigation }) {
         </Text>
       </View>
 
-      {!!party && (
-        <View style={[S.row, { marginHorizontal: 16, marginBottom: 14 }]}>
-          <Text style={[S.label, { marginRight: 10 }]}>PRICE LIST</Text>
-          {[1, 2].map((n) => {
-            const on = (Number(party.price_list) === 2 ? 2 : 1) === n;
-            const nm = n === 1 ? (org?.price1_name || 'Wholesale') : (org?.price2_name || 'Retail');
-            return (
-              <TouchableOpacity key={n}
-                onPress={async () => {
-                  const { error } = await supabase.from('parties')
-                    .update({ price_list: n }).eq('id', party.id);
-                  if (!error) setParty((p) => ({ ...p, price_list: n }));
-                }}
-                style={{ flex: 1, paddingVertical: 7, marginLeft: 6, borderRadius: 9,
-                         alignItems: 'center', borderWidth: 1.5,
-                         borderColor: on ? C.green : C.greyB,
-                         backgroundColor: on ? C.greenL : C.card }}>
-                <Text style={{ fontSize: 12.5, fontWeight: '800', color: on ? C.greenD : C.muted }}>
-                  {nm}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      )}
+      {/* The price list a customer is on belongs on his record, under
+          Customers, where it is set once and deliberately. A statement of
+          account is for reading what he owes — not for changing how he is
+          charged, which a stray tap here did silently to every future bill. */}
 
       <View style={[S.row, { marginHorizontal: 16, borderBottomWidth: 2,
                              borderBottomColor: C.ink, paddingBottom: 8 }]}>

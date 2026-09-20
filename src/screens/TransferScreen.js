@@ -8,12 +8,14 @@ import { File, Paths } from 'expo-file-system';
 import { readPickedFile } from '../lib/pickfile';
 
 import { supabase } from '../lib/supabase';
+import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, today } from '../lib/money';
 import {
   sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml,
   priceLevelsInTally,
   itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml,
+  paymentsToCsv, expensesToCsv, balancesToCsv, stockToCsv, bookToCsv,
   looksMangled, base64ToBytes, decodeBytes,
   buildBackup, readBackup, backupVoucherPayload,
   ITEMS_TEMPLATE, PARTIES_TEMPLATE,
@@ -137,6 +139,116 @@ export default function TransferScreen({ navigation }) {
       await send('skwik-bill-lines.csv', billLinesToCsv(rows), 'text/csv');
     } catch (e) { Alert.alert('Could not send', e.message || String(e)); }
     finally { setBusy(''); }
+  };
+
+  /* ---------------- everything, organised ---------------- */
+
+  // ONE JOURNEY, NOT NINE.
+  //
+  // An accountant asking for "the books" wants sale bills, purchase bills,
+  // what is on each line, the money in and out, the expenses, what every
+  // party stands at, the items and the stock — and he wants them as separate
+  // sheets with their own headings, not one file to be untangled.
+  //
+  // The phone's sharing sheet will carry several files at once, so they are
+  // written together and handed over in one go, each named for what is in it.
+  const exportEverything = async () => {
+    setBusy('all');
+    try {
+      const [from, to] = rangeDates(range);
+      const tag = from ? `${from}_to_${to || today()}` : 'all';
+
+      const vs = await fetchBills();
+      const ids = vs.map((v) => v.id);
+
+      // the lines behind those bills, in pages, so a busy shop is not truncated
+      const lines = [];
+      for (let i = 0; i < ids.length; i += 200) {
+        const { data, error } = await supabase.from('voucher_lines')
+          .select('*').in('voucher_id', ids.slice(i, i + 200));
+        if (error) throw error;
+        lines.push(...(data || []));
+      }
+      const byId = Object.fromEntries(vs.map((v) => [v.id, v]));
+      const lineRows = lines.map((l) => ({
+        ...l,
+        vdate: byId[l.voucher_id]?.vdate,
+        voucher_no: byId[l.voucher_id]?.voucher_no,
+        vtype: byId[l.voucher_id]?.vtype,
+        who: byId[l.voucher_id]?.parties?.name || byId[l.voucher_id]?.printed_name || '',
+      })).sort((a, b) => String(a.vdate).localeCompare(String(b.vdate)));
+
+      let money = supabase.from('payments')
+        .select('*, parties(name), bank_accounts(name)').order('pdate');
+      if (from) money = money.gte('pdate', from);
+      if (to)   money = money.lte('pdate', to);
+
+      let spend = supabase.from('expenses')
+        .select('*, bank_accounts(name)').order('edate');
+      if (from) spend = spend.gte('edate', from);
+      if (to)   spend = spend.lte('edate', to);
+
+      const [{ data: pays }, { data: exps }, { data: items },
+             { data: bal }, { data: stock },
+             { data: cashBook }] = await Promise.all([
+        money, spend,
+        supabase.from('items').select('*').order('name'),
+        supabase.rpc('party_balances'),
+        supabase.from('stock_in_hand').select('*').order('name'),
+        supabase.rpc('money_book', { p_from: from || '2000-04-01', p_to: to || today(),
+                                     p_account: null, p_cash: true }),
+      ]);
+
+      const sale = vs.filter((v) => v.vtype === 'sale' || v.vtype === 'estimate');
+      const buy  = vs.filter((v) => v.vtype === 'purchase');
+      const rtn  = vs.filter((v) => v.vtype === 'sale_return' || v.vtype === 'purchase_return');
+
+      const files = [
+        [`skwik_${tag}_1-sale-bills.csv`,      billsToCsv(sale)],
+        [`skwik_${tag}_2-purchase-bills.csv`,  billsToCsv(buy)],
+        rtn.length && [`skwik_${tag}_3-returns.csv`, billsToCsv(rtn)],
+        [`skwik_${tag}_4-bill-lines.csv`,      billLinesToCsv(lineRows)],
+        [`skwik_${tag}_5-money-in-out.csv`,    paymentsToCsv(pays || [])],
+        (exps || []).length && [`skwik_${tag}_6-expenses.csv`, expensesToCsv(exps || [])],
+        [`skwik_${tag}_7-party-balances.csv`,  balancesToCsv(bal || [])],
+        [`skwik_${tag}_8-cash-book.csv`,
+          bookToCsv('Cash', cashBook?.opening || 0, cashBook?.rows || [])],
+        [`skwik_${tag}_9-items.csv`,           itemsToCsv(items || [])],
+        (stock || []).length && [`skwik_${tag}_10-stock.csv`, stockToCsv(stock || [])],
+      ].filter(Boolean);
+
+      const uris = [];
+      for (const [name, text] of files) {
+        const f = new File(Paths.cache, name);
+        try { if (f.exists) f.delete(); } catch (err) { /* first time through */ }
+        f.create();
+        f.write(text);
+        uris.push({ name, uri: f.uri });
+      }
+
+      if (!(await Sharing.isAvailableAsync())) {
+        return Alert.alert('Nothing to share with',
+          'This phone has no app set up to receive files.');
+      }
+
+      // The sharing sheet takes one file at a time on most phones, so they go
+      // one after another and he is told how many are coming.
+      Alert.alert('Ready — ' + uris.length + ' sheets',
+        uris.map((u) => '· ' + u.name.replace('skwik_' + tag + '_', '').replace('.csv', ''))
+          .join('\n')
+        + '\n\nThe sharing box opens once for each one. Send them all to the '
+        + 'same place — WhatsApp, Gmail or Drive — and they arrive as a set.',
+        [{ text: 'Not now' },
+         { text: 'Send them', onPress: async () => {
+             for (const u of uris) {
+               try {
+                 await Sharing.shareAsync(u.uri, { mimeType: 'text/csv', dialogTitle: u.name });
+               } catch (err) { /* he closed the sheet: stop quietly */ break; }
+             }
+           } }]);
+    } catch (e) {
+      Alert.alert('Could not put it together', sayPlainly(e));
+    } finally { setBusy(''); }
   };
 
   const exportTally = async () => {
@@ -441,6 +553,9 @@ export default function TransferScreen({ navigation }) {
             );
           })}
         </View>
+
+        <Row label="Everything, in order" busyKey="all" onPress={exportEverything}
+          note="Sale bills, purchase bills, returns, every line, money in and out, expenses, what each party stands at, the cash book, the items and the stock — each as its own numbered sheet. This is what to send your accountant." />
 
         <Row label="To Tally" busyKey="tally" onPress={exportTally}
           note={`Bills and purchases as a Tally XML your accountant imports with Gateway → Import → Vouchers. It uses the ledger names from Settings${org?.sales_ledger ? '' : ' — set those first, or it will use plain names like Sales and CGST'}.`} />

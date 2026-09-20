@@ -4,6 +4,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
+import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, num, settle, today } from '../lib/money';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
@@ -23,7 +24,7 @@ const dmy = (d) => `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(
 export default function MoneyScreen({ route, navigation }) {
   const ptype    = route.params?.ptype || 'receipt';
   const received = ptype === 'receipt';
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
 
   const [parties, setParties] = useState([]);
   const [recent, setRecent]   = useState([]);
@@ -32,14 +33,33 @@ export default function MoneyScreen({ route, navigation }) {
   const [mode, setMode]   = useState('cash');
   const [amount, setAmount] = useState('');
   const [note, setNote]   = useState('');
+  // WHEN THE MONEY ACTUALLY MOVED.
+  //
+  // A receipt entered on Monday for cash taken on Saturday belongs on
+  // Saturday, or the customer's account and the day book both read wrong.
+  // Only the owner may put a date on it: a man at the counter backdating his
+  // own entries is how a till is emptied quietly.
+  const [pdate, setPdate] = useState(today());
+  const [accounts, setAccounts] = useState([]);
+  const [account, setAccount]   = useState(null);   // which bank account
+
+  // MANY AT ONCE, THE WAY A LEDGER IS WRITTEN UP.
+  //
+  // A shopkeeper sitting down in the evening with a day's slips does not want
+  // to walk the same four fields twenty times. He wants to say "cash, today"
+  // once and then write name, amount, name, amount down the page — which is
+  // exactly what a receipts register is. Each line is held here until he
+  // saves the lot, and they go in as one batch.
+  const [batch, setBatch] = useState(null);   // null = one entry at a time
   const [editing, setEditing] = useState(null);   // the entry being corrected
   const [busy, setBusy]   = useState(false);
 
   // who → how much → what it was against
   const fWho = useRef(null), fAmt = useRef(null), fNote = useRef(null);
+  const fDate = useRef(null);
 
   const load = useCallback(async () => {
-    const [{ data: ps }, { data: rs }] = await Promise.all([
+    const [{ data: ps }, { data: rs }, { data: bs }] = await Promise.all([
       supabase.from('parties').select('*').order('name'),
       supabase.from('payments')
         .select('*, parties(name)')
@@ -47,9 +67,13 @@ export default function MoneyScreen({ route, navigation }) {
         .order('pdate', { ascending: false })
         .order('created_at', { ascending: false })
         .limit(40),
+      supabase.from('bank_accounts').select('*').eq('is_active', true).order('name'),
     ]);
     setParties(ps || []);
     setRecent(rs || []);
+    const list = bs || [];
+    setAccounts(list);
+    setAccount((a) => a || list.find((x) => x.is_default)?.id || list[0]?.id || null);
   }, [ptype]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -59,8 +83,12 @@ export default function MoneyScreen({ route, navigation }) {
     : [];
 
   const clear = () => {
-    setEditing(null); setParty(null); setText(''); setAmount(''); setNote(''); setMode('cash');
+    setEditing(null); setParty(null); setText(''); setAmount(''); setNote('');
+    setMode('cash'); setPdate(today());
   };
+
+  // just the name and the amount, for the next line of a batch
+  const clearLine = () => { setParty(null); setText(''); setAmount(''); setNote(''); };
 
   const startEdit = (p) => {
     if (p.ref_voucher_id) {
@@ -74,6 +102,7 @@ export default function MoneyScreen({ route, navigation }) {
     setMode(p.mode || 'cash');
     setAmount(String(Number(p.amount)));
     setNote(p.note || '');
+    setPdate(p.pdate || today());
   };
 
   // Opened from a party's ledger: bring that entry straight up for correcting,
@@ -97,6 +126,20 @@ export default function MoneyScreen({ route, navigation }) {
     }
     if (num(amount) <= 0) return Alert.alert('Amount?', 'Type how much.');
 
+    const when = isOwner ? (pdate || today()) : today();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(when)) {
+      return Alert.alert('Check the date', 'Write it as 2026-09-20.');
+    }
+    if (when > today()) {
+      return Alert.alert('That date has not happened yet',
+        'Money cannot be entered against a day still to come.');
+    }
+    if (org?.books_locked_upto && when <= org.books_locked_upto) {
+      return Alert.alert('Books are closed to that date',
+        `Everything up to ${dmy(org.books_locked_upto)} is closed. Open the books `
+        + 'again under Settings, or date this on a later day.');
+    }
+
     setBusy(true);
     try {
       let p = party;
@@ -111,6 +154,8 @@ export default function MoneyScreen({ route, navigation }) {
       const body = {
         org_id: org.id, ptype, party_id: p.id, mode,
         amount: num(amount), note: note.trim() || null,
+        pdate: isOwner ? (pdate || today()) : today(),
+        account_id: mode === 'bank' ? account : null,
       };
 
       if (editing) {
@@ -119,13 +164,96 @@ export default function MoneyScreen({ route, navigation }) {
         clear(); await load();
         Alert.alert('Changed', `Now ₹${fmt0(num(amount))}.`);
       } else {
-        const { error } = await supabase.from('payments')
-          .insert({ ...body, pdate: today() });
+        const { error } = await supabase.from('payments').insert(body);
         if (error) throw error;
-        navigation.navigate('Ledger', { partyId: p.id });
+        // STAY HERE. A man taking money at the counter takes it from four
+        // people in a row; throwing him into one customer's account after
+        // each one means four journeys back. The entry appears in the list
+        // below within the same second, which is confirmation enough.
+        clear(); await load();
+        setTimeout(() => fWho.current?.focus(), 80);
       }
     } catch (e) {
       Alert.alert('Could not save', e.message || String(e));
+    } finally { setBusy(false); }
+  };
+
+  /* ---------------- writing many at once ---------------- */
+
+  // Put this name and amount on the list, and clear the two boxes for the
+  // next one. Nothing reaches the server until he saves the batch.
+  const addLine = () => {
+    if (!party && !text.trim()) {
+      return Alert.alert('Who?', received ? 'Type who paid you.' : 'Type who you paid.');
+    }
+    if (num(amount) <= 0) return Alert.alert('Amount?', 'Type how much.');
+    setBatch((b) => [...(b || []), {
+      key: Date.now() + Math.random(),
+      party, name: (party?.name || text).trim(),
+      amount: num(amount), note: note.trim() || null,
+    }]);
+    clearLine();
+    setTimeout(() => fWho.current?.focus(), 60);
+  };
+
+  const dropLine = (key) => setBatch((b) => (b || []).filter((x) => x.key !== key));
+
+  const saveBatch = async () => {
+    const lines = batch || [];
+    if (!lines.length) return Alert.alert('Nothing on the list', 'Add a name and an amount first.');
+
+    const when = isOwner ? (pdate || today()) : today();
+    if (when > today()) {
+      return Alert.alert('That date has not happened yet',
+        'Money cannot be entered against a day still to come.');
+    }
+    if (org?.books_locked_upto && when <= org.books_locked_upto) {
+      return Alert.alert('Books are closed to that date',
+        `Everything up to ${dmy(org.books_locked_upto)} is closed.`);
+    }
+
+    setBusy(true);
+    let made = 0, failed = 0, firstError = '';
+    try {
+      // Names that are not in the book yet are created first, so twenty lines
+      // do not become twenty round trips of guesswork.
+      const rowsToWrite = [];
+      for (const l of lines) {
+        let p = l.party;
+        if (!p?.id) {
+          const hit = parties.find((x) => x.name.toLowerCase() === l.name.toLowerCase());
+          if (hit) p = hit;
+          else {
+            const { data, error } = await supabase.from('parties').insert({
+              org_id: org.id, name: l.name,
+              kind: received ? 'customer' : 'supplier',
+              state_code: org.state_code, state_name: org.state_name,
+            }).select().single();
+            if (error) { failed++; if (!firstError) firstError = error.message; continue; }
+            p = data;
+          }
+        }
+        rowsToWrite.push({
+          org_id: org.id, ptype, party_id: p.id, mode,
+          amount: l.amount, note: l.note, pdate: when,
+          account_id: mode === 'bank' ? account : null,
+        });
+      }
+
+      if (rowsToWrite.length) {
+        const { error } = await supabase.from('payments').insert(rowsToWrite);
+        if (error) throw error;
+        made = rowsToWrite.length;
+      }
+
+      setBatch([]); clear(); await load();
+      Alert.alert(failed ? 'Mostly done' : 'Written',
+        `${made} ${received ? 'receipt' : 'payment'}${made === 1 ? '' : 's'} `
+        + `on ${dmy(when)}, ₹${fmt0(rowsToWrite.reduce((a, r) => a + r.amount, 0))} in all.`
+        + (failed ? `\n\n${failed} could not be written — ${firstError}` : ''));
+      setTimeout(() => fWho.current?.focus(), 80);
+    } catch (e) {
+      Alert.alert('Could not save', sayPlainly(e));
     } finally { setBusy(false); }
   };
 
@@ -180,7 +308,7 @@ export default function MoneyScreen({ route, navigation }) {
 
       <View style={{ height: 18 }} />
       <Text style={S.label}>{received ? 'Received from' : 'Paid to'}</Text>
-      <Box ref={fWho} next={fAmt} style={{ marginTop: 6 }} placeholder="Type a name"
+      <Box ref={fWho} next={isOwner ? fDate : fAmt} style={{ marginTop: 6 }} placeholder="Type a name"
         value={text} onChangeText={(t) => { setText(t); setParty(null); }} />
 
       {matches.map((p) => (
@@ -198,6 +326,55 @@ export default function MoneyScreen({ route, navigation }) {
         <Pick v="bank" label="Bank" />
       </View>
 
+      {/* which account, once the shop has told us it has more than one */}
+      {mode === 'bank' && (
+        accounts.length ? (
+          <View style={[S.row, { marginTop: 10, gap: 7, flexWrap: 'wrap' }]}>
+            {accounts.map((a) => {
+              const on = account === a.id;
+              return (
+                <TouchableOpacity key={a.id} onPress={() => setAccount(a.id)}
+                  style={{ paddingHorizontal: 12, paddingVertical: 9, borderRadius: 9,
+                           borderWidth: 1, borderColor: on ? C.accent : C.line,
+                           backgroundColor: on ? C.accentSoft : C.surface }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700',
+                                 color: on ? C.accent : C.muted }}>{a.name}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ) : (
+          <TouchableOpacity onPress={() => navigation.navigate('Banks')}
+            style={{ marginTop: 10 }}>
+            <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.accent }}>
+              Add your bank accounts so the bank book can be kept per account ›
+            </Text>
+          </TouchableOpacity>
+        )
+      )}
+
+      {/* the day the money moved — the owner's to set, nobody else's */}
+      {isOwner && (
+        <>
+          <View style={{ height: 18 }} />
+          <Text style={S.label}>When?</Text>
+          <View style={[S.row, { marginTop: 6, gap: 8 }]}>
+            <Box ref={fDate} next={fAmt} style={[{ flex: 1 }, S.num]}
+              keyboardType="numbers-and-punctuation" placeholder="2026-09-20"
+              value={pdate} onChangeText={setPdate} />
+            <TouchableOpacity onPress={() => setPdate(today())}
+              style={[S.btnGhost, { paddingVertical: 12 }]}>
+              <Text style={S.ghostText}>Today</Text>
+            </TouchableOpacity>
+          </View>
+          {pdate !== today() && /^\d{4}-\d{2}-\d{2}$/.test(pdate) && (
+            <Text style={{ fontSize: 11.5, color: C.edit, marginTop: 5 }}>
+              Dated {dmy(pdate)}, not today. It lands in that day's book.
+            </Text>
+          )}
+        </>
+      )}
+
       <View style={{ height: 18 }} />
       <Text style={S.label}>How much?</Text>
       <Box ref={fAmt} next={fNote}
@@ -211,13 +388,107 @@ export default function MoneyScreen({ route, navigation }) {
       <Box ref={fNote} onSubmit={save} style={{ marginTop: 6 }} placeholder="Against bill 41"
         value={note} onChangeText={setNote} />
 
-      <TouchableOpacity style={[S.btn, { marginTop: 22 }, busy && { backgroundColor: C.faint }]}
-        onPress={save} disabled={busy}>
-        <Text style={S.btnText}>
-          {busy ? 'Saving…' : editing ? `Save the change — ₹${fmt0(num(amount))}`
-                                      : `Save ₹${fmt0(num(amount))}`}
-        </Text>
-      </TouchableOpacity>
+      {batch === null || editing ? (
+        <>
+          <TouchableOpacity style={[S.btn, { marginTop: 22 }, busy && { backgroundColor: C.faint }]}
+            onPress={save} disabled={busy}>
+            <Text style={S.btnText}>
+              {busy ? 'Saving…' : editing ? `Save the change — ₹${fmt0(num(amount))}`
+                                          : `Save ₹${fmt0(num(amount))}`}
+            </Text>
+          </TouchableOpacity>
+
+          {!editing && (
+            <TouchableOpacity onPress={() => setBatch([])}
+              style={{ marginTop: 14, alignItems: 'center', paddingVertical: 8 }}>
+              <Text style={{ fontSize: 14, fontWeight: '700', color: C.accent }}>
+                Write several at once ›
+              </Text>
+              <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 3, textAlign: 'center',
+                             lineHeight: 16, paddingHorizontal: 20 }}>
+                Say cash or bank and the date once, then run down the page
+                name by name — the way a receipts register is written up.
+              </Text>
+            </TouchableOpacity>
+          )}
+        </>
+      ) : (
+        <>
+          <TouchableOpacity style={[S.btn, { marginTop: 22, backgroundColor: C.ink }]}
+            onPress={addLine} disabled={busy}>
+            <Text style={S.btnText}>
+              Add to the list{num(amount) > 0 ? ` — ₹${fmt0(num(amount))}` : ''}
+            </Text>
+          </TouchableOpacity>
+
+          {/* what is on the list so far */}
+          {!!batch.length && (
+            <View style={[S.card, { marginTop: 16, padding: 0, overflow: 'hidden' }]}>
+              <View style={S.colHead}>
+                <Text style={[S.colName, { flex: 1 }]}>
+                  ON THE LIST — {mode === 'bank' ? 'BANK' : 'CASH'}
+                  {isOwner && pdate !== today() ? ` · ${dmy(pdate)}` : ''}
+                </Text>
+                <Text style={[S.colName, { width: 76, textAlign: 'right' }]}>AMOUNT</Text>
+              </View>
+              {batch.map((l, i) => (
+                <View key={l.key}
+                  style={[S.row, { paddingHorizontal: 14, paddingVertical: 11,
+                                   borderBottomWidth: i === batch.length - 1 ? 0 : 1,
+                                   borderBottomColor: '#EDE9E0' }]}>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text numberOfLines={1} style={S.ruleNm}>{l.name}</Text>
+                    {!!l.note && <Text numberOfLines={1} style={S.ruleSub}>{l.note}</Text>}
+                  </View>
+                  <Text style={[S.num, { width: 76, textAlign: 'right', fontSize: 14,
+                                         fontWeight: '700', color: C.ink }]}>
+                    {fmt0(l.amount)}
+                  </Text>
+                  <TouchableOpacity onPress={() => dropLine(l.key)}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    style={{ paddingLeft: 12 }}>
+                    <Text style={{ fontSize: 20, color: C.danger }}>×</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <View style={[S.row, { paddingHorizontal: 14, paddingVertical: 11,
+                                     borderTopWidth: 1.5, borderTopColor: C.ink }]}>
+                <Text style={{ flex: 1, fontSize: 13.5, fontWeight: '700', color: C.ink }}>
+                  {batch.length} line{batch.length === 1 ? '' : 's'}
+                </Text>
+                <Text style={[S.num, { fontSize: 18, fontWeight: '800', color: C.ink }]}>
+                  ₹{fmt0(batch.reduce((a, l) => a + l.amount, 0))}
+                </Text>
+              </View>
+            </View>
+          )}
+
+          <TouchableOpacity
+            style={[S.btn, { marginTop: 14 },
+                    (busy || !batch.length) && { backgroundColor: C.faint }]}
+            onPress={saveBatch} disabled={busy || !batch.length}>
+            <Text style={S.btnText}>
+              {busy ? 'Writing…'
+                    : `Write all ${batch.length || ''} to the books`.replace('  ', ' ')}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              if (!batch.length) { setBatch(null); return; }
+              Alert.alert('Throw the list away?',
+                `${batch.length} line(s) have not been written to the books yet.`,
+                [{ text: 'Keep it' },
+                 { text: 'Throw away', style: 'destructive',
+                   onPress: () => { setBatch(null); clearLine(); } }]);
+            }}
+            style={{ marginTop: 12, alignItems: 'center', paddingVertical: 8 }}>
+            <Text style={{ fontSize: 14, fontWeight: '700', color: C.muted }}>
+              ‹ Back to one at a time
+            </Text>
+          </TouchableOpacity>
+        </>
+      )}
 
       {/* ---------- what was entered lately ---------- */}
       {!!recent.length && (

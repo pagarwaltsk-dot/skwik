@@ -134,10 +134,14 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
+  // Push the screen FIRST. Clearing the search before navigating drops this
+  // screen back to the day book for a frame, and that frame is visible as a
+  // flash of the wrong page on the way out. The box is emptied once the new
+  // screen is over the top of it.
   const goTo = (fn) => {
     Keyboard.dismiss();
-    setQ(''); setFound(null);
     fn();
+    setTimeout(() => { setQ(''); setFound(null); }, 400);
   };
 
   /* ---------------- the strip of things to do ---------------- */
@@ -153,6 +157,8 @@ export default function HomeScreen({ navigation }) {
     showStock(org)   && { label: 'Stock',   icon: 'stock',   go: () => navigation.navigate('Stock') },
     { label: 'Parties', icon: 'people', go: () => navigation.navigate('Parties') },
     { label: 'Items',   icon: 'tag', go: () => navigation.navigate('Items') },
+    showReports(org) && isOwner && { label: 'Books', icon: 'book',
+      go: () => navigation.navigate('Books') },
     showReports(org) && isOwner && { label: 'Reports', icon: 'reports',
       go: () => navigation.navigate('Reports') },
     showExpenses(org) && isOwner && { label: 'Money out', icon: 'out',

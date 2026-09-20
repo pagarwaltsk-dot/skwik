@@ -581,6 +581,40 @@ export const billLinesToCsv = (rows) => csv(
   rows.map((r) => [r.vdate, r.voucher_no || '', r.who, r.item_name, r.hsn || '', r.unit || '',
                    Number(r.qty), Number(r.rate), r.taxable, r.gst_rate, r.cgst, r.sgst, r.igst, r.amount]));
 
+export const paymentsToCsv = (rows) => csv(
+  ['Date', 'In or out', 'Name', 'Cash or bank', 'Account', 'Amount', 'What for'],
+  rows.map((p) => [p.pdate, p.ptype === 'receipt' ? 'Received' : 'Paid',
+                   p.parties?.name || '', p.mode || '',
+                   p.bank_accounts?.name || '', p.amount, p.note || '']));
+
+export const expensesToCsv = (rows) => csv(
+  ['Date', 'Head', 'Cash or bank', 'Account', 'Amount', 'Note'],
+  rows.map((e) => [e.edate, e.head || '', e.mode || '',
+                   e.bank_accounts?.name || '', e.amount, e.note || '']));
+
+export const balancesToCsv = (rows) => csv(
+  ['Name', 'Customer or supplier', 'Area', 'Phone', 'GSTIN', 'State',
+   'Balance', 'Who owes'],
+  (rows || []).map((p) => [p.name, p.kind || '', p.area || '', p.phone || '',
+                           p.gstin || '', p.state_name || '',
+                           Math.abs(Number(p.balance) || 0),
+                           (Number(p.balance) || 0) >= 0 ? 'they owe you' : 'you owe them']));
+
+export const stockToCsv = (rows) => csv(
+  ['Item', 'Unit', 'Quantity'],
+  (rows || []).map((r) => [r.name || r.item_name || '', r.unit || '', Number(r.qty) || 0]));
+
+export const bookToCsv = (title, opening, rows) => {
+  let bal = Number(opening) || 0;
+  const out = (rows || []).map((r) => {
+    bal = Math.round((bal + (Number(r.in) || 0) - (Number(r.out) || 0)) * 100) / 100;
+    return [r.d, r.who || '', r.what || '', r.note || '',
+            Number(r.in) || 0, Number(r.out) || 0, bal];
+  });
+  return csv(['Date', 'Particulars', 'What', 'Note', 'In', 'Out', 'Balance'],
+             [['', `${title} — opening`, '', '', '', '', Number(opening) || 0], ...out]);
+};
+
 /* ===================== out, as Tally XML ===================== */
 
 const esc = (s) => String(s ?? '')

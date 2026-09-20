@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
@@ -53,7 +53,10 @@ const Toggle = ({ label, note, value, disabled, onValueChange }) => (
 );
 
 export default function SettingsScreen({ navigation }) {
-  const { org, reloadOrg } = useApp();
+  const { org, reloadOrg, isOwner } = useApp();
+  // the address a password reset can actually reach
+  const [recoveryMail, setRecoveryMail] = useState('');
+  const [savedMail, setSavedMail] = useState('');
   const insets = useSafeAreaInsets();
   const [f, setF] = useState({ ...org });
   const [busy, setBusy] = useState(false);
@@ -148,6 +151,35 @@ export default function SettingsScreen({ navigation }) {
     if (error) return Alert.alert('Could not change numbering', error.message);
     await reloadOrg();
     Alert.alert('Saved', `Your next bill will be ${nextLooksLike()}.`);
+  };
+
+  useEffect(() => {
+    let on = true;
+    (async () => {
+      const { data } = await supabase.auth.getUser();
+      const e = data?.user?.email || '';
+      // the stand-in address made from the phone number is not a real one
+      if (on && e && !e.endsWith('@gstbill.app')) { setSavedMail(e); setRecoveryMail(e); }
+    })();
+    return () => { on = false; };
+  }, []);
+
+  // Changing the address on the account is what makes a reset link possible.
+  // Supabase sends a confirmation to the new address first; until he opens
+  // that, the old one stands — which is the correct, careful order.
+  const saveRecovery = async () => {
+    const e = recoveryMail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+      return Alert.alert('Check the address', 'Type an email you can actually open.');
+    }
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ email: e });
+    setBusy(false);
+    if (error) return Alert.alert('Could not save it', sayPlainly(error));
+    Alert.alert('Check that inbox',
+      `A confirmation has gone to ${e}. Open it, and from then on you can reset `
+      + 'your password from the login screen.\n\nYou still log in with your '
+      + 'mobile number as before — nothing about that changes.');
   };
 
   return (
@@ -437,6 +469,58 @@ export default function SettingsScreen({ navigation }) {
           <Text style={S.btnText}>SAVE ACCOUNT NAMES</Text>
         </TouchableOpacity>
       </Section>
+
+      <Section title="Cash &amp; bank accounts"
+               note="Name every account the shop actually has, and what was in each one to begin with. Without the opening figures the cash book and the bank book start at nil and every balance after them is short by the same amount.">
+        <TouchableOpacity style={S.btn} onPress={() => navigation.navigate('Banks')}>
+          <Text style={S.btnText}>SET UP ACCOUNTS</Text>
+        </TouchableOpacity>
+      </Section>
+
+      {/* GETTING BACK IN.
+          Skwik signs a shopkeeper in on his mobile number, which stands in for
+          an email address behind the scenes. It is not a real address, so if
+          he forgets his password there is nowhere to send a reset link. The
+          only honest fix is to ask for an address he can actually read, once,
+          BEFORE the day he needs it — which is what this is. */}
+      <Section title="Getting back in"
+               note="If you forget your password there is nowhere to send a reset link, because you log in with your mobile number and not an email. Save a real email address here and the link can reach you. Do it now — it cannot be done after you are locked out.">
+        <Text style={[S.label, { marginTop: 12 }]}>YOUR EMAIL</Text>
+        <TextInput style={[S.input, { marginTop: 6 }]} autoCapitalize="none"
+          keyboardType="email-address" placeholder="you@example.com"
+          placeholderTextColor={C.faint}
+          value={recoveryMail} onChangeText={setRecoveryMail} />
+        {!!savedMail && (
+          <Text style={{ fontSize: 12, color: C.ok, marginTop: 6, fontWeight: '600' }}>
+            Saved: {savedMail}
+          </Text>
+        )}
+        <TouchableOpacity style={[S.btn, { marginTop: 14 }]} onPress={saveRecovery}
+          disabled={busy}>
+          <Text style={S.btnText}>SAVE THIS EMAIL</Text>
+        </TouchableOpacity>
+        <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 8, lineHeight: 17 }}>
+          A confirmation goes to that address. Open it, and from then on
+          &ldquo;Forgotten your password?&rdquo; on the login screen works.
+        </Text>
+      </Section>
+
+      {/* The one thing in the app that cannot be undone lives at the very
+          bottom, by itself, behind its own screen and its own password. */}
+      {isOwner && (
+        <Section title="Start the books again"
+                 note="Empties this firm of every bill, receipt, payment and stock movement so you can begin your real books from nothing. It cannot be undone, and it asks for your password first.">
+          <TouchableOpacity
+            style={[S.btnGhost, { borderColor: C.danger, paddingVertical: 14 }]}
+            onPress={() => navigation.navigate('Wipe')}>
+            <Text style={[S.ghostText, { color: C.danger, fontSize: 15 }]}>
+              EMPTY THIS FIRM
+            </Text>
+          </TouchableOpacity>
+        </Section>
+      )}
+
+      <View style={{ height: 30 }} />
       </KeyForm>
     </Screen>
   );

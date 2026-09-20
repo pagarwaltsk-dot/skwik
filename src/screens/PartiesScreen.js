@@ -29,6 +29,13 @@ export default function PartiesScreen({ navigation }) {
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState('');
   const [edit, setEdit] = useState(null);
+  // CUSTOMERS AND SUPPLIERS ARE TWO BOOKS, NOT ONE.
+  //
+  // One list holding both is a list a shopkeeper has to read carefully, and
+  // the two are never wanted at the same moment: he is either chasing money
+  // or paying it. Someone who is both — he buys from him and sells to him —
+  // appears under both, which is correct, because he is both.
+  const [side, setSide] = useState('customer');
 
   // name → phone → GST → state → address → what was outstanding → its date
   const fName  = useRef(null), fPhone = useRef(null), fGstin = useRef(null);
@@ -40,9 +47,20 @@ export default function PartiesScreen({ navigation }) {
     .then(({ data }) => setRows(data || []));
   useFocusEffect(useCallback(() => { load(); }, []));
 
-  const shown = rows.filter((r) =>
-    `${r.name} ${r.phone || ''} ${r.gstin || ''} ${r.area || ''}`
-      .toLowerCase().includes(q.toLowerCase()));
+  const shown = rows
+    .filter((r) => {
+      const k = String(r.kind || 'customer').toLowerCase();
+      return k === 'both' || k === side;
+    })
+    .filter((r) =>
+      `${r.name} ${r.phone || ''} ${r.gstin || ''} ${r.area || ''}`
+        .toLowerCase().includes(q.toLowerCase()));
+
+  const counts = rows.reduce((a, r) => {
+    const k = String(r.kind || 'customer').toLowerCase();
+    if (k === 'both') { a.customer += 1; a.supplier += 1; } else if (a[k] != null) a[k] += 1;
+    return a;
+  }, { customer: 0, supplier: 0 });
 
   const set = (k) => (v) => setEdit((e) => ({ ...e, [k]: v }));
 
@@ -131,13 +149,29 @@ export default function PartiesScreen({ navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title="Customers & suppliers">
-        <TouchableOpacity onPress={() => setEdit({ ...empty })}
+        <TouchableOpacity onPress={() => setEdit({ ...empty, kind: side })}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
           <Text style={{ fontSize: 15, fontWeight: '800', color: C.accent }}>+ NEW</Text>
         </TouchableOpacity>
       </Head>
 
-      <View style={{ padding: 16 }}>
+      <View style={[S.row, { paddingHorizontal: 16, paddingTop: 12, gap: 8 }]}>
+        {[['customer', 'Customers'], ['supplier', 'Suppliers']].map(([v, label]) => {
+          const on = side === v;
+          return (
+            <TouchableOpacity key={v} onPress={() => setSide(v)}
+              style={{ flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center',
+                       borderWidth: 1, borderColor: on ? C.accent : C.line,
+                       backgroundColor: on ? C.accentSoft : C.surface }}>
+              <Text style={{ fontSize: 14, fontWeight: '700', color: on ? C.accent : C.muted }}>
+                {label} <Text style={[S.num, { fontSize: 12.5 }]}>{counts[v]}</Text>
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      <View style={{ padding: 16, paddingTop: 12 }}>
         <TextInput style={S.input} placeholder="Search a name, area, phone or GST number"
           placeholderTextColor={C.faint} value={q} onChangeText={setQ}  returnKeyType="search" />
       </View>
@@ -149,8 +183,9 @@ export default function PartiesScreen({ navigation }) {
         ListEmptyComponent={
           <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 30,
                          lineHeight: 20 }}>
-            Nobody yet. Names are saved automatically when you make a bill, or
-            add one here with the details filled in.
+            No {side === 'supplier' ? 'suppliers' : 'customers'} yet. Names save
+            themselves when you make a bill, or add one here with the details
+            filled in.
           </Text>}
         renderItem={({ item }) => (
           <View style={[S.row, { borderBottomWidth: 1, borderBottomColor: C.line }]}>

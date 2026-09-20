@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, Alert, ScrollView, Platform,
   BackHandler,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useApp } from '../AppContext';
 import { sayPlainly } from '../lib/offline';
 import { STATES } from '../lib/states';
@@ -54,14 +55,13 @@ export default function RegisterScreen({ navigation }) {
 
   // The phone's own back button walks back one question at a time, the same as
   // the arrow. Without this it leaves the whole sign-up in one press.
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (registering) return true;
-      back();
-      return true;
-    });
+  const backRef = React.useRef(null);
+  backRef.current = () => { if (registering) return true; back(); return true; };
+  useFocusEffect(React.useCallback(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress',
+      () => backRef.current());
     return () => sub.remove();
-  });
+  }, []));
 
   const toDetails = () => setStep('details');
 
