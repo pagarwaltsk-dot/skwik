@@ -217,7 +217,17 @@ export function AppProvider({ children }) {
 
   return (
     <Ctx.Provider value={{ session, org, loading, registering, checking, register, role,
-                           isOwner: role !== 'staff', joinShop,
+                           // WHO THE OWNER IS, DECIDED THE SAME WAY THE DATABASE
+                           // DECIDES IT.
+                           //
+                           // The database no longer takes anybody's word for a
+                           // role: the owner is whoever the shop row says owns
+                           // it. The screens must agree, or a man would be
+                           // shown buttons that are refused when he taps them.
+                           isOwner: (org?.owner_id && session?.user?.id
+                                     && org.owner_id === session.user.id)
+                                    || (role !== 'staff' && !org?.owner_id),
+                           joinShop,
                            reloadOrg: loadOrg, pending, countPending, sendPending,
                            signOut: () => supabase.auth.signOut() }}>
       {children}
