@@ -25,6 +25,7 @@ import ItemsScreen   from './src/screens/ItemsScreen';
 import StockScreen   from './src/screens/StockScreen';
 import ItemMovesScreen from './src/screens/ItemMovesScreen';
 import BooksScreen   from './src/screens/BooksScreen';
+import LedgersScreen from './src/screens/LedgersScreen';
 import BanksScreen   from './src/screens/BanksScreen';
 import WipeScreen    from './src/screens/WipeScreen';
 import MoreScreen    from './src/screens/MoreScreen';
@@ -113,6 +114,7 @@ function Routes() {
           <Stack.Screen name="Stock"   component={StockScreen} />
           <Stack.Screen name="ItemMoves" component={ItemMovesScreen} />
           <Stack.Screen name="Books"   component={BooksScreen} />
+          <Stack.Screen name="Ledgers" component={LedgersScreen} />
           <Stack.Screen name="Banks"   component={BanksScreen} />
           <Stack.Screen name="Wipe"    component={WipeScreen} />
           <Stack.Screen name="More"     component={MoreScreen} />

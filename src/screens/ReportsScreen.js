@@ -379,6 +379,12 @@ export default function ReportsScreen({ navigation }) {
                     <Line key={h.head} k={`   ${h.head}`} v={fmt(h.amount)} />
                   ))}
                   <Text style={S.hint}>
+                    {pnl.counts_estimates
+                      ? 'This shop bills on estimates, so an estimate is a sale and is '
+                        + 'counted here. '
+                      : 'Estimates written since you registered are quotations, not sales, '
+                        + 'so they are not counted. Anything you billed on an estimate '
+                        + 'BEFORE you registered still counts, and always will. '}
                     The cost is taken from each item's purchase price, so it is only
                     as right as those are. Bills where the item was typed in by hand
                     and never saved carry no cost at all.

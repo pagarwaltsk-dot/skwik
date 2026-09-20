@@ -1,6 +1,6 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Keyboard,
+  View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Keyboard, BackHandler,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
@@ -9,7 +9,7 @@ import { fmt0, n2, num, today } from '../lib/money';
 import { Bar, Foot, MoreButton, Screen } from '../components/Chrome';
 import { ColHead, DoKey, Figure, Glyph, Rule, Words } from '../components/Register';
 import {
-  showExpenses, showPurchase, showRecon, showReports, showStock,
+  showExpenses, showRecon, showReports, showStock,
 } from '../lib/features';
 import { C, S } from '../theme';
 
@@ -46,7 +46,10 @@ export default function HomeScreen({ navigation }) {
   const [sending, setSending] = useState(false);
   // NOT named `today`: that is the imported helper, and a state of the same
   // name hides it for the whole component.
-  const [book, setBook] = useState({ rows: [], sold: 0, bills: 0 });
+  // null until the day's figures have actually arrived. Drawing a zero while
+  // they are still on their way is what flashed "0" on the way back from a
+  // search — and a zero is an answer a shopkeeper reads and believes.
+  const [book, setBook] = useState(null);
   const [fyTotal, setFyTotal] = useState(0);
   const [q, setQ] = useState('');
   const [found, setFound] = useState(null);
@@ -89,7 +92,10 @@ export default function HomeScreen({ navigation }) {
             go: () => navigation.navigate('Money',
               { ptype: p.ptype === 'receipt' ? 'receipt' : 'payment' }),
           })),
-        ].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+        // NEWEST FIRST, EVERYWHERE.
+        // A shopkeeper opening his book wants the thing that just happened,
+        // not the thing that happened at nine this morning.
+        ].sort((a, b) => String(b.at).localeCompare(String(a.at)));
 
         const sold = (vs || [])
           .filter((v) => v.vtype === 'sale' || v.vtype === 'estimate')
@@ -116,19 +122,50 @@ export default function HomeScreen({ navigation }) {
 
   /* ---------------- the box that finds anything ---------------- */
 
+  // FOUR WAS NOT ENOUGH, AND IT LIED ABOUT IT.
+  //
+  // This box used to ask for four names, four items and four bills. Search a
+  // common surname and four Sahus came back — while the fifth, the one
+  // actually wanted, was simply cut off with nothing on the screen to say so.
+  // A search that silently hides an answer is worse than one that finds
+  // nothing, because the shopkeeper concludes the name is not in his book.
+  //
+  // So: enough rows that a real shop's list is not truncated, the closest
+  // matches first, and a line at the foot when there are still more.
+  const LOOK = 20;
+
+  const rank = (list, t) => {
+    const s2 = t.toLowerCase();
+    return [...list].sort((a, b) => {
+      const A = String(a.name || '').toLowerCase();
+      const B = String(b.name || '').toLowerCase();
+      const ea = A === s2 ? 0 : A.startsWith(s2) ? 1 : 2;
+      const eb = B === s2 ? 0 : B.startsWith(s2) ? 1 : 2;
+      return ea - eb || A.localeCompare(B);
+    });
+  };
+
   const look = async (text) => {
     setQ(text);
     const t = text.trim();
     if (t.length < 2) return setFound(null);
     try {
       const [{ data: parties }, { data: items }, { data: bills }] = await Promise.all([
-        supabase.from('parties').select('id, name, area, phone').ilike('name', `%${t}%`).limit(4),
+        supabase.from('parties').select('id, name, kind, area, phone')
+          .ilike('name', `%${t}%`).limit(LOOK),
         supabase.from('items').select('id, name, unit, sale_price').eq('is_active', true)
-          .ilike('name', `%${t}%`).limit(4),
+          .ilike('name', `%${t}%`).limit(LOOK),
         supabase.from('vouchers').select('id, vtype, voucher_no, printed_name, total, vdate')
-          .ilike('voucher_no', `%${t}%`).limit(4),
+          .or(`voucher_no.ilike.%${t}%,printed_name.ilike.%${t}%`)
+          .order('vdate', { ascending: false }).limit(LOOK),
       ]);
-      setFound({ parties: parties || [], items: items || [], bills: bills || [] });
+      setFound({
+        parties: rank(parties || [], t),
+        items: rank(items || [], t),
+        bills: bills || [],
+        more: (parties || []).length >= LOOK || (items || []).length >= LOOK
+           || (bills || []).length >= LOOK,
+      });
     } catch (e) {
       setFound({ parties: [], items: [], bills: [], failed: true });
     }
@@ -144,16 +181,47 @@ export default function HomeScreen({ navigation }) {
     setTimeout(() => { setQ(''); setFound(null); }, 400);
   };
 
+  // THE BACK BUTTON CLEARS THE SEARCH BEFORE IT SHUTS THE APP.
+  //
+  // The home screen is the bottom of the stack, so the phone's back button
+  // closes Skwik outright — which is right, except when a search is open over
+  // the day book. Then back means "put that away", and losing the whole app
+  // instead is the sort of thing that makes a shopkeeper stop trusting it.
+  // Returning false lets Android do its usual thing when there is nothing to
+  // put away.
+  const searchOpen = !!(q || found);
+  const openRef = useRef(searchOpen);
+  openRef.current = searchOpen;
+
+  useFocusEffect(useCallback(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!openRef.current) return false;
+      Keyboard.dismiss();
+      setQ(''); setFound(null);
+      return true;
+    });
+    return () => sub.remove();
+  }, []));
+
   /* ---------------- the strip of things to do ---------------- */
 
-  const keys = [
+  // PINNED, BECAUSE THEY ARE THE JOB.
+  //
+  // Writing a bill and entering a purchase are what a shop does forty times a
+  // day; everything else is once a week. The two stay at the top of the strip
+  // and never scroll out of reach, however long the rest of the list grows.
+  const pinned = [
     { label: estimate ? 'Estimate' : 'Sale', icon: 'sale', on: true,
       go: () => navigation.navigate('Bill', { vtype: 'sale' }) },
-    showPurchase(org) && { label: 'Purchase', icon: 'purchase',
+    { label: 'Purchase', icon: 'purchase',
       go: () => navigation.navigate('Bill', { vtype: 'purchase' }) },
+  ];
+
+  const keys = [
     { label: 'Receipt', icon: 'in',  go: () => navigation.navigate('Money', { ptype: 'receipt' }) },
     { label: 'Payment', icon: 'out', go: () => navigation.navigate('Money', { ptype: 'payment' }) },
     { label: 'Udhar',   icon: 'book', go: () => navigation.navigate('Udhar') },
+    { label: 'Ledgers', icon: 'book', go: () => navigation.navigate('Ledgers') },
     showStock(org)   && { label: 'Stock',   icon: 'stock',   go: () => navigation.navigate('Stock') },
     { label: 'Parties', icon: 'people', go: () => navigation.navigate('Parties') },
     { label: 'Items',   icon: 'tag', go: () => navigation.navigate('Items') },
@@ -259,7 +327,9 @@ export default function HomeScreen({ navigation }) {
       {found ? (
         <ScrollView keyboardShouldPersistTaps="handled" style={{ flex: 1 }}>
           <Result title="Customers & suppliers" rows={found.parties.map((p) => ({
-            key: p.id, name: p.name, sub: [p.area, p.phone].filter(Boolean).join(' · '),
+            key: p.id, name: p.name,
+            sub: [String(p.kind || 'customer') === 'supplier' ? 'supplier' : 'customer',
+                  p.area, p.phone].filter(Boolean).join(' · '),
             go: () => goTo(() => navigation.navigate('Ledger', { partyId: p.id })),
           }))} />
           <Result title="Items" rows={found.items.map((it) => ({
@@ -273,6 +343,14 @@ export default function HomeScreen({ navigation }) {
             right: `₹${fmt0(b.total)}`,
             go: () => goTo(() => navigation.navigate('Bill', { voucherId: b.id })),
           }))} />
+          {found.more && (
+            <Text style={{ fontSize: 11.5, color: C.muted, textAlign: 'center',
+                           marginTop: 14, paddingHorizontal: 30, lineHeight: 17 }}>
+              More than {LOOK} match “{q.trim()}”. Type a little more of the name
+              to narrow it down.
+            </Text>
+          )}
+
           {!found.parties.length && !found.items.length && !found.bills.length && (
             <Text style={{ fontSize: 13.5, color: C.muted, textAlign: 'center',
                            marginTop: 26, paddingHorizontal: 30, lineHeight: 20 }}>
@@ -315,15 +393,15 @@ export default function HomeScreen({ navigation }) {
                 <Text style={[S.num, { flex: 1, fontSize: 12, color: C.muted }]}>
                   {dmy(today())}
                 </Text>
-                <Figure size={14.5} weight="700">{rupee(book.sold)}</Figure>
+                <Figure size={14.5} weight="700">{book ? rupee(book.sold) : '—'}</Figure>
               </TouchableOpacity>
 
               <ColHead cols={[{ label: 'TIME', width: 40 },
                               { label: 'PARTICULARS' },
                               { label: 'AMOUNT', width: 76 }]} />
 
-              {book.rows.map((r, i) => (
-                <Rule key={r.id} onPress={r.go} last={i === book.rows.length - 1}>
+              {(book?.rows || []).map((r, i) => (
+                <Rule key={r.id} onPress={r.go} last={i === (book?.rows.length || 0) - 1}>
                   <Figure width={40} size={11.5} weight="400" tone={C.muted}>{clock(r.at)}</Figure>
                   <Words name={r.who} sub={r.ref} />
                   <Figure width={76} size={13.5} weight="600"
@@ -331,7 +409,7 @@ export default function HomeScreen({ navigation }) {
                 </Rule>
               ))}
 
-              {!book.rows.length && (
+              {book && !book.rows.length && (
                 <View style={{ padding: 26, alignItems: 'center' }}>
                   <Text style={{ fontSize: 13.5, fontWeight: '700', color: C.ink }}>
                     Nothing yet today
@@ -355,9 +433,15 @@ export default function HomeScreen({ navigation }) {
           {/* the strip of things to do */}
           <View style={{ width: 92, backgroundColor: C.soft,
                          borderLeftWidth: 1, borderLeftColor: C.line }}>
-            <ScrollView contentContainerStyle={{ padding: 8, gap: 6, paddingBottom: 20 }}>
+            <View style={{ padding: 8, paddingBottom: 6, gap: 6,
+                           borderBottomWidth: 1, borderBottomColor: C.line }}>
               <Text style={{ fontSize: 9.5, fontWeight: '700', letterSpacing: 0.9,
                              color: C.muted, paddingLeft: 2, paddingBottom: 2 }}>DO</Text>
+              {pinned.map((k) => (
+                <DoKey key={k.label} label={k.label} icon={k.icon} on={k.on} onPress={k.go} />
+              ))}
+            </View>
+            <ScrollView contentContainerStyle={{ padding: 8, gap: 6, paddingBottom: 20 }}>
               {keys.map((k) => (
                 <DoKey key={k.label} label={k.label} icon={k.icon} on={k.on} onPress={k.go} />
               ))}
@@ -369,8 +453,8 @@ export default function HomeScreen({ navigation }) {
       {/* the foot: how many entries, and whether they have reached the books */}
       <Foot style={{ borderTopWidth: 1, borderTopColor: C.line, gap: 8 }}>
         <Text style={{ flex: 1, fontSize: 11.5, color: C.muted }}>
-          {book.rows.length} entr{book.rows.length === 1 ? 'y' : 'ies'} today
-          {book.bills ? ` · ${book.bills} bill${book.bills === 1 ? '' : 's'}` : ''}
+          {book ? `${book.rows.length} entr${book.rows.length === 1 ? 'y' : 'ies'} today` : 'Reading the day book…'}
+          {book?.bills ? ` · ${book.bills} bill${book.bills === 1 ? '' : 's'}` : ''}
         </Text>
         <View style={{ width: 7, height: 7, borderRadius: 4,
                        backgroundColor: pending > 0 ? C.flag : C.ok }} />

@@ -8,7 +8,8 @@ import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, n2 } from '../lib/money';
-import { ledgerHtml } from '../lib/invoice';
+import { invoiceHtml, ledgerHtml } from '../lib/invoice';
+import { thermalHtml } from '../lib/receipt';
 import { Head, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
@@ -20,6 +21,7 @@ export default function LedgerScreen({ route, navigation }) {
   // An account that could not be fetched must never be drawn as zero. A
   // shopkeeper standing at the counter reading "owes you ₹0" acts on it.
   const [failed, setFailed] = useState(false);
+  const [making, setMaking] = useState(null);   // which bill's PDF is being built
 
   useFocusEffect(useCallback(() => {
     let on = true;
@@ -41,10 +43,17 @@ export default function LedgerScreen({ route, navigation }) {
 
   const rows = data.rows || [];
   const open = Number(data.opening || 0);
-  const left  = rows.filter((r) => r.side === 'left');
-  const right = rows.filter((r) => r.side === 'right');
+
+  // NEWEST AT THE TOP.
+  //
+  // A shopkeeper opening an account wants the bill he raised this morning,
+  // not the one from April. The opening balance is the oldest thing there is,
+  // so it goes to the FOOT of its column rather than the head of it.
+  const byNewest = (a, b) => String(b.d || '').localeCompare(String(a.d || ''));
+  const left  = rows.filter((r) => r.side === 'left').sort(byNewest);
+  const right = rows.filter((r) => r.side === 'right').sort(byNewest);
   if (open > 0) (data.opening_type === 'you_owe' ? right : left)
-    .unshift({ d: party?.opening_date || '', label: 'Opening', amt: open });
+    .push({ d: party?.opening_date || '', label: 'Opening', amt: open });
 
   const sum = (a) => a.reduce((s, r) => s + Number(r.amt || 0), 0);
   const balance = n2(sum(left) - sum(right));
@@ -87,6 +96,42 @@ export default function LedgerScreen({ route, navigation }) {
     }
   };
 
+  // THE BILL ITSELF, FROM THE ACCOUNT.
+  //
+  // A customer ringing up about a figure on his statement wants that bill, not
+  // a tour of the app. This fetches it and hands over the PDF then and there.
+  //
+  // It is built from the bill as it stands RIGHT NOW, every time — nothing is
+  // kept or cached anywhere. So a bill corrected this morning produces a
+  // corrected PDF this afternoon, and an old copy can never be sent by
+  // accident.
+  const pdfOf = async (r) => {
+    if (r.kind !== 'voucher' || !r.id) return;
+    setMaking(r.id);
+    try {
+      const [{ data: v, error: ve }, { data: ls, error: le }] = await Promise.all([
+        supabase.from('vouchers').select('*').eq('id', r.id).maybeSingle(),
+        supabase.from('voucher_lines').select('*').eq('voucher_id', r.id).order('line_no'),
+      ]);
+      if (ve || le || !v) throw (ve || le || new Error('That bill could not be read'));
+
+      const paper = String(org?.print_width || 'a4');
+      const html = paper === 'a4'
+        ? invoiceHtml({ org, voucher: v, party, lines: ls || [] })
+        : thermalHtml({ org, voucher: v, party, lines: ls || [], width: paper });
+
+      const { uri } = await Print.printToFileAsync({ html });
+      if (!(await Sharing.isAvailableAsync())) {
+        return Alert.alert('Nothing to share with',
+          'This phone has no app set up to receive files.');
+      }
+      await Sharing.shareAsync(uri, { mimeType: 'application/pdf',
+                                      dialogTitle: r.label || 'Bill' });
+    } catch (e) {
+      Alert.alert('Could not make the PDF', sayPlainly(e));
+    } finally { setMaking(null); }
+  };
+
   const Col = ({ list, right: alignRight }) => (
     <View style={{ flex: 1, paddingHorizontal: 10,
                    borderRightWidth: alignRight ? 0 : 1.5, borderRightColor: C.line }}>
@@ -106,6 +151,16 @@ export default function LedgerScreen({ route, navigation }) {
                           S.num]}>
               {fmt0(r.amt)}
             </Text>
+            {r.kind === 'voucher' && !!r.id && (
+              <TouchableOpacity onPress={() => pdfOf(r)} disabled={making === r.id}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{ marginTop: 3 }}>
+                <Text style={{ fontSize: 11, fontWeight: '700',
+                               color: making === r.id ? C.faint : C.accent }}>
+                  {making === r.id ? 'making…' : 'PDF ↓'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </TouchableOpacity>
         );
       })}

@@ -43,12 +43,19 @@ export default function PartiesScreen({ navigation }) {
   const fOpen  = useRef(null);
   const fDate  = useRef(null);
 
-  const load = () => supabase.from('parties').select('*').order('name')
+  // newest first, like every other list in the app: the name he just wrote on
+  // a bill is the one he is looking for
+  const load = () => supabase.from('parties').select('*')
+    .order('created_at', { ascending: false })
     .then(({ data }) => setRows(data || []));
   useFocusEffect(useCallback(() => { load(); }, []));
 
   const shown = rows
+    // ALL is there so nobody can ever be invisible. A name saved with an odd
+    // kind — or with none at all — would otherwise sit in the book unreachable
+    // from either tab, which is worse than a list that is slightly too long.
     .filter((r) => {
+      if (side === 'all') return true;
       const k = String(r.kind || 'customer').toLowerCase();
       return k === 'both' || k === side;
     })
@@ -59,8 +66,9 @@ export default function PartiesScreen({ navigation }) {
   const counts = rows.reduce((a, r) => {
     const k = String(r.kind || 'customer').toLowerCase();
     if (k === 'both') { a.customer += 1; a.supplier += 1; } else if (a[k] != null) a[k] += 1;
+    a.all += 1;
     return a;
-  }, { customer: 0, supplier: 0 });
+  }, { customer: 0, supplier: 0, all: 0 });
 
   const set = (k) => (v) => setEdit((e) => ({ ...e, [k]: v }));
 
@@ -149,14 +157,14 @@ export default function PartiesScreen({ navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title="Customers & suppliers">
-        <TouchableOpacity onPress={() => setEdit({ ...empty, kind: side })}
+        <TouchableOpacity onPress={() => setEdit({ ...empty, kind: side === 'all' ? 'customer' : side })}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
           <Text style={{ fontSize: 15, fontWeight: '800', color: C.accent }}>+ NEW</Text>
         </TouchableOpacity>
       </Head>
 
       <View style={[S.row, { paddingHorizontal: 16, paddingTop: 12, gap: 8 }]}>
-        {[['customer', 'Customers'], ['supplier', 'Suppliers']].map(([v, label]) => {
+        {[['customer', 'Customers'], ['supplier', 'Suppliers'], ['all', 'All']].map(([v, label]) => {
           const on = side === v;
           return (
             <TouchableOpacity key={v} onPress={() => setSide(v)}
@@ -183,9 +191,9 @@ export default function PartiesScreen({ navigation }) {
         ListEmptyComponent={
           <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 30,
                          lineHeight: 20 }}>
-            No {side === 'supplier' ? 'suppliers' : 'customers'} yet. Names save
-            themselves when you make a bill, or add one here with the details
-            filled in.
+            No {side === 'supplier' ? 'suppliers' : side === 'all' ? 'names' : 'customers'} yet.
+            Names save themselves when you make a bill, or add one here with the
+            details filled in.
           </Text>}
         renderItem={({ item }) => (
           <View style={[S.row, { borderBottomWidth: 1, borderBottomColor: C.line }]}>

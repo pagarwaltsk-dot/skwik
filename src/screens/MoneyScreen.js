@@ -51,6 +51,8 @@ export default function MoneyScreen({ route, navigation }) {
   // exactly what a receipts register is. Each line is held here until he
   // saves the lot, and they go in as one batch.
   const [batch, setBatch] = useState(null);   // null = one entry at a time
+  const [dateOpen, setDateOpen] = useState(false);
+  const gridRef = useRef({});        // every box in the grid, so tab can walk it
   const [editing, setEditing] = useState(null);   // the entry being corrected
   const [busy, setBusy]   = useState(false);
 
@@ -84,7 +86,7 @@ export default function MoneyScreen({ route, navigation }) {
 
   const clear = () => {
     setEditing(null); setParty(null); setText(''); setAmount(''); setNote('');
-    setMode('cash'); setPdate(today());
+    setMode('cash'); setPdate(today()); setDateOpen(false);
   };
 
   // just the name and the amount, for the next line of a batch
@@ -180,27 +182,46 @@ export default function MoneyScreen({ route, navigation }) {
 
   /* ---------------- writing many at once ---------------- */
 
-  // Put this name and amount on the list, and clear the two boxes for the
-  // next one. Nothing reaches the server until he saves the batch.
-  const addLine = () => {
-    if (!party && !text.trim()) {
-      return Alert.alert('Who?', received ? 'Type who paid you.' : 'Type who you paid.');
-    }
-    if (num(amount) <= 0) return Alert.alert('Amount?', 'Type how much.');
-    setBatch((b) => [...(b || []), {
-      key: Date.now() + Math.random(),
-      party, name: (party?.name || text).trim(),
-      amount: num(amount), note: note.trim() || null,
-    }]);
-    clearLine();
-    setTimeout(() => fWho.current?.focus(), 60);
+  const blankRow = () => ({ key: Date.now() + Math.random(), name: '', amount: '' });
+
+  const startBatch = () => {
+    setBatch([blankRow()]);
+    setDateOpen(false);
   };
 
-  const dropLine = (key) => setBatch((b) => (b || []).filter((x) => x.key !== key));
+  const setRow = (key, patch) => setBatch((b) => {
+    const next = (b || []).map((r) => (r.key === key ? { ...r, ...patch } : r));
+    // the page never runs out of lines: the moment the last one is written in,
+    // a fresh empty one appears under it
+    const last = next[next.length - 1];
+    if (last && (last.name.trim() || String(last.amount).trim())) next.push(blankRow());
+    return next;
+  });
+
+  const dropRow = (key) => setBatch((b) => {
+    const next = (b || []).filter((r) => r.key !== key);
+    return next.length ? next : [blankRow()];
+  });
+
+  // tab off the amount: on to the next line's name, making one if needed
+  const nextLine = (i) => {
+    setBatch((b) => {
+      const next = [...(b || [])];
+      if (i === next.length - 1) next.push(blankRow());
+      setTimeout(() => gridRef.current[`n${next[i + 1].key}`]?.focus(), 40);
+      return next;
+    });
+  };
+
+  const filledRows = (batch || []).filter((r) => r.name.trim() && num(r.amount) > 0);
 
   const saveBatch = async () => {
-    const lines = batch || [];
-    if (!lines.length) return Alert.alert('Nothing on the list', 'Add a name and an amount first.');
+    const lines = filledRows.map((r) => ({
+      key: r.key, party: null, name: r.name.trim(), amount: num(r.amount), note: null,
+    }));
+    if (!lines.length) {
+      return Alert.alert('Nothing written yet', 'Put a name and an amount on a line first.');
+    }
 
     const when = isOwner ? (pdate || today()) : today();
     if (when > today()) {
@@ -246,12 +267,11 @@ export default function MoneyScreen({ route, navigation }) {
         made = rowsToWrite.length;
       }
 
-      setBatch([]); clear(); await load();
+      setBatch([blankRow()]); clearLine(); setDateOpen(false); await load();
       Alert.alert(failed ? 'Mostly done' : 'Written',
         `${made} ${received ? 'receipt' : 'payment'}${made === 1 ? '' : 's'} `
         + `on ${dmy(when)}, ₹${fmt0(rowsToWrite.reduce((a, r) => a + r.amount, 0))} in all.`
         + (failed ? `\n\n${failed} could not be written — ${firstError}` : ''));
-      setTimeout(() => fWho.current?.focus(), 80);
     } catch (e) {
       Alert.alert('Could not save', sayPlainly(e));
     } finally { setBusy(false); }
@@ -306,18 +326,23 @@ export default function MoneyScreen({ route, navigation }) {
         </View>
       )}
 
-      <View style={{ height: 18 }} />
-      <Text style={S.label}>{received ? 'Received from' : 'Paid to'}</Text>
-      <Box ref={fWho} next={isOwner ? fDate : fAmt} style={{ marginTop: 6 }} placeholder="Type a name"
-        value={text} onChangeText={(t) => { setText(t); setParty(null); }} />
+      {batch === null || editing ? (
+        <>
+          <View style={{ height: 18 }} />
+          <Text style={S.label}>{received ? 'Received from' : 'Paid to'}</Text>
+          <Box ref={fWho} next={isOwner && dateOpen ? fDate : fAmt} style={{ marginTop: 6 }}
+            placeholder="Type a name"
+            value={text} onChangeText={(t) => { setText(t); setParty(null); }} />
 
-      {matches.map((p) => (
-        <TouchableOpacity key={p.id} onPress={() => { setParty(p); setText(p.name); }}
-          style={{ padding: 12, backgroundColor: C.surface, borderWidth: 1,
-                   borderColor: C.line, borderRadius: 12, marginTop: 6 }}>
-          <Text style={{ fontSize: 15, fontWeight: '700', color: C.ink }}>{p.name}</Text>
-        </TouchableOpacity>
-      ))}
+          {matches.map((p) => (
+            <TouchableOpacity key={p.id} onPress={() => { setParty(p); setText(p.name); }}
+              style={{ padding: 12, backgroundColor: C.surface, borderWidth: 1,
+                       borderColor: C.line, borderRadius: 12, marginTop: 6 }}>
+              <Text style={{ fontSize: 15, fontWeight: '700', color: C.ink }}>{p.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </>
+      ) : null}
 
       <View style={{ height: 18 }} />
       <Text style={S.label}>How?</Text>
@@ -353,40 +378,62 @@ export default function MoneyScreen({ route, navigation }) {
         )
       )}
 
-      {/* the day the money moved — the owner's to set, nobody else's */}
+      {/* THE DATE, OUT OF THE WAY.
+          Nearly every entry is today's. A date box sitting open on the form
+          is one more thing to read past forty times a day, so it shows as a
+          single quiet line and only opens when he says so. A batch is the
+          exception — writing up a day's slips in the evening is precisely
+          when the date is not today, so there it stays open. */}
       {isOwner && (
         <>
           <View style={{ height: 18 }} />
-          <Text style={S.label}>When?</Text>
-          <View style={[S.row, { marginTop: 6, gap: 8 }]}>
-            <Box ref={fDate} next={fAmt} style={[{ flex: 1 }, S.num]}
-              keyboardType="numbers-and-punctuation" placeholder="2026-09-20"
-              value={pdate} onChangeText={setPdate} />
-            <TouchableOpacity onPress={() => setPdate(today())}
-              style={[S.btnGhost, { paddingVertical: 12 }]}>
-              <Text style={S.ghostText}>Today</Text>
+          {dateOpen || batch !== null ? (
+            <>
+              <Text style={S.label}>When?</Text>
+              <View style={[S.row, { marginTop: 6, gap: 8 }]}>
+                <Box ref={fDate} next={fAmt} style={[{ flex: 1 }, S.num]}
+                  keyboardType="numbers-and-punctuation" placeholder="2026-09-20"
+                  value={pdate} onChangeText={setPdate} />
+                <TouchableOpacity onPress={() => { setPdate(today()); setDateOpen(false); }}
+                  style={[S.btnGhost, { paddingVertical: 12 }]}>
+                  <Text style={S.ghostText}>Today</Text>
+                </TouchableOpacity>
+              </View>
+              {pdate !== today() && /^\d{4}-\d{2}-\d{2}$/.test(pdate) && (
+                <Text style={{ fontSize: 11.5, color: C.edit, marginTop: 5 }}>
+                  Dated {dmy(pdate)}, not today. It lands in that day's book.
+                </Text>
+              )}
+            </>
+          ) : (
+            <TouchableOpacity onPress={() => setDateOpen(true)} style={[S.row, { gap: 8 }]}>
+              <Text style={{ fontSize: 12.5, color: C.muted, fontWeight: '600' }}>
+                Dated <Text style={[S.num, { color: C.ink, fontWeight: '700' }]}>
+                  {pdate === today() ? 'today' : dmy(pdate)}
+                </Text>
+              </Text>
+              <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.accent }}>change</Text>
             </TouchableOpacity>
-          </View>
-          {pdate !== today() && /^\d{4}-\d{2}-\d{2}$/.test(pdate) && (
-            <Text style={{ fontSize: 11.5, color: C.edit, marginTop: 5 }}>
-              Dated {dmy(pdate)}, not today. It lands in that day's book.
-            </Text>
           )}
         </>
       )}
 
-      <View style={{ height: 18 }} />
-      <Text style={S.label}>How much?</Text>
-      <Box ref={fAmt} next={fNote}
-        style={[{ marginTop: 6, fontSize: 32, paddingVertical: 14 }, S.num]}
-        keyboardType="numeric" placeholder="0"
-        value={amount} onChangeText={setAmount}
-        onBlur={() => setAmount(settle(amount))} />
+      {batch === null || editing ? (
+        <>
+          <View style={{ height: 18 }} />
+          <Text style={S.label}>How much?</Text>
+          <Box ref={fAmt} next={fNote}
+            style={[{ marginTop: 6, fontSize: 32, paddingVertical: 14 }, S.num]}
+            keyboardType="numeric" placeholder="0"
+            value={amount} onChangeText={setAmount}
+            onBlur={() => setAmount(settle(amount))} />
 
-      <View style={{ height: 18 }} />
-      <Text style={S.label}>What for (optional)</Text>
-      <Box ref={fNote} onSubmit={save} style={{ marginTop: 6 }} placeholder="Against bill 41"
-        value={note} onChangeText={setNote} />
+          <View style={{ height: 18 }} />
+          <Text style={S.label}>What for (optional)</Text>
+          <Box ref={fNote} onSubmit={save} style={{ marginTop: 6 }} placeholder="Against bill 41"
+            value={note} onChangeText={setNote} />
+        </>
+      ) : null}
 
       {batch === null || editing ? (
         <>
@@ -399,7 +446,7 @@ export default function MoneyScreen({ route, navigation }) {
           </TouchableOpacity>
 
           {!editing && (
-            <TouchableOpacity onPress={() => setBatch([])}
+            <TouchableOpacity onPress={startBatch}
               style={{ marginTop: 14, alignItems: 'center', paddingVertical: 8 }}>
               <Text style={{ fontSize: 14, fontWeight: '700', color: C.accent }}>
                 Write several at once ›
@@ -414,70 +461,101 @@ export default function MoneyScreen({ route, navigation }) {
         </>
       ) : (
         <>
-          <TouchableOpacity style={[S.btn, { marginTop: 22, backgroundColor: C.ink }]}
-            onPress={addLine} disabled={busy}>
-            <Text style={S.btnText}>
-              Add to the list{num(amount) > 0 ? ` — ₹${fmt0(num(amount))}` : ''}
-            </Text>
-          </TouchableOpacity>
-
-          {/* what is on the list so far */}
-          {!!batch.length && (
-            <View style={[S.card, { marginTop: 16, padding: 0, overflow: 'hidden' }]}>
-              <View style={S.colHead}>
-                <Text style={[S.colName, { flex: 1 }]}>
-                  ON THE LIST — {mode === 'bank' ? 'BANK' : 'CASH'}
-                  {isOwner && pdate !== today() ? ` · ${dmy(pdate)}` : ''}
-                </Text>
-                <Text style={[S.colName, { width: 76, textAlign: 'right' }]}>AMOUNT</Text>
-              </View>
-              {batch.map((l, i) => (
-                <View key={l.key}
-                  style={[S.row, { paddingHorizontal: 14, paddingVertical: 11,
-                                   borderBottomWidth: i === batch.length - 1 ? 0 : 1,
-                                   borderBottomColor: '#EDE9E0' }]}>
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text numberOfLines={1} style={S.ruleNm}>{l.name}</Text>
-                    {!!l.note && <Text numberOfLines={1} style={S.ruleSub}>{l.note}</Text>}
-                  </View>
-                  <Text style={[S.num, { width: 76, textAlign: 'right', fontSize: 14,
-                                         fontWeight: '700', color: C.ink }]}>
-                    {fmt0(l.amount)}
-                  </Text>
-                  <TouchableOpacity onPress={() => dropLine(l.key)}
-                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                    style={{ paddingLeft: 12 }}>
-                    <Text style={{ fontSize: 20, color: C.danger }}>×</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-              <View style={[S.row, { paddingHorizontal: 14, paddingVertical: 11,
-                                     borderTopWidth: 1.5, borderTopColor: C.ink }]}>
-                <Text style={{ flex: 1, fontSize: 13.5, fontWeight: '700', color: C.ink }}>
-                  {batch.length} line{batch.length === 1 ? '' : 's'}
-                </Text>
-                <Text style={[S.num, { fontSize: 18, fontWeight: '800', color: C.ink }]}>
-                  ₹{fmt0(batch.reduce((a, l) => a + l.amount, 0))}
-                </Text>
-              </View>
+          {/* THE REGISTER, WRITTEN DOWN THE PAGE.
+              Cash or bank once, the date once, and then it is just names and
+              figures — tab across, tab again and you are on the next line. A
+              new empty line appears the moment the last one is used, so there
+              is never a button to press between entries. */}
+          <View style={[S.card, { marginTop: 20, padding: 0, overflow: 'hidden' }]}>
+            <View style={S.colHead}>
+              <Text style={[S.colName, { width: 22 }]}>#</Text>
+              <Text style={[S.colName, { flex: 1 }]}>
+                {received ? 'RECEIVED FROM' : 'PAID TO'}
+              </Text>
+              <Text style={[S.colName, { width: 96, textAlign: 'right' }]}>AMOUNT</Text>
             </View>
-          )}
+
+            {batch.map((r, i) => {
+              const hit = r.name.trim()
+                ? parties.find((p) => p.name.toLowerCase() === r.name.trim().toLowerCase())
+                : null;
+              const isNew = r.name.trim() && !hit;
+              return (
+                <View key={r.key}
+                  style={{ borderBottomWidth: 1, borderBottomColor: '#EDE9E0',
+                           backgroundColor: i % 2 ? C.surface : '#FCFBF7' }}>
+                  <View style={[S.row, { paddingHorizontal: 10, paddingVertical: 6, gap: 6 }]}>
+                    <Text style={[S.num, { width: 22, fontSize: 12, color: C.faint }]}>
+                      {i + 1}
+                    </Text>
+                    <TextInput
+                      ref={(x) => { gridRef.current[`n${r.key}`] = x; }}
+                      style={{ flex: 1, fontSize: 15, color: C.ink, paddingVertical: 8,
+                               paddingHorizontal: 8, borderWidth: 1, borderRadius: 8,
+                               borderColor: C.line, backgroundColor: '#FFFFFF' }}
+                      placeholder={i === batch.length - 1 ? 'name' : ''}
+                      placeholderTextColor={C.faint}
+                      value={r.name}
+                      returnKeyType="next" submitBehavior="submit"
+                      onSubmitEditing={() => gridRef.current[`a${r.key}`]?.focus()}
+                      onChangeText={(t) => setRow(r.key, { name: t })} />
+                    <TextInput
+                      ref={(x) => { gridRef.current[`a${r.key}`] = x; }}
+                      style={[S.num, { width: 96, fontSize: 15, color: C.ink, paddingVertical: 8,
+                                       paddingHorizontal: 8, borderWidth: 1, borderRadius: 8,
+                                       borderColor: C.line, backgroundColor: '#FFFFFF',
+                                       textAlign: 'right' }]}
+                      placeholder="0" placeholderTextColor={C.faint}
+                      keyboardType="numeric" value={r.amount}
+                      returnKeyType="next" submitBehavior="submit"
+                      onSubmitEditing={() => nextLine(i)}
+                      onChangeText={(t) => setRow(r.key, { amount: t })} />
+                    {batch.length > 1 && (
+                      <TouchableOpacity onPress={() => dropRow(r.key)}
+                        hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}>
+                        <Text style={{ fontSize: 18, color: C.faint }}>×</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  {isNew && (
+                    <Text style={{ fontSize: 10.5, color: C.edit, paddingHorizontal: 38,
+                                   paddingBottom: 6 }}>
+                      new name — will be added to your book
+                    </Text>
+                  )}
+                </View>
+              );
+            })}
+
+            <View style={[S.row, { paddingHorizontal: 14, paddingVertical: 11,
+                                   borderTopWidth: 1.5, borderTopColor: C.ink }]}>
+              <Text style={{ flex: 1, fontSize: 13, fontWeight: '700', color: C.ink }}>
+                {filledRows.length} entr{filledRows.length === 1 ? 'y' : 'ies'}
+                <Text style={{ fontWeight: '600', color: C.muted }}>
+                  {'  '}{mode === 'bank' ? 'bank' : 'cash'} · {pdate === today() ? 'today' : dmy(pdate)}
+                </Text>
+              </Text>
+              <Text style={[S.num, { fontSize: 18, fontWeight: '800', color: C.ink }]}>
+                ₹{fmt0(filledRows.reduce((a2, l) => a2 + num(l.amount), 0))}
+              </Text>
+            </View>
+          </View>
 
           <TouchableOpacity
             style={[S.btn, { marginTop: 14 },
-                    (busy || !batch.length) && { backgroundColor: C.faint }]}
-            onPress={saveBatch} disabled={busy || !batch.length}>
+                    (busy || !filledRows.length) && { backgroundColor: C.faint }]}
+            onPress={saveBatch} disabled={busy || !filledRows.length}>
             <Text style={S.btnText}>
               {busy ? 'Writing…'
-                    : `Write all ${batch.length || ''} to the books`.replace('  ', ' ')}
+                    : `Write ${filledRows.length || ''} to the books`.replace('  ', ' ')}
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             onPress={() => {
-              if (!batch.length) { setBatch(null); return; }
+              if (!filledRows.length) { setBatch(null); return; }
               Alert.alert('Throw the list away?',
-                `${batch.length} line(s) have not been written to the books yet.`,
+                `${filledRows.length} line(s) have not been written to the books yet.`,
                 [{ text: 'Keep it' },
                  { text: 'Throw away', style: 'destructive',
                    onPress: () => { setBatch(null); clearLine(); } }]);

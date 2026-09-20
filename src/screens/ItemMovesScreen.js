@@ -107,7 +107,10 @@ export default function ItemMovesScreen({ route, navigation }) {
       gotIn += qi; gotOut += qo;
       return { ...r, balance: bal };
     });
-    return { rows: out, opening: num(data?.opening), inTotal: n2(gotIn),
+    // The running balance can only be worked out from the oldest entry
+    // forward, so it is — and then the page is turned over, because what he
+    // wants to see first is what moved today.
+    return { rows: out.reverse(), opening: num(data?.opening), inTotal: n2(gotIn),
              outTotal: n2(gotOut), closing: bal };
   }, [data]);
 

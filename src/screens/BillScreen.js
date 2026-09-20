@@ -5,10 +5,14 @@ import {
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as IntentLauncher from 'expo-intent-launcher';
+import { File, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
+import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import {
   computeBill, fmt, fmt0, hsnApplies, num, pct, rateIsGuessed, saleRate, settle,
@@ -603,6 +607,53 @@ export default function BillScreen({ route, navigation }) {
     await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send' });
   };
 
+  // THE PDF, STRAIGHT INTO WHATSAPP.
+  //
+  // Android can be told which app a file is going to, so the general sharing
+  // sheet — WhatsApp, Gmail, Drive, Bluetooth, twenty icons — can be skipped
+  // and WhatsApp opened directly with the bill already attached.
+  //
+  // What it still cannot do is choose the chat. Android gives no way to name
+  // a recipient AND carry a file in the same breath; WhatsApp asks. So this
+  // saves the sheet, not the tap. On anything that is not Android, or if
+  // WhatsApp is not installed, it falls back to the sheet rather than failing.
+  const onWhatsAppPdf = async () => {
+    try {
+      const { uri } = await Print.printToFileAsync({ html: html() });
+      if (Platform.OS !== 'android') {
+        return Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send' });
+      }
+      // a name the customer will recognise in his chat
+      const v = saved?.voucher || {};
+      const nice = `${(org?.name || 'Bill').replace(/[^A-Za-z0-9 ]/g, '')} ${v.voucher_no || ''}`
+        .trim().replace(/\s+/g, '-') + '.pdf';
+      let sendUri = uri;
+      try {
+        const src = new File(uri);
+        const dst = new File(Paths.cache, nice);
+        try { if (dst.exists) dst.delete(); } catch (e) { /* first time */ }
+        src.copy(dst);
+        sendUri = dst.uri;
+      } catch (e) { /* keep the original name */ }
+
+      const content = await FileSystem.getContentUriAsync(sendUri);
+      await IntentLauncher.startActivityAsync('android.intent.action.SEND', {
+        type: 'application/pdf',
+        packageName: 'com.whatsapp',
+        extra: { 'android.intent.extra.STREAM': content },
+        flags: 1,                       // FLAG_GRANT_READ_URI_PERMISSION
+      });
+    } catch (e) {
+      // no WhatsApp, or it refused the handover: the ordinary sheet still works
+      try {
+        const { uri } = await Print.printToFileAsync({ html: html() });
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send' });
+      } catch (e2) {
+        Alert.alert('Could not send it', sayPlainly(e2));
+      }
+    }
+  };
+
   // STRAIGHT INTO HIS CHAT.
   //
   // WhatsApp will open a named person's chat from a link, but it will NOT
@@ -699,7 +750,7 @@ export default function BillScreen({ route, navigation }) {
   /* ---------------- screen ---------------- */
 
   return (
-    <Screen>
+    <Screen ruler={!!org?.debug_keyboard}>
 
       {/* PINNED HEAD — who it is for, and what it comes to */}
       <Bar>
@@ -1262,6 +1313,13 @@ export default function BillScreen({ route, navigation }) {
                   value={partySheet.address}
                   onChangeText={(t) => setPartySheet((x) => ({ ...x, address: t }))} />
 
+                {/* THE STATE IS ALWAYS ASKED.
+                    It used to be hidden behind "is this shop GST registered",
+                    which meant a shop writing estimates today collected no
+                    states at all — and the day it registers, every customer
+                    on its book is silently assumed to be in its own state and
+                    every out-of-state bill carries the wrong tax. It is one
+                    field. It is asked now. */}
                 {!!org?.is_gst_registered && (
                   <>
                     <Text style={[S.label, { marginTop: 14 }]}>GST NUMBER</Text>
@@ -1276,21 +1334,23 @@ export default function BillScreen({ route, navigation }) {
                             ? g.slice(0, 2) : x.state_code }));
                       }} />
 
-                    <Text style={[S.label, { marginTop: 14 }]}>STATE CODE</Text>
-                    <Box ref={npState} next={npOpen} style={[S.num, { marginTop: 6 }]}
-                      keyboardType="number-pad" maxLength={2}
-                      value={String(partySheet.state_code || '')}
-                      onChangeText={(t) => setPartySheet((x) => ({ ...x, state_code: t }))} />
-                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
-                      {STATES[partySheet.state_code]
-                        ? `${STATES[partySheet.state_code]} — ${
-                            String(partySheet.state_code) === String(org?.state_code)
-                              ? 'his bills carry CGST and SGST'
-                              : 'his bills carry IGST'}`
-                        : 'This decides whether his bill carries CGST and SGST, or IGST.'}
-                    </Text>
                   </>
                 )}
+
+                <Text style={[S.label, { marginTop: 14 }]}>STATE CODE</Text>
+                <Box ref={npState} next={npOpen} style={[S.num, { marginTop: 6 }]}
+                  keyboardType="number-pad" maxLength={2}
+                  value={String(partySheet.state_code || '')}
+                  onChangeText={(t) => setPartySheet((x) => ({ ...x, state_code: t }))} />
+                <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                  {STATES[partySheet.state_code]
+                    ? `${STATES[partySheet.state_code]}${org?.is_gst_registered
+                        ? ` — ${String(partySheet.state_code) === String(org?.state_code)
+                            ? 'his bills carry CGST and SGST' : 'his bills carry IGST'}`
+                        : ''}`
+                    : 'Two digits — 18 for Assam. It decides whether a bill carries '
+                      + 'CGST and SGST or IGST, and it is needed the day you register.'}
+                </Text>
 
                 {!isBuy && (
                   <>
@@ -1511,8 +1571,8 @@ export default function BillScreen({ route, navigation }) {
             )}
             <View style={[S.row, { marginTop: 10, gap: 10 }]}>
               <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
-                onPress={onShare}>
-                <Text style={[S.ghostText, { fontSize: 15 }]}>Send the PDF</Text>
+                onPress={onWhatsAppPdf}>
+                <Text style={[S.ghostText, { fontSize: 15 }]}>PDF on WhatsApp</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
                 onPress={onPrint}>

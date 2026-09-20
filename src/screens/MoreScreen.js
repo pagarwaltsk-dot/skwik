@@ -55,6 +55,7 @@ export default function MoreScreen({ navigation }) {
           list is the rest: the things touched once a month or once ever. */}
       <View style={{ marginTop: 10 }}>
         <Item label="Past bills"            onPress={() => navigation.navigate('Bills')} />
+        <Item label="Ledgers — every account" onPress={() => navigation.navigate('Ledgers')} />
         {isOwner &&
           <Item label="Cash & bank accounts" onPress={() => navigation.navigate('Banks')} />}
         {showGodowns(org) && isOwner &&

@@ -505,6 +505,21 @@ export default function SettingsScreen({ navigation }) {
         </Text>
       </Section>
 
+      <Section title="Keyboard measurements"
+               note="Only turn this on if I ask you to. It draws the phone's own keyboard figures across the top of the billing screen so a fault can be read off a photograph instead of guessed at. Turn it off afterwards.">
+        <View style={[S.row, { justifyContent: 'space-between', marginTop: 6 }]}>
+          <Text style={{ flex: 1, fontSize: 14.5, fontWeight: '600', color: C.ink }}>
+            Show the figures
+          </Text>
+          <Switch value={!!f.debug_keyboard}
+            onValueChange={(v) => {
+              set('debug_keyboard')(v);
+              saveOrg({ debug_keyboard: v }, null);
+            }}
+            trackColor={{ true: C.accent }} />
+        </View>
+      </Section>
+
       {/* The one thing in the app that cannot be undone lives at the very
           bottom, by itself, behind its own screen and its own password. */}
       {isOwner && (

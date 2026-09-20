@@ -68,12 +68,70 @@ export function useKeyboardGap() {
   return Math.max(0, Math.round(kb - shrank));
 }
 
+// THE SAME FIGURES, WRITTEN DOWN.
+//
+// Twice now a bottom bar has been reported as sitting under the keyboard, and
+// twice it has been fixed by reasoning rather than by measuring — which is how
+// you fix a thing twice. This returns what the phone actually says, so the
+// numbers can be put on the screen and read off a photograph instead of
+// guessed at from a thousand miles away. Nothing uses it unless the shop turns
+// the switch on in Settings.
+export function useKeyboardFacts() {
+  const [kb, setKb] = useState(0);
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
+  const full = useRef(height);
+  if (kb === 0 && height > full.current) full.current = height;
+
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const a = Keyboard.addListener(showEvt, (e) => setKb(e?.endCoordinates?.height || 0));
+    const b = Keyboard.addListener(hideEvt, () => setKb(0));
+    return () => { a.remove(); b.remove(); };
+  }, []);
+
+  const shrank = Math.max(0, full.current - height);
+  return {
+    kb: Math.round(kb),
+    win: Math.round(height),
+    full: Math.round(full.current),
+    shrank: Math.round(shrank),
+    gap: kb ? Math.max(0, Math.round(kb - shrank)) : 0,
+    bottom: Math.round(insets.bottom),
+    top: Math.round(insets.top),
+  };
+}
+
+// A strip of those figures, pinned over everything, for one screenshot.
+export function KeyboardRuler({ on }) {
+  const f = useKeyboardFacts();
+  if (!on) return null;
+  return (
+    <View pointerEvents="none"
+      style={{ position: 'absolute', left: 0, right: 0, top: f.top + 4,
+               alignItems: 'center', zIndex: 9999 }}>
+      <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+                     fontSize: 10, color: '#FFFFFF', backgroundColor: '#B4413CEE',
+                     paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6,
+                     overflow: 'hidden' }}>
+        {`kb ${f.kb}  win ${f.win}/${f.full}  shrank ${f.shrank}  gap ${f.gap}  ins ${f.bottom}`}
+      </Text>
+    </View>
+  );
+}
+
 // A screen that gets out of the keyboard's way. Everything inside rises by
 // exactly the height the keyboard took, so a fixed bottom bar sits on top of
 // the keys instead of behind them.
-export function Screen({ children, style }) {
+export function Screen({ children, style, ruler }) {
   const gap = useKeyboardGap();
-  return <View style={[S.screen, { paddingBottom: gap }, style]}>{children}</View>;
+  return (
+    <View style={[S.screen, { paddingBottom: gap }, style]}>
+      {children}
+      <KeyboardRuler on={!!ruler} />
+    </View>
+  );
 }
 
 // THE WAY OUT OF ANYWHERE.

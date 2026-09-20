@@ -121,7 +121,9 @@ export default function BooksScreen({ navigation }) {
       bal = n2(bal + i - o); gi += i; go += o;
       return { ...r, balance: bal };
     });
-    return { rows: out, opening: num(book?.opening),
+    // worked out oldest-first because a balance can be worked out no other
+    // way, then turned over so today's entries are at the top
+    return { rows: out.reverse(), opening: num(book?.opening),
              inTotal: n2(gi), outTotal: n2(go), closing: bal };
   }, [book]);
 
