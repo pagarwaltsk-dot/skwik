@@ -86,10 +86,38 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
     return Number(d.slice(0, 4)) === Number(year) && Number(d.slice(5, 7)) === Number(month);
   });
 
-  const sales   = inMonth.filter((v) => v.vtype === 'sale');
-  const returns = inMonth.filter((v) => v.vtype === 'sale_return');
+  // A CANCELLED BILL IS NOT A SALE, BUT ITS NUMBER STILL EXISTS.
+  // It is kept out of every value table and counted in the documents-issued
+  // table, which is the one place the portal wants to see it.
+  const cancelled = inMonth.filter((v) => v.vtype === 'sale' && v.cancelled_at);
+  const sales     = inMonth.filter((v) => v.vtype === 'sale' && !v.cancelled_at);
+
+  // A credit note raised after the 30 November deadline in section 34(2) is a
+  // real refund but cannot reduce the tax, so it is left out of the return.
+  const allReturns = inMonth.filter((v) => v.vtype === 'sale_return' && !v.cancelled_at);
+  const returns    = allReturns.filter((v) => v.gst_effective !== false);
+  const lateNotes  = allReturns.filter((v) => v.gst_effective === false);
+  if (lateNotes.length) {
+    problems.push(`${lateNotes.length} credit note${lateNotes.length === 1 ? ' is' : 's are'} `
+      + 'past the 30 November deadline in section 34(2), so '
+      + `${lateNotes.length === 1 ? 'it is' : 'they are'} left out of this return: `
+      + lateNotes.slice(0, 5).map((v) => v.voucher_no).join(', ')
+      + (lateNotes.length > 5 ? '…' : ''));
+  }
 
   const lines = (v) => linesByVoucher[v.id] || [];
+
+  // FREIGHT, PACKING, LABOUR — whatever the last box on the bill is called —
+  // is part of the value of the supply under section 15(2)(c), and the tax on
+  // it was charged to the customer. It was reaching the HSN table and nothing
+  // else, so b2b, b2cl, b2cs and the credit notes all declared less than the
+  // invoice actually carried. A bill with 100 of freight at 18% under-declared
+  // 18 of tax, on every bill with a charge line on it.
+  const allLines = (v) => {
+    const ls = lines(v);
+    const f = extraAsLine(v, ls);
+    return f ? [...ls, f] : ls;
+  };
   const homeState = String(org?.state_code || '').padStart(2, '0');
   const pos = (v) => String(v.place_of_supply_code || v.parties?.state_code || homeState)
     .padStart(2, '0');
@@ -105,9 +133,9 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
       idt: gstDate(v.vdate),
       val: n2(v.total),
       pos: pos(v),
-      rchrg: 'N',
+      rchrg: v.reverse_charge ? 'Y' : 'N',
       inv_typ: 'R',
-      itms: byRate(lines(v), v.tax_mode),
+      itms: byRate(allLines(v), v.tax_mode),
     });
   }
 
@@ -127,12 +155,12 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
         inum: String(v.voucher_no || ''),
         idt: gstDate(v.vdate),
         val: n2(v.total),
-        itms: byRate(lines(v), v.tax_mode),
+        itms: byRate(allLines(v), v.tax_mode),
       });
       continue;
     }
 
-    for (const l of lines(v)) {
+    for (const l of allLines(v)) {
       const r = rate(l);
       const key = `${p}|${r}|${interState ? 'INTER' : 'INTRA'}`;
       b2csMap[key] = b2csMap[key] || {
@@ -166,11 +194,12 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
       nt_num: String(v.voucher_no || ''),
       nt_dt: gstDate(v.vdate),
       val: n2(v.total),
-      itms: byRate(lines(v), v.tax_mode),
+      itms: byRate(allLines(v), v.tax_mode),
     };
     if (gstin) {
       cdnrMap[gstin] = cdnrMap[gstin] || { ctin: gstin, nt: [] };
-      cdnrMap[gstin].nt.push({ ...note, pos: pos(v), rchrg: 'N', inv_typ: 'R' });
+      cdnrMap[gstin].nt.push({ ...note, pos: pos(v),
+                               rchrg: v.reverse_charge ? 'Y' : 'N', inv_typ: 'R' });
     } else {
       cdnur.push({ ...note, typ: pos(v) !== homeState ? 'B2CL' : 'B2CS', pos: pos(v) });
     }
@@ -180,11 +209,7 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
   const hsnMap = {};
   for (const v of [...sales, ...returns]) {
     const sign = v.vtype === 'sale_return' ? -1 : 1;
-    const withFreight = (() => {
-      const f = extraAsLine(v, lines(v));
-      return f ? [...lines(v), f] : lines(v);
-    })();
-    for (const l of withFreight) {
+    for (const l of allLines(v)) {
       const code = String(l.hsn || '').trim();
       const key = `${code}|${rate(l)}|${l.unit || ''}`;
       hsnMap[key] = hsnMap[key] || {
@@ -202,6 +227,35 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
     }
   }
   const hsn = Object.values(hsnMap).map((e, i) => ({ num: i + 1, ...e }));
+
+  // TABLE 12 IS TWO TABLES NOW.
+  //
+  // From the May 2025 return the portal asks for the HSN summary split into
+  // B2B and B2C. The JSON the portal accepts still carries one hsn block, so
+  // the file below is unchanged and correct — but whoever files it has two
+  // boxes to fill on the screen, and these are the numbers that go in them.
+  const hsnSplit = { b2b: {}, b2c: {} };
+  for (const v of [...sales, ...returns]) {
+    const side = v.parties?.gstin ? 'b2b' : 'b2c';
+    const sign = v.vtype === 'sale_return' ? -1 : 1;
+    for (const l of allLines(v)) {
+      const code = String(l.hsn || '').trim();
+      const key = `${code}|${rate(l)}|${l.unit || ''}`;
+      const bag = hsnSplit[side];
+      bag[key] = bag[key] || {
+        hsn_sc: code, desc: l.item_name, uqc: uqcOf(l.unit),
+        qty: 0, rt: rate(l), txval: 0, iamt: 0, camt: 0, samt: 0, csamt: 0,
+      };
+      const e = bag[key];
+      e.qty   = n2(e.qty + sign * num(l.qty));
+      e.txval = n2(e.txval + sign * num(l.taxable));
+      e.iamt  = n2(e.iamt + sign * num(l.igst));
+      e.camt  = n2(e.camt + sign * num(l.cgst));
+      e.samt  = n2(e.samt + sign * num(l.sgst));
+    }
+  }
+  const hsnB2b = Object.values(hsnSplit.b2b).map((e, i) => ({ num: i + 1, ...e }));
+  const hsnB2c = Object.values(hsnSplit.b2c).map((e, i) => ({ num: i + 1, ...e }));
 
   // the portal wants 4 digits from a firm under 5 crore and 6 from one above,
   // and it rejects the return outright if a code is shorter than that
@@ -240,17 +294,21 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
     return 0;
   };
 
-  const docRange = (list) => {
-    const nums = list.map((v) => String(v.voucher_no || '')).filter(Boolean).sort(natural);
+  const docRange = (list, dead = []) => {
+    const nums = [...list, ...dead]
+      .map((v) => String(v.voucher_no || '')).filter(Boolean).sort(natural);
     if (!nums.length) return null;
     return { num: 1, from: nums[0], to: nums[nums.length - 1],
-             totnum: nums.length, cancel: 0, net_issue: nums.length };
+             totnum: nums.length, cancel: dead.length,
+             net_issue: nums.length - dead.length };
   };
   const doc_det = [];
-  const invRange = docRange(sales);
+  // The numbers the portal gives these: 1 is an outward invoice, 4 is a debit
+  // note and 5 is a credit note. Skwik was sending credit notes as 4.
+  const invRange = docRange(sales, cancelled);
   if (invRange) doc_det.push({ doc_num: 1, doc_typ: 'Invoices for outward supply', docs: [invRange] });
-  const cnRange = docRange(returns);
-  if (cnRange) doc_det.push({ doc_num: 4, doc_typ: 'Credit Note', docs: [cnRange] });
+  const cnRange = docRange(allReturns);
+  if (cnRange) doc_det.push({ doc_num: 5, doc_typ: 'Credit Note', docs: [cnRange] });
 
   const out = {
     gstin: org?.gstin || '',
@@ -272,6 +330,9 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
   return {
     json: out,
     problems,
+    // Table 12, in the two halves the portal asks for on screen.
+    hsnB2b,
+    hsnB2c,
     summary: {
       bills: sales.length,
       notes: returns.length,
@@ -282,6 +343,9 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
                 - returns.reduce((t, v) => t + num(v.taxable), 0)),
       tax: n2(sales.reduce((t, v) => t + num(v.cgst) + num(v.sgst) + num(v.igst), 0)
             - returns.reduce((t, v) => t + num(v.cgst) + num(v.sgst) + num(v.igst), 0)),
+      cancelled: cancelled.length,
+      hsn_b2b_taxable: n2(hsnB2b.reduce((t, e) => t + num(e.txval), 0)),
+      hsn_b2c_taxable: n2(hsnB2c.reduce((t, e) => t + num(e.txval), 0)),
     },
   };
 }

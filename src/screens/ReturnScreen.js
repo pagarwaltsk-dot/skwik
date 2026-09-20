@@ -12,6 +12,7 @@ import { uqcShort } from '../lib/uqc';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
 import { uuid } from '../lib/offline';
+import { pdfName, sharePdf } from '../lib/pdf';
 import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
@@ -26,6 +27,24 @@ import { C, S } from '../theme';
 // sold, and the note has to name the invoice it cancels, because that is what
 // the return goes into GSTR-1 as.
 
+// Which line is this? An item can sit on a bill twice — two batches, or the
+// same goods sold at two different rates — and the two are not the same line.
+// What was returned against one must not come off the other.
+const lineKey = (l) => `${l.item_id || l.item_name || ''}|${Number(l.rate || 0).toFixed(2)}`;
+
+// SECTION 34(2). A credit note against a bill from an earlier year is only
+// good for a return up to the 30th of November following that year. After
+// that the note is still a real thing between the shop and the customer —
+// the money does go back — but it cannot reduce the tax, so Skwik keeps it
+// out of GSTR-1 and says so here rather than letting it be found later.
+function pastGstDeadline(billDate, noteDate) {
+  if (!billDate) return false;
+  const b = new Date(billDate);
+  if (Number.isNaN(b.getTime())) return false;
+  const fyEndYear = b.getMonth() >= 3 ? b.getFullYear() + 1 : b.getFullYear();
+  return new Date(noteDate) > new Date(`${fyEndYear}-11-30T23:59:59`);
+}
+
 export default function ReturnScreen({ route, navigation }) {
   const { org } = useApp();
   const voucherId = route.params?.voucherId;
@@ -36,6 +55,7 @@ export default function ReturnScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [isCash, setIsCash] = useState(false);
   const [saved, setSaved] = useState(null);
+  const [lateOk, setLateOk] = useState(false);
 
   const isBuy = bill?.vtype === 'purchase';
   const docName = isBuy ? 'Debit note' : 'Credit note';
@@ -48,24 +68,54 @@ export default function ReturnScreen({ route, navigation }) {
       ]);
       if (!v) { setLoading(false); return Alert.alert('Not found', 'That bill is no longer here.'); }
 
-      // How much of each line has already come back on an earlier note?
-      const { data: earlier } = await supabase.from('vouchers')
-        .select('id').eq('ref_voucher_id', voucherId);
-      let taken = {};
+      // HOW MUCH OF EACH LINE HAS ALREADY COME BACK ON AN EARLIER NOTE?
+      //
+      // Two things used to go wrong here, and both gave goods away.
+      //
+      // First, the answer was thrown away if the question failed. A dropped
+      // connection came back as "nothing has been returned", and the whole
+      // bill could be returned a second time. A question that did not get
+      // an answer is now a reason to stop, not a reason to carry on.
+      //
+      // Second, it counted by item NAME. A bill with the same item on two
+      // lines — two batches, or the same goods at two rates — had the two
+      // lines added together, so returning one emptied both. The count is
+      // now kept per line, by what the line is and what it cost.
+      const { data: earlier, error: eErr } = await supabase.from('vouchers')
+        .select('id').eq('ref_voucher_id', voucherId).is('cancelled_at', null);
+      if (eErr) {
+        setLoading(false);
+        return Alert.alert('Could not check',
+          'Skwik could not find out what has already been returned against this '
+          + 'bill, so it will not let you raise a note you might be raising twice. '
+          + 'Try again when you have signal.');
+      }
+
+      const taken = {};
       if (earlier?.length) {
-        const { data: tl } = await supabase.from('voucher_lines')
-          .select('item_name, qty, voucher_id').in('voucher_id', earlier.map((e) => e.id));
+        const { data: tl, error: lErr } = await supabase.from('voucher_lines')
+          .select('item_id, item_name, rate, qty, voucher_id')
+          .in('voucher_id', earlier.map((e) => e.id));
+        if (lErr) {
+          setLoading(false);
+          return Alert.alert('Could not check',
+            'Skwik could not read the earlier notes against this bill. Try again '
+            + 'when you have signal.');
+        }
         (tl || []).forEach((l) => {
-          taken[l.item_name] = (taken[l.item_name] || 0) + Number(l.qty || 0);
+          const k = lineKey(l);
+          taken[k] = (taken[k] || 0) + Number(l.qty || 0);
         });
       }
 
       setBill(v);
       setIsCash(!!v.is_cash);
       setRows((ls || []).map((l) => {
-        const already = taken[l.item_name] || 0;
-        return {
-          ...l,
+        const k = lineKey(l);
+        const already = Math.min(taken[k] || 0, Number(l.qty) || 0);
+        taken[k] = (taken[k] || 0) - already;       // spend it, so the next
+        return {                                    // line of the same goods
+          ...l,                                     // does not claim it again
           sold: Number(l.qty),
           already,
           left: Math.max(0, Number(l.qty) - already),
@@ -78,13 +128,29 @@ export default function ReturnScreen({ route, navigation }) {
 
   const setBack = (id, v) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, back: v } : r)));
 
+  // WHAT IS COMING BACK, AT THE PRICE IT WENT OUT AT.
+  //
+  // The discount on the line used to be dropped here, so the note was worked
+  // out from the full rate and refunded more than was ever taken. Ten pieces
+  // at 200 with a tenth off were billed at 1,800 plus 324 of tax. Returned in
+  // full, the note came to 2,360 — 236 of the shop's money, given away on
+  // every discounted return.
+  //
+  // Half the goods back means half the discount back, so it is shared out in
+  // proportion to what is returning.
   const coming = useMemo(() => rows
     .filter((r) => num(r.back) > 0)
-    .map((r) => ({
-      item_id: r.item_id, item_name: r.item_name, hsn: r.hsn, unit: r.unit,
-      gst_rate: Number(r.gst_rate) || 0, qty: num(r.back), rate: Number(r.rate),
-      note: r.note || null, flag: false, checked: false,
-    })), [rows]);
+    .map((r) => {
+      const back = num(r.back);
+      const sold = Number(r.sold) || 0;
+      const share = sold > 0 ? back / sold : 0;
+      return {
+        item_id: r.item_id, item_name: r.item_name, hsn: r.hsn, unit: r.unit,
+        gst_rate: Number(r.gst_rate) || 0, qty: back, rate: Number(r.rate),
+        disc: Math.round(num(r.disc) * share * 100) / 100,
+        note: r.note || null, flag: false, checked: false,
+      };
+    }), [rows]);
 
   const calc = useMemo(
     () => computeBill(coming, bill?.tax_mode || 'none'), [coming, bill?.tax_mode]);
@@ -102,6 +168,15 @@ export default function ReturnScreen({ route, navigation }) {
         `Only ${tooMuch.left} ${uqcShort(tooMuch.unit)} of ${tooMuch.item_name} can still come back.`);
     }
 
+    if (!isBuy && pastGstDeadline(bill?.vdate, today()) && !lateOk) {
+      return Alert.alert('Too late for the return',
+        'This bill is from a year whose 30 November has gone. The note will be '
+        + 'raised and the money will move, but it cannot reduce your tax and it '
+        + 'will be left out of GSTR-1.',
+        [{ text: 'Go back' },
+         { text: 'Raise it anyway', onPress: () => { setLateOk(true); } }]);
+    }
+
     setBusy(true);
     try {
       const payload = {
@@ -116,11 +191,15 @@ export default function ReturnScreen({ route, navigation }) {
         place_of_supply_code: bill.place_of_supply_code,
         tax_mode: bill.tax_mode,
         taxable: calc.taxable, cgst: calc.cgst, sgst: calc.sgst, igst: calc.igst,
+        // the share of the bill's discount that is coming back with these
+        // goods, so the note reverses exactly what was charged
+        discount: calc.discount,
         extra_amount: 0, extra_note: null,
         round_off: Math.round((total - exact) * 100) / 100, total,
         lines: calc.lines.map((l) => ({
           item_id: l.item_id, item_name: l.item_name, hsn: l.hsn, unit: l.unit,
           qty: num(l.qty), rate: num(l.rate), gst_rate: l.gst_rate,
+          disc: num(l.disc),
           taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
           amount: l.amount, flag: false, checked: false, note: l.note,
         })),
@@ -146,7 +225,12 @@ export default function ReturnScreen({ route, navigation }) {
   };
   const onShare = async () => {
     const { uri } = await Print.printToFileAsync({ html: html() });
-    await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send' });
+    await sharePdf(uri, pdfName({
+      who: bill?.parties?.name || bill?.printed_name || org?.name,
+      no: saved?.voucher?.voucher_no,
+      what: isBuy ? 'debit_note' : 'credit_note',
+      fallback: org?.name || 'Note',
+    }));
   };
 
   if (loading) {

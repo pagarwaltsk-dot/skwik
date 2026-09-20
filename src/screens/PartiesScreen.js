@@ -8,6 +8,7 @@ import { useApp } from '../AppContext';
 import { num, today } from '../lib/money';
 import { STATES } from '../lib/states';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
+import { StateField } from '../components/Pickers';
 import { C, S } from '../theme';
 
 // CUSTOMERS AND SUPPLIERS.
@@ -39,7 +40,7 @@ export default function PartiesScreen({ navigation }) {
 
   // name → phone → GST → state → address → what was outstanding → its date
   const fName  = useRef(null), fPhone = useRef(null), fGstin = useRef(null);
-  const fState = useRef(null), fArea  = useRef(null), fAddr  = useRef(null);
+  const fArea  = useRef(null), fAddr  = useRef(null);
   const fOpen  = useRef(null);
   const fDate  = useRef(null);
 
@@ -235,19 +236,24 @@ export default function PartiesScreen({ navigation }) {
               value={edit.phone} onChangeText={set('phone')} placeholder="98640 12345" />
 
             <Label>GST number</Label>
-            <Box ref={fGstin} next={fState} style={{ marginTop: 6 }}
+            <Box ref={fGstin} next={fArea} style={{ marginTop: 6 }}
               autoCapitalize="characters" maxLength={15}
               value={edit.gstin} onChangeText={setGstin} placeholder="Leave empty if unregistered" />
 
-            <Label>State code</Label>
-            <Box ref={fState} next={fArea} style={[S.num, { marginTop: 6 }]} keyboardType="number-pad"
-              maxLength={2} value={String(edit.state_code || '')} onChangeText={setStateCode}
-              placeholder="18" />
+            {/* He is asked which STATE, not which number. The code behind it
+                is Skwik's business, and it fills itself in. */}
+            <Label>State</Label>
+            <View style={{ marginTop: 6 }}>
+              <StateField value={String(edit.state_code || '')}
+                homeCode={String(org?.state_code || '')}
+                onChange={(code, name) =>
+                  setEdit((e) => ({ ...e, state_code: code, state_name: name }))} />
+            </View>
             <Text style={S.hint}>
               {edit.state_name
-                ? `${edit.state_name}. ${edit.state_code === String(org?.state_code)
+                ? (String(edit.state_code) === String(org?.state_code)
                     ? 'Same state as you, so bills carry CGST and SGST.'
-                    : 'Different state, so bills carry IGST.'}`
+                    : 'Another state, so bills carry IGST.')
                 : 'This decides whether a bill carries CGST and SGST, or IGST.'}
             </Text>
 

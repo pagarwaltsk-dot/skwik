@@ -62,6 +62,10 @@ const CSS = `
   .sig { text-align: right; }
   .cg { text-align: center; font-size: 7.2pt; padding-top: 3pt; }
   .it { font-style: italic; font-size: 7.4pt; }
+  /* Rule 5(1)(f) wants these words at the TOP of a bill of supply, not in
+     the small print at the bottom where they were. */
+  .compband { border: 1pt solid #000; padding: 2pt 4pt; text-align: center;
+              font-size: 8.4pt; font-weight: bold; margin-bottom: 3pt; }
 `;
 
 export function invoiceHtml({ org, voucher, party, lines, copy }) {
@@ -72,10 +76,14 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
   const showHsn = hsnApplies(org) && !est;
   const cols    = 6 + (showHsn ? 1 : 0) + (gst ? 1 : 0);   // columns before AMOUNT
 
-  const title = est ? 'Estimate'
-    : comp ? 'Bill of Supply'
-    : voucher.vtype === 'sale_return'     ? 'Credit Note'
+  // A credit note is a credit note whatever style of billing the shop uses.
+  // The estimate test came first, so a shop billing on estimates printed its
+  // credit notes with the word "Estimate" at the top of them.
+  const isNote = voucher.vtype === 'sale_return' || voucher.vtype === 'purchase_return';
+  const title = voucher.vtype === 'sale_return'     ? 'Credit Note'
     : voucher.vtype === 'purchase_return' ? 'Debit Note'
+    : est ? 'Estimate'
+    : comp ? 'Bill of Supply'
     : (org.is_gst_registered ? 'Tax Invoice' : 'Invoice');
 
   const buyerNm = party?.name || voucher.printed_name || 'Cash';
@@ -100,7 +108,7 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
     <tr>
       <td class="c">${i + 1}</td>
       <td><b>${esc(l.item_name)}</b>${l.note ? `<div class="it">${esc(l.note)}</div>` : ''}${
-        Number(l.disc) ? `<div class="it">Less ${fmt(l.disc)}</div>` : ''}</td>
+        ''}</td>
       ${showHsn ? `<td class="c">${esc(l.hsn || '')}</td>` : ''}
       ${gst ? `<td class="c">${pct(l.gst_rate)}%</td>` : ''}
       <td class="r">${qty(l.qty)} ${esc(uqcShort(l.unit))}</td>
@@ -124,6 +132,12 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
 
   // Whatever was added OR taken off has to show. A figure that only moves the
   // total leaves a bill whose own lines do not add up to it.
+  // ONE DISCOUNT, WHERE IT IS GIVEN: at the bottom, once. It is shared out
+  // across the lines inside the books so each rate is taxed on what was
+  // really taken for it, but the customer is shown the round figure.
+  const lessRow = Number(voucher.discount)
+    ? addLine('Less (discount)', -Math.abs(Number(voucher.discount))) : '';
+
   const extraRow = Number(voucher.extra_amount)
     ? addLine(voucher.extra_note
         || (Number(voucher.extra_amount) < 0 ? 'Less' : 'Freight & Other Charges'),
@@ -185,6 +199,8 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
   return `<!doctype html><html><head><meta charset="utf-8"><style>${CSS}</style></head><body>
   <div class="sheet">
     ${taxDoc ? `<div class="copy">${esc(copy || 'ORIGINAL FOR RECIPIENT')}</div>` : ''}
+    ${comp && !est ? `<div class="compband">Composition taxable person, not eligible to
+       collect tax on supplies</div>` : ''}
     <div class="t">${title}</div>
 
     <table style="border-left:0;border-right:0">
@@ -222,9 +238,13 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
             : (bigCash ? '<div class="it">State and address required on bills of Rs 50,000 or more</div>' : '')}
           ${party?.phone ? `<div>Phone: ${esc(party.phone)}</div>` : ''}
         </td>
-        <td colspan="2" style="border-right:0">
-          <span class="k">Despatched through</span>
-          <div>${esc(voucher.transport || '')}&nbsp;</div></td>
+        <td colspan="2" style="border-right:0">${isNote
+          ? `<span class="k">Against ${voucher.vtype === 'sale_return' ? 'Invoice' : 'Bill'} No.</span>
+             <div class="v">${esc(voucher.ref_invoice_no || '')}</div>
+             <span class="k">Dated</span>
+             <div>${voucher.ref_invoice_date ? dmy(voucher.ref_invoice_date) : ''}&nbsp;</div>`
+          : `<span class="k">Despatched through</span>
+             <div>${esc(voucher.transport || '')}&nbsp;</div>`}</td>
       </tr>
       <tr>
         <td colspan="2" style="border-right:0">${taxDoc
@@ -242,7 +262,7 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
         ${th('Quantity')}${th('Rate')}${th('per')}${th('Amount')}
       </tr>
       ${itemRows}
-      ${extraRow}
+      ${lessRow}${extraRow}
       ${taxRows}
       <tr class="fill"><td></td><td></td>${showHsn ? '<td></td>' : ''}${gst ? '<td></td>' : ''}
         <td></td><td></td><td></td><td></td></tr>

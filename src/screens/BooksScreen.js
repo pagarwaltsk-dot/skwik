@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, ScrollView, ActivityIndicator,
+  View, Text, TextInput, TouchableOpacity, ScrollView, ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -9,7 +9,7 @@ import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, n2, num, today } from '../lib/money';
 import { ColHead, Figure, Rule, Words } from '../components/Register';
-import { Head, Screen } from '../components/Chrome';
+import { Head, Screen, Swipe, useTabSwipe } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // THE BOOKS.
@@ -36,12 +36,19 @@ const firstOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2
 const dmy = (d) => (d ? `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}` : '');
 
 const RANGES = [
-  { k: 'month', label: 'This month' },
-  { k: 'last',  label: 'Last month' },
-  { k: 'fy',    label: 'This year' },
+  { k: 'month',  label: 'This month' },
+  { k: 'last',   label: 'Last month' },
+  { k: 'fy',     label: 'This year' },
+  { k: 'custom', label: 'Pick dates' },
 ];
 
-function rangeOf(k) {
+const isDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+
+function rangeOf(k, from, to) {
+  if (k === 'custom') {
+    return [isDate(from) ? from : firstOf(new Date()),
+            isDate(to)   ? to   : today()];
+  }
   const now = new Date();
   if (k === 'last') {
     const s = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -61,6 +68,14 @@ export default function BooksScreen({ navigation }) {
   const { org } = useApp();
   const [tab, setTab]     = useState('cash');     // cash | bank | sheet
   const [range, setRange] = useState('month');
+  // his own two dates, when none of the three ready-made periods is the one
+  // he wants — a week, a quarter, the days since he last showed his accountant
+  const [from, setFrom] = useState(firstOf(new Date()));
+  const [to, setTo]     = useState(today());
+  // newest first is how a shopkeeper reads a book; oldest first is how an
+  // accountant checks one. Both, on a tap.
+  const [newest, setNewest] = useState(true);
+  const swipe = useTabSwipe(['cash', 'bank', 'sheet'], tab, setTab);
   const [accounts, setAccounts] = useState([]);
   const [account, setAccount]   = useState(null); // which bank account
   const [book, setBook]   = useState(null);
@@ -94,11 +109,20 @@ export default function BooksScreen({ navigation }) {
           if (error) throw error;
           setSheet(data); setFailed('');
         } else {
-          const [from, to] = rangeOf(range);
+          const [f, t] = rangeOf(range, from, to);
           const { data, error } = await supabase.rpc('money_book', {
-            p_from: from, p_to: to,
+            p_from: f, p_to: t,
             p_account: tab === 'bank' ? account : null,
             p_cash: tab === 'cash',
+            // A YEAR OF A BUSY SHOP IS NOT A SCREEN.
+            //
+            // The cash book used to come back whole: a year of a shop doing
+            // 40,000 bills was 1.7 MB in one answer, and two and a half years
+            // was 4.3 MB — a long wait on mobile data and enough to bring a
+            // cheap phone down. The database now hands back the most recent
+            // movements and folds everything before them into the opening
+            // figure, so the running balance is still exactly right.
+            p_limit: 400,
           });
           if (!on) return;
           if (error) throw error;
@@ -109,7 +133,7 @@ export default function BooksScreen({ navigation }) {
       } finally { if (on) setBusy(false); }
     })();
     return () => { on = false; };
-  }, [tab, range, account]));
+  }, [tab, range, account, from, to]));
 
   // running balance, so every line carries the figure that stood after it
   const { rows, opening, inTotal, outTotal, closing } = useMemo(() => {
@@ -123,9 +147,9 @@ export default function BooksScreen({ navigation }) {
     });
     // worked out oldest-first because a balance can be worked out no other
     // way, then turned over so today's entries are at the top
-    return { rows: out.reverse(), opening: num(book?.opening),
+    return { rows: newest ? out.reverse() : out, opening: num(book?.opening),
              inTotal: n2(gi), outTotal: n2(go), closing: bal };
-  }, [book]);
+  }, [book, newest]);
 
   const Tab = ({ v, label }) => {
     const on = tab === v;
@@ -183,7 +207,22 @@ export default function BooksScreen({ navigation }) {
               <Chip key={g.k} on={range === g.k} label={g.label}
                     onPress={() => setRange(g.k)} />
             ))}
+            <View style={{ flex: 1 }} />
+            <Chip on={false} label={newest ? 'Newest first ↓' : 'Oldest first ↑'}
+                  onPress={() => setNewest(!newest)} />
           </View>
+
+          {range === 'custom' && (
+            <View style={[S.row, { gap: 8, alignItems: 'center' }]}>
+              <TextInput style={[S.cell, S.num, { flex: 1 }]} placeholder="2026-04-01"
+                placeholderTextColor={C.faint} keyboardType="numbers-and-punctuation"
+                value={from} onChangeText={setFrom} />
+              <Text style={{ fontSize: 13, color: C.muted }}>to</Text>
+              <TextInput style={[S.cell, S.num, { flex: 1 }]} placeholder={today()}
+                placeholderTextColor={C.faint} keyboardType="numbers-and-punctuation"
+                value={to} onChangeText={setTo} />
+            </View>
+          )}
           {tab === 'bank' && (
             accounts.length ? (
               <View style={[S.row, { gap: 6, flexWrap: 'wrap' }]}>
@@ -203,6 +242,9 @@ export default function BooksScreen({ navigation }) {
         </View>
       )}
 
+      {/* Swiping sideways moves between Cash book, Bank book and Balance
+          sheet, the way a thumb already expects it to. */}
+      <Swipe {...swipe}>
       {busy ? (
         <View style={{ paddingTop: 40 }}><ActivityIndicator color={C.accent} /></View>
       ) : failed ? (
@@ -291,6 +333,15 @@ export default function BooksScreen({ navigation }) {
             </Rule>
           ))}
 
+          {!!book?.more && (
+            <Text style={{ fontSize: 12.5, color: C.muted, textAlign: 'center',
+                           marginTop: 16, paddingHorizontal: 24, lineHeight: 19 }}>
+              Showing the last {book.shown} of {book.total} movements in this period.
+              The opening figure above already includes the {book.total - book.shown} before
+              them, so the running balance is right. Choose a shorter period to see them all.
+            </Text>
+          )}
+
           {!rows.length && (
             <Text style={{ fontSize: 13.5, color: C.muted, textAlign: 'center',
                            marginTop: 26, paddingHorizontal: 30, lineHeight: 20 }}>
@@ -300,6 +351,7 @@ export default function BooksScreen({ navigation }) {
           )}
         </ScrollView>
       )}
+      </Swipe>
     </Screen>
   );
 }

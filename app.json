@@ -21,7 +21,11 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png",
         "backgroundColor": "#FAF9F5"
-      }
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "ios": {
       "bundleIdentifier": "com.skwik.billing",
@@ -54,6 +58,11 @@
           "cameraPermission": "Skwik uses the camera only to read barcodes while you bill."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "5115ad52-fc75-467b-9e88-aee4fd044ffc"
+      }
+    }
   }
 }

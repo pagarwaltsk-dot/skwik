@@ -21,14 +21,20 @@ import { C, S } from '../theme';
 
 const dmy = (d) => (d ? `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(2, 4)}` : '');
 
-const ageOf = (d) => {
+// WHEN SOMETHING HAPPENED, AS A WHOLE PHRASE.
+//
+// This used to hand back a word and the screen bolted " ago" onto it, which
+// read as "paid today ago" and "Last bill yesterday ago". Today and yesterday
+// are not lengths of time. The phrase is built here, once, and comes out
+// finished.
+const whenWas = (d) => {
   if (!d) return null;
   const days = Math.floor((new Date() - new Date(d)) / 86400000);
-  if (days < 1) return 'today';
+  if (days <= 0)  return 'today';
   if (days === 1) return 'yesterday';
-  if (days < 31) return `${days} days`;
+  if (days < 31)  return `${days} days ago`;
   const m = Math.floor(days / 30);
-  return m === 1 ? 'a month' : `${m} months`;
+  return m === 1 ? 'a month ago' : `${m} months ago`;
 };
 
 export default function UdharScreen({ navigation }) {
@@ -140,8 +146,8 @@ export default function UdharScreen({ navigation }) {
               onPress={() => navigation.navigate('Ledger', { partyId: r.id })}>
               <Text style={S.hitName}>{r.name}</Text>
               <Text style={S.hitSub}>
-                {r.last_bill ? `Last bill ${ageOf(r.last_bill)} ago` : 'No bills yet'}
-                {r.last_paid ? ` · paid ${ageOf(r.last_paid)} ago` : ''}
+                {r.last_bill ? `Last bill ${whenWas(r.last_bill)}` : 'No bills yet'}
+                {r.last_paid ? ` · paid ${whenWas(r.last_paid)}` : ''}
                 {!r.phone ? ' · no phone number' : ''}
               </Text>
             </TouchableOpacity>

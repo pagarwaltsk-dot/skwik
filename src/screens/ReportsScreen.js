@@ -86,7 +86,9 @@ export default function ReportsScreen({ navigation }) {
       const [from, to] = rangeOf(range);
       const vs = await allRows(() => {
         let q = supabase.from('vouchers')
-          .select('*, parties(name, gstin, state_name)').order('vdate');
+          // a cancelled bill is not a sale, and must not be added into one
+          .is('cancelled_at', null)
+          .select('*, parties(name, gstin, state_name)').order('vdate').order('id');
         if (from) q = q.gte('vdate', from);
         if (to)   q = q.lte('vdate', to);
         return q;
@@ -192,9 +194,12 @@ export default function ReportsScreen({ navigation }) {
       const from = `${y}-${String(m).padStart(2, '0')}-01`;
       const to   = today(new Date(y, m, 0));
 
+      // The cancelled ones come too: they are left out of every value table
+      // and counted in the documents-issued table, which is the one place the
+      // portal asks about them.
       const vs = await allRows(() => supabase.from('vouchers')
         .select('*, parties(name, gstin, state_code, state_name)')
-        .gte('vdate', from).lte('vdate', to).order('vdate'));
+        .gte('vdate', from).lte('vdate', to).order('vdate').order('id'));
 
       const byV = {};
       if (vs.length) {

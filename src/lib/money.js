@@ -127,14 +127,55 @@ export const rateIsGuessed = (item, list = 1) => {
   return own <= 0 && num(item?.purchase_price) > 0;
 };
 
-export function taxModeFor(org, party) {
-  if (!org?.is_gst_registered) return 'none';
-  // A composition dealer is registered but may NOT collect GST from anyone.
-  if (org?.is_composition) return 'none';
-  const here  = String(org.state_code || '').trim();
+// WHERE THE SUPPLY TAKES PLACE.
+//
+// Section 10(1)(a) puts it where the goods end up when they are sent. Section
+// 10(1)(c) puts it where they are handed over when there is no sending — a
+// counter sale. Skwik used to take the buyer's state either way, so a walk-in
+// from another state paying cash across the counter was billed IGST and
+// reported in the wrong table of GSTR-1.
+//
+// A cash sale to somebody without a GST number is a counter sale. Anyone
+// registered is being supplied at the place he is registered.
+export function placeOfSupply(org, party, overTheCounter = false) {
+  const here  = String(org?.state_code || '').trim();
+  const there = String(party?.state_code || '').trim();
+  if (overTheCounter && !party?.gstin) return here || there;
+  return there || here;
+}
+
+// WHAT A PURCHASE BILL CARRIES.
+//
+// A shop's own SALES follow taxModeFor: unregistered and composition shops
+// charge nothing. A PURCHASE is the supplier's bill, and the supplier charges
+// tax whatever kind of shop this is. It has to be recorded, because:
+//
+//   * a registered shop claims it back, so the goods cost the price before tax
+//   * a composition dealer and an unregistered shop claim nothing, so the tax
+//     is part of what the goods cost — 10 pieces at 100 with 5% on them cost
+//     105 each, not 100
+//
+// Skwik used to record nothing at all for the second kind, so their purchase
+// price was short by the tax and every sale looked more profitable than it
+// was. purchase_unit_cost() in the database decides which of the two applies.
+export function purchaseTaxMode(org, party) {
+  const here  = String(org?.state_code || '').trim();
   const there = String(party?.state_code || '').trim() || here;
   if (!here) return 'cgst_sgst';
   return there === here ? 'cgst_sgst' : 'igst';
+}
+
+// Does the tax on a purchase go into the cost of the goods?
+export const taxIsCost = (org) =>
+  !org?.is_gst_registered || !!org?.is_composition;
+
+export function taxModeFor(org, party, overTheCounter = false) {
+  if (!org?.is_gst_registered) return 'none';
+  // A composition dealer is registered but may NOT collect GST from anyone.
+  if (org?.is_composition) return 'none';
+  const here = String(org.state_code || '').trim();
+  if (!here) return 'cgst_sgst';
+  return placeOfSupply(org, party, overTheCounter) === here ? 'cgst_sgst' : 'igst';
 }
 
 // Rates are entered WITHOUT GST. Tax is added on top, the way Tally does it.
@@ -150,6 +191,35 @@ export function taxModeFor(org, party) {
 // things the portal checks. `extra_gst_rate` is the rate it carries; the
 // screen offers the highest rate on the bill, which is the usual treatment
 // for a composite supply, and the shopkeeper can change it.
+// ONE DISCOUNT, ON THE WHOLE BILL.
+//
+// A discount per line meant answering the same question five times on one
+// bill, and the result read as five arguments with the customer instead of
+// one round figure at the bottom — which is how it is actually done at a
+// counter. So `extra.discount` is the figure he types once.
+//
+// Behind the scenes it is still SHARED OUT across the lines, in proportion to
+// what each line is worth, because GST asks for the taxable value of each
+// rate AFTER discount. A bill of 1,000 at 5% and 3,000 at 18% with 400 off
+// takes 100 off the first and 300 off the second, and each rate is taxed on
+// what was really charged for it. The rounding remainder goes on the largest
+// line, so the shares always add back to the figure he typed.
+function shareOut(discount, grosses) {
+  const total = n2(grosses.reduce((a, g) => a + g, 0));
+  const want  = Math.min(Math.abs(n2(discount)), total);
+  if (!(want > 0) || !(total > 0)) return grosses.map(() => 0);
+
+  const parts = grosses.map((g) => n2((want * g) / total));
+  // put whatever the rounding left over onto the biggest line
+  let big = 0;
+  for (let i = 1; i < grosses.length; i++) if (grosses[i] > grosses[big]) big = i;
+  const drift = n2(want - parts.reduce((a, x) => a + x, 0));
+  parts[big] = n2(parts[big] + drift);
+  // and never let a share be more than the line it comes off
+  for (let i = 0; i < parts.length; i++) parts[i] = Math.min(Math.max(parts[i], 0), grosses[i]);
+  return parts;
+}
+
 export function computeBill(lines, mode, extra = {}) {
   let taxable = 0, cgst = 0, sgst = 0, igst = 0;
 
@@ -160,16 +230,24 @@ export function computeBill(lines, mode, extra = {}) {
     return { c: 0, s: 0, i: 0 };
   };
 
-  const out = lines.map((l) => {
-    const gross = n2(num(l.qty) * num(l.rate));
-    const disc  = Math.min(Math.abs(n2(num(l.disc))), gross);   // never below zero
+  const grosses = lines.map((l) => n2(num(l.qty) * num(l.rate)));
+  // The bill's own discount when there is one; otherwise whatever the lines
+  // are already carrying, so a bill written before this change still adds up.
+  const billDisc = n2(num(extra.discount));
+  const shares = billDisc > 0
+    ? shareOut(billDisc, grosses)
+    : lines.map((l, i) => Math.min(Math.abs(n2(num(l.disc))), grosses[i]));
+
+  const out = lines.map((l, i) => {
+    const gross = grosses[i];
+    const disc  = shares[i];
     const t     = n2(gross - disc);
     const rate  = mode === 'none' ? 0 : num(l.gst_rate);
-    const { c, s, i } = split(t, rate);
+    const { c, s, i: ig } = split(t, rate);
 
     taxable = n2(taxable + t);
-    cgst = n2(cgst + c); sgst = n2(sgst + s); igst = n2(igst + i);
-    return { ...l, disc, taxable: t, cgst: c, sgst: s, igst: i, amount: t };
+    cgst = n2(cgst + c); sgst = n2(sgst + s); igst = n2(igst + ig);
+    return { ...l, disc, taxable: t, cgst: c, sgst: s, igst: ig, amount: t };
   });
 
   // freight and the like, taxed at the rate the bill carries
@@ -185,6 +263,8 @@ export function computeBill(lines, mode, extra = {}) {
   const total = Math.round(exact);
   return {
     lines: out, taxable, cgst, sgst, igst,
+    discount: n2(out.reduce((a, l) => a + num(l.disc), 0)),
+    gross: n2(grosses.reduce((a, g) => a + g, 0)),
     extra_amount: extraAmt, extra_gst_rate: extraRate,
     round_off: n2(total - exact), total,
   };

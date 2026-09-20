@@ -121,9 +121,11 @@ export default function SampleScreen({ navigation }) {
         const raw = b.lines.map((l) => ({
           item_id: l.item.id, item_name: l.item.name, hsn: l.item.hsn || null,
           unit: l.item.unit || 'PCS', qty: l.qty, rate: l.rate,
-          gst_rate: Number(l.item.gst_rate) || 0, disc: l.disc || 0,
+          gst_rate: Number(l.item.gst_rate) || 0,
         }));
-        const c = computeBill(raw, mode);
+        // the rounding the bill was fitted with belongs to the bill, not to
+        // whichever line happened to be last
+        const c = computeBill(raw, mode, { discount: b.lines.discount || 0 });
 
         const { data, error } = await supabase.rpc('save_voucher', {
           p: {
@@ -134,7 +136,7 @@ export default function SampleScreen({ navigation }) {
             place_of_supply_code: party?.state_code || org.state_code,
             tax_mode: mode,
             taxable: c.taxable, cgst: c.cgst, sgst: c.sgst, igst: c.igst,
-            round_off: c.round_off, total: c.total,
+            discount: c.discount, round_off: c.round_off, total: c.total,
             lines: c.lines.map((l) => ({
               item_id: l.item_id, item_name: l.item_name, hsn: l.hsn, unit: l.unit,
               qty: l.qty, rate: l.rate, gst_rate: l.gst_rate, disc: l.disc,

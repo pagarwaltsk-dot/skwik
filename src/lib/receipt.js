@@ -46,7 +46,7 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
       <div class="it">
         <div class="nm">${esc(l.item_name)}${l.flag ? ' <b>★</b>' : ''}</div>
         ${l.note ? `<div class="nt">${esc(l.note)}</div>` : ''}
-        ${Number(l.disc) ? `<div class="nt">Less ${fmt(l.disc)}</div>` : ''}
+
         <div class="qr">
           <span>${qty(q)} ${esc(uqcShort(l.unit || ''))} &times; ${fmt(rate)}${
             gst && num(l.gst_rate) ? ` &middot; ${pct(l.gst_rate)}%` : ''}${
@@ -60,6 +60,9 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
     ? `<div class="tr"><span>IGST</span><span>${fmt(voucher.igst)}</span></div>`
     : `<div class="tr"><span>CGST</span><span>${fmt(voucher.cgst)}</span></div>
        <div class="tr"><span>SGST</span><span>${fmt(voucher.sgst)}</span></div>`);
+
+  const less = Number(voucher.discount)
+    ? `<div class="tr"><span>Less</span><span>- ${fmt(Math.abs(Number(voucher.discount)))}</span></div>` : '';
 
   const extra = Number(voucher.extra_amount)
     ? `<div class="tr"><span>${esc(voucher.extra_note || 'Other')}</span><span>${fmt(voucher.extra_amount)}</span></div>` : '';
@@ -103,6 +106,9 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
       ? `<div class="sm muted">GSTIN ${esc(org.gstin)}</div>` : ''}
     <div class="rule"></div>
     <div><b>${title}</b></div>
+    ${org?.is_composition && !est
+      ? `<div class="sm"><b>Composition taxable person, not eligible to
+         collect tax on supplies</b></div>` : ''}
   </div>
 
   <div class="kv sm"><span>No.</span><b>${esc(voucher.voucher_no || '')}</b></div>
@@ -118,7 +124,9 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   ${rows}
   <div class="rule"></div>
 
-  <div class="tr"><span>Items</span><span>${fmt(voucher.taxable)}</span></div>
+  <div class="tr"><span>Items</span><span>${fmt(n2(num(voucher.taxable) + Math.abs(num(voucher.discount))))}</span></div>
+  ${less}
+  <div class="tr"><span>Taxable</span><span>${fmt(voucher.taxable)}</span></div>
   ${taxRows}${extra}${round}
   <div class="tot"><span>TOTAL</span><span>&#8377; ${fmt0(voucher.total)}</span></div>
   <div class="words muted">${esc(amountInWords(voucher.total))}</div>

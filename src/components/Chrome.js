@@ -1,8 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Keyboard, Platform,
-  UIManager, useWindowDimensions,
-} from 'react-native';
+  UIManager, useWindowDimensions, PanResponder } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { C, S } from '../theme';
 
@@ -263,3 +262,48 @@ export const Box = React.forwardRef(function Box(
     />
   );
 });
+
+
+// SWIPING BETWEEN THE TABS, THE WAY EVERY OTHER APP DOES IT.
+//
+// Tapping a tab at the top of the screen means reaching for the top of the
+// screen, which on a big phone is a two-handed job. Everyone already swipes
+// sideways in WhatsApp without being told, so the same thumb move moves
+// between Skwik's tabs.
+//
+// It has to be careful not to fight the list underneath. A gesture only
+// counts as a sideways one when it is clearly sideways — twice as much
+// across as down, and far enough across to be deliberate — so an ordinary
+// scroll up or down is never mistaken for it.
+export function Swipe({ onLeft, onRight, children, style }) {
+  const pan = React.useMemo(() => PanResponder.create({
+    // never claim the gesture on the first touch: the list gets first refusal
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_e, g) => {
+      const across = Math.abs(g.dx);
+      const down   = Math.abs(g.dy);
+      return across > 24 && across > down * 2;
+    },
+    onPanResponderRelease: (_e, g) => {
+      if (Math.abs(g.dx) < 50) return;               // a nudge, not a swipe
+      if (g.dx < 0) onLeft?.();                      // dragged left  → next
+      else          onRight?.();                     // dragged right → previous
+    },
+  }), [onLeft, onRight]);
+
+  return (
+    <View style={[{ flex: 1 }, style]} {...pan.panHandlers}>
+      {children}
+    </View>
+  );
+}
+
+// The tab either side of the one showing, so a screen only has to say what
+// its tabs are and in what order.
+export function useTabSwipe(tabs, current, set) {
+  const i = tabs.indexOf(current);
+  return {
+    onLeft:  () => { if (i >= 0 && i < tabs.length - 1) set(tabs[i + 1]); },
+    onRight: () => { if (i > 0) set(tabs[i - 1]); },
+  };
+}

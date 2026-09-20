@@ -7,7 +7,7 @@
 // read and checked on their own.
 
 import { n2 } from './money';
-import { STATES } from './states';
+import { STATES, codeForState } from './states';
 import { guessUqc, isUqc } from './uqc';
 
 // "Bottles", "Pieces", "Meters" — what Tally and spreadsheets actually hold.
@@ -265,8 +265,13 @@ export function partiesFromCsv(text) {
       gstin: gstin.length === 15 ? gstin : '',
       phone: cell(rows[i], cols.phone).replace(/[^0-9]/g, '').slice(-10),
       address: cell(rows[i], cols.address),
-      state_code: STATES[code] ? code : '',
-      state_name: STATES[code] || cell(rows[i], cols.state_name),
+      // The GST number carries the state in its first two digits. When there
+      // is no GST number the spreadsheet usually names the state instead, so
+      // the name is turned back into a code rather than thrown away.
+      state_code: STATES[code] ? code : codeForState(cell(rows[i], cols.state_name)),
+      state_name: STATES[code]
+               || STATES[codeForState(cell(rows[i], cols.state_name))]
+               || cell(rows[i], cols.state_name),
       // Which way the balance runs. Skwik's own export writes the amount as a
       // plain number and puts the direction in its own column, so that column
       // is read first; a file from anywhere else gets the old rule, where a

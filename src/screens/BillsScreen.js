@@ -12,9 +12,10 @@ import { fmt0 } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
-import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
+import { BackButton, Bar, Foot, MoreButton, Screen, Swipe, useTabSwipe } from '../components/Chrome';
 import { showPurchase, showReturns } from '../lib/features';
 import { C, S } from '../theme';
+import { pdfName, sharePdf } from '../lib/pdf';
 
 // EVERY BILL EVER WRITTEN. Find one, read it, send it again, fix it, remove it.
 //
@@ -51,6 +52,7 @@ export default function BillsScreen({ navigation }) {
   const [busy, setBusy]   = useState(true);
   const [q, setQ]         = useState('');
   const [kind, setKind]   = useState('all');
+  const swipe = useTabSwipe(KINDS.map((k) => k.key), kind, setKind);
   const [open, setOpen]   = useState(null);      // the bill tapped on
   const [lines, setLines] = useState(null);      // its lines, once fetched
   const [working, setWorking] = useState(false);
@@ -113,7 +115,11 @@ export default function BillsScreen({ navigation }) {
     setWorking(true);
     try {
       const { uri } = await Print.printToFileAsync({ html: html() });
-      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send again' });
+      await sharePdf(uri, pdfName({
+        who: open?.parties?.name || open?.printed_name || org?.name,
+        no: open?.voucher_no,
+        fallback: org?.name || 'Bill',
+      }), 'Send again');
     } catch (e) {
       Alert.alert('Could not send', e.message || String(e));
     } finally { setWorking(false); }
@@ -139,12 +145,15 @@ export default function BillsScreen({ navigation }) {
     Alert.alert(
       `Remove ${v.voucher_no ? `bill ${v.voucher_no}` : 'this bill'}?`,
       `₹${fmt0(v.total)} to ${name}.\n\nThe stock it moved goes back, and any cash `
-      + `recorded against it is removed too. The bill number is not used again.`,
+      + `recorded against it is removed too.\n\nThe bill itself stays in your book, `
+      + `marked cancelled, and keeps its number. GST wants an unbroken run of `
+      + `numbers, and a bill that simply disappears leaves a hole in it.`,
       [
         { text: 'Keep it' },
         { text: 'Remove', style: 'destructive', onPress: async () => {
             setWorking(true);
-            const { error } = await supabase.rpc('delete_voucher', { p_id: v.id });
+            const { error } = await supabase.rpc('delete_voucher',
+              { p_id: v.id, p_reason: null });
             setWorking(false);
             if (error) return Alert.alert('Could not remove it', error.message);
             setOpen(null); setLines(null); load();
@@ -191,6 +200,8 @@ export default function BillsScreen({ navigation }) {
         </View>
       </View>
 
+      {/* Swipe sideways to move between All, Bills, Purchases and Returns. */}
+      <Swipe {...swipe}>
       {busy ? (
         <View style={{ paddingTop: 60, alignItems: 'center' }}>
           <ActivityIndicator color={C.accent} />
@@ -233,8 +244,16 @@ export default function BillsScreen({ navigation }) {
                           : 'Bill'}
                         {v.is_cash ? ' · Cash' : ''}
                       </Text>
+                      {!!v.cancelled_at && (
+                        <Text style={{ fontSize: 11, fontWeight: '800', letterSpacing: 0.6,
+                                       color: C.danger, marginTop: 3 }}>
+                          CANCELLED
+                        </Text>
+                      )}
                     </View>
-                    <Text style={[S.amt, S.num, { color: buy ? C.muted : C.ink }]}>
+                    <Text style={[S.amt, S.num,
+                                  { color: v.cancelled_at ? C.faint : (buy ? C.muted : C.ink) },
+                                  !!v.cancelled_at && { textDecorationLine: 'line-through' }]}>
                       ₹{fmt0(v.total)}
                     </Text>
                   </View>
@@ -243,6 +262,7 @@ export default function BillsScreen({ navigation }) {
             );
           }} />
       )}
+      </Swipe>
 
       {/* ---------- one bill, and what can be done with it ---------- */}
       <Modal visible={!!open} transparent animationType="slide"

@@ -76,11 +76,28 @@ export default function TransferScreen({ navigation }) {
     await Sharing.shareAsync(file.uri, { mimeType: mime, dialogTitle: name });
   };
 
+  // EVERY ROW, NOT THE FIRST THOUSAND.
+  //
+  // Supabase answers with at most a thousand rows and says nothing about the
+  // rest. Every export on this screen asked once and sent whatever came back,
+  // so a shop with more than a thousand bills, items or customers handed its
+  // accountant a file that stopped in the middle and looked complete. The
+  // reports screen already did this properly; this one did not.
+  const allRows = async (build) => {
+    const out = [];
+    const size = 1000;
+    for (let from = 0; ; from += size) {
+      const { data, error } = await build().range(from, from + size - 1);
+      if (error) throw error;
+      out.push(...(data || []));
+      if (!data || data.length < size) return out;
+    }
+  };
+
   const exportItems = async () => {
     setBusy('items');
     try {
-      const { data, error } = await supabase.from('items').select('*').order('name');
-      if (error) throw error;
+      const data = await allRows(() => supabase.from('items').select('*').order('name').order('id'));
       if (!data?.length) return Alert.alert('Nothing to send', 'There are no items yet.');
       await send('skwik-items.csv', itemsToCsv(data), 'text/csv');
     } catch (e) { Alert.alert('Could not send', e.message || String(e)); }
@@ -90,8 +107,7 @@ export default function TransferScreen({ navigation }) {
   const exportParties = async () => {
     setBusy('parties');
     try {
-      const { data, error } = await supabase.from('parties').select('*').order('name');
-      if (error) throw error;
+      const data = await allRows(() => supabase.from('parties').select('*').order('name').order('id'));
       if (!data?.length) return Alert.alert('Nothing to send', 'There are no customers yet.');
       await send('skwik-customers.csv', partiesToCsv(data), 'text/csv');
     } catch (e) { Alert.alert('Could not send', e.message || String(e)); }
@@ -100,14 +116,16 @@ export default function TransferScreen({ navigation }) {
 
   const fetchBills = async () => {
     const [from, to] = rangeDates(range);
-    let qy = supabase.from('vouchers')
-      .select('*, parties(name, gstin, state_name, state_code)')
-      .order('vdate');
-    if (from) qy = qy.gte('vdate', from);
-    if (to)   qy = qy.lte('vdate', to);
-    const { data, error } = await qy;
-    if (error) throw error;
-    return data || [];
+    return allRows(() => {
+      let qy = supabase.from('vouchers')
+        .select('*, parties(name, gstin, state_name, state_code)')
+        // id as a tie-break: two bills on one date have no order of their own,
+        // and a page boundary between them would drop one and repeat another.
+        .order('vdate').order('id');
+      if (from) qy = qy.gte('vdate', from);
+      if (to)   qy = qy.lte('vdate', to);
+      return qy;
+    });
   };
 
   const exportBills = async () => {
@@ -126,9 +144,11 @@ export default function TransferScreen({ navigation }) {
       const vs = await fetchBills();
       if (!vs.length) return Alert.alert('Nothing in that period', 'No bills were found.');
       const ids = vs.map((v) => v.id);
-      const { data: ls, error } = await supabase.from('voucher_lines')
-        .select('*').in('voucher_id', ids);
-      if (error) throw error;
+      const ls = [];
+      for (let i = 0; i < ids.length; i += 200) {
+        ls.push(...await allRows(() => supabase.from('voucher_lines')
+          .select('*').in('voucher_id', ids.slice(i, i + 200)).order('id')));
+      }
       const byId = Object.fromEntries(vs.map((v) => [v.id, v]));
       const rows = (ls || []).map((l) => ({
         ...l,
@@ -164,10 +184,8 @@ export default function TransferScreen({ navigation }) {
       // the lines behind those bills, in pages, so a busy shop is not truncated
       const lines = [];
       for (let i = 0; i < ids.length; i += 200) {
-        const { data, error } = await supabase.from('voucher_lines')
-          .select('*').in('voucher_id', ids.slice(i, i + 200));
-        if (error) throw error;
-        lines.push(...(data || []));
+        lines.push(...await allRows(() => supabase.from('voucher_lines')
+          .select('*').in('voucher_id', ids.slice(i, i + 200)).order('id')));
       }
       const byId = Object.fromEntries(vs.map((v) => [v.id, v]));
       const lineRows = lines.map((l) => ({
@@ -178,25 +196,30 @@ export default function TransferScreen({ navigation }) {
         who: byId[l.voucher_id]?.parties?.name || byId[l.voucher_id]?.printed_name || '',
       })).sort((a, b) => String(a.vdate).localeCompare(String(b.vdate)));
 
-      let money = supabase.from('payments')
-        .select('*, parties(name), bank_accounts(name)').order('pdate');
-      if (from) money = money.gte('pdate', from);
-      if (to)   money = money.lte('pdate', to);
+      const money = () => {
+        let q = supabase.from('payments')
+          .select('*, parties(name), bank_accounts(name)').order('pdate').order('id');
+        if (from) q = q.gte('pdate', from);
+        if (to)   q = q.lte('pdate', to);
+        return q;
+      };
+      const spend = () => {
+        let q = supabase.from('expenses')
+          .select('*, bank_accounts(name)').order('edate').order('id');
+        if (from) q = q.gte('edate', from);
+        if (to)   q = q.lte('edate', to);
+        return q;
+      };
 
-      let spend = supabase.from('expenses')
-        .select('*, bank_accounts(name)').order('edate');
-      if (from) spend = spend.gte('edate', from);
-      if (to)   spend = spend.lte('edate', to);
-
-      const [{ data: pays }, { data: exps }, { data: items },
-             { data: bal }, { data: stock },
-             { data: cashBook }] = await Promise.all([
-        money, spend,
-        supabase.from('items').select('*').order('name'),
+      const [pays, exps, items, { data: bal }, stock, { data: cashBook }] = await Promise.all([
+        allRows(money), allRows(spend),
+        allRows(() => supabase.from('items').select('*').order('name').order('id')),
         supabase.rpc('party_balances'),
-        supabase.from('stock_in_hand').select('*').order('name'),
+        allRows(() => supabase.from('stock_in_hand').select('*').order('name').order('item_id')),
+        // the cash book is asked for whole here: this is the accountant's
+        // copy, not a screen, so the limit is lifted rather than paged
         supabase.rpc('money_book', { p_from: from || '2000-04-01', p_to: to || today(),
-                                     p_account: null, p_cash: true }),
+                                     p_account: null, p_cash: true, p_limit: 1000000 }),
       ]);
 
       const sale = vs.filter((v) => v.vtype === 'sale' || v.vtype === 'estimate');
@@ -277,11 +300,18 @@ export default function TransferScreen({ navigation }) {
   const saveBackup = async () => {
     setBusy('backup');
     try {
+      // A PAGE NEEDS SOMETHING TO BE A PAGE OF.
+      //
+      // Asking for rows 0-999 and then 1000-1999 without saying in what order
+      // lets the database answer in whatever order it likes, and it does not
+      // have to be the same order twice. Rows near the boundary could come
+      // back twice or not at all, and a backup that quietly loses rows is
+      // worse than no backup. Ordering by id makes the pages line up.
       const grab = async (table, cols = '*') => {
         const out = [];
         for (let from = 0; ; from += 1000) {
           const { data, error } = await supabase.from(table).select(cols)
-            .range(from, from + 999);
+            .order('id').range(from, from + 999);
           if (error) throw error;
           out.push(...(data || []));
           if (!data || data.length < 1000) break;
@@ -451,7 +481,7 @@ export default function TransferScreen({ navigation }) {
       const { data: have } = await supabase.from(table).select('id, name');
       const byName = Object.fromEntries((have || []).map((r) => [r.name.trim().toLowerCase(), r.id]));
 
-      let added = 0, updated = 0;
+      let added = 0, updated = 0, noState = 0;
       const toAdd = [];
 
       for (const r of rows) {
@@ -463,10 +493,19 @@ export default function TransferScreen({ navigation }) {
           : { org_id: org.id, name: r.name, kind: r.kind || 'customer',
               gstin: r.gstin || null, is_registered: !!r.gstin, phone: r.phone || null,
               address: r.address || null,
-              state_code: r.state_code || org.state_code,
-              state_name: r.state_name || org.state_name,
+              // A CUSTOMER WHOSE STATE WE DO NOT KNOW IS NOT FROM HERE.
+              //
+              // This used to hand every unknown state the shop's own code, so
+              // an imported out-of-state customer became a local one and every
+              // bill to him was charged CGST and SGST instead of IGST, and
+              // went into the wrong table of GSTR-1. Left blank, the bill
+              // screen asks for the state before it will save.
+              state_code: r.state_code || null,
+              state_name: r.state_name || null,
               opening_balance: r.opening_balance || 0,
               opening_type: r.opening_type || 'owes_you' };
+
+        if (what !== 'items' && !body.state_code) noState++;
 
         const id = byName[r.name.trim().toLowerCase()];
         if (id) {
@@ -485,7 +524,13 @@ export default function TransferScreen({ navigation }) {
       }
 
       Alert.alert('Done',
-        `${added} new, ${updated} updated. Nothing was removed.`);
+        `${added} new, ${updated} updated. Nothing was removed.`
+        + (noState
+            ? `\n\n${noState} name${noState === 1 ? ' has' : 's have'} no State on the file. `
+              + `Skwik has left ${noState === 1 ? 'it' : 'them'} blank rather than `
+              + `assuming your own State — put it in before you bill ${noState === 1 ? 'him' : 'them'}, `
+              + `or the tax will be worked out wrong.`
+            : ''));
     } catch (e) {
       Alert.alert('Stopped part way', `${e.message || String(e)}\n\nWhat went in before the `
         + `problem is saved. Fix the file and bring it in again — names already `

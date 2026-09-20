@@ -146,16 +146,6 @@ export default function ItemsScreen({ navigation }) {
     const problem = checkHsn(edit.hsn, org);
     if (problem) return Alert.alert('HSN code', problem);
 
-    // A tax invoice with a 0% line on it undercharges the customer and
-    // understates the return. The rate is the one field on this sheet with
-    // money behind it, so it is the one field nobody may skip past.
-    if (taxed && !num(edit.gst_rate)) {
-      return Alert.alert('GST rate?',
-        'This item has no GST rate. A bill with it on will charge no tax. '
-        + 'Put the rate in, or set it to 0 on purpose.',
-        [{ text: 'Go back' }, { text: 'It really is 0%', onPress: proceed }]);
-    }
-
     const proceed = async () => {
       const body = {
         org_id: org.id,
@@ -179,6 +169,22 @@ export default function ItemsScreen({ navigation }) {
       if (error) return Alert.alert('Could not save', error.message);
       setEdit(null); load();
     };
+
+    // A tax invoice with a 0% line on it undercharges the customer and
+    // understates the return. The rate is the one field on this sheet with
+    // money behind it, so it is the one field nobody may skip past.
+    //
+    // This used to stand ABOVE proceed, and proceed is a const. Reaching a
+    // const before the line that declares it is a ReferenceError, so the one
+    // moment this guard was meant to help — a GST shop saving an item with no
+    // rate on it — was the moment the screen threw instead. It now stands
+    // below, where proceed exists.
+    if (taxed && !num(edit.gst_rate)) {
+      return Alert.alert('GST rate?',
+        'This item has no GST rate. A bill with it on will charge no tax. '
+        + 'Put the rate in, or set it to 0 on purpose.',
+        [{ text: 'Go back' }, { text: 'It really is 0%', onPress: proceed }]);
+    }
 
     // Right shape, but not a code we know. Warn, do not block — the bundled
     // list is not the whole master and he may have a genuine code.

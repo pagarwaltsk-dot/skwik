@@ -15,15 +15,17 @@ import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import {
-  computeBill, fmt, fmt0, hsnApplies, num, pct, rateIsGuessed, saleRate, settle,
+  computeBill, fmt, fmt0, hsnApplies, num, pct, placeOfSupply, purchaseTaxMode,
+  rateIsGuessed, saleRate, settle, taxIsCost,
   taxModeFor, today, topRate,
 } from '../lib/money';
+import { pdfName, renamed, sharePdf } from '../lib/pdf';
 import { STATES } from '../lib/states';
 import { showBatch, showExpiry, showGodowns, showStock } from '../lib/features';
 import { searchItems, parseQuery, highlightParts, tok } from '../lib/search';
 import { uqcShort } from '../lib/uqc';
 import { checkHsn, hsnExists } from '../lib/hsn';
-import { HsnField, UomField } from '../components/Pickers';
+import { HsnField, UomField, StateField } from '../components/Pickers';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
 import {
@@ -69,6 +71,8 @@ export default function BillScreen({ route, navigation }) {
   const [cq, setCq]       = useState('');
   const [cust, setCust]   = useState(null);          // {id?, name, phone, state_code…}
   const [isCash, setIsCash] = useState(false);
+  const [rcharge, setRcharge] = useState(false);
+  const [less, setLess] = useState('');        // one discount, on the whole bill
 
   const [q, setQ]         = useState('');
   const [lines, setLines] = useState([]);            // newest FIRST
@@ -148,18 +152,38 @@ export default function BillScreen({ route, navigation }) {
     if (!editId) return;
     let alive = true;
     (async () => {
-      const [{ data: v }, { data: ls }] = await Promise.all([
+      const [{ data: v, error: vErr }, { data: ls, error: lErr }] = await Promise.all([
         supabase.from('vouchers').select('*, parties(*)').eq('id', editId).maybeSingle(),
         supabase.from('voucher_lines').select('*').eq('voucher_id', editId).order('line_no'),
       ]);
       if (!alive) return;
+      if (vErr) { setLoadingBill(false);
+                  return Alert.alert('Could not open it', vErr.message || String(vErr)); }
       if (!v) { setLoadingBill(false);
                 return Alert.alert('Not found', 'That bill is no longer in your books.'); }
+
+      // HALF A BILL IS WORSE THAN NO BILL.
+      //
+      // The header and the lines are asked for together. If the lines do not
+      // arrive the screen used to open anyway, empty, and saving it wrote the
+      // bill back with nothing on it — a bill of five items became a bill of
+      // none, and the stock and the customer's account went with it. If the
+      // lines cannot be read, the bill does not open.
+      if (lErr) { setLoadingBill(false);
+                  return Alert.alert('Could not open it',
+                    'Skwik could not read the items on this bill, so it will not '
+                    + 'open it half-written. Try again when you have signal.'); }
+      if (!ls || !ls.length) { setLoadingBill(false);
+                  return Alert.alert('Nothing on this bill',
+                    'This bill has no items on it. Open it again when you have '
+                    + 'signal; if it is still empty, it was saved that way.'); }
 
       setLoadedType(v.vtype);
       setVdate(v.vdate);
       setCust(v.parties || { name: v.printed_name || 'CASH' });
       setIsCash(!!v.is_cash);
+      setRcharge(!!v.reverse_charge);
+      setLess(Number(v.discount) ? String(v.discount) : '');
       setExtra(Number(v.extra_amount) ? String(v.extra_amount) : '');
       setExtraGst(Number(v.extra_gst_rate) ? String(v.extra_gst_rate) : '');
       setExtraNote(v.extra_note || '');
@@ -304,7 +328,7 @@ export default function BillScreen({ route, navigation }) {
       qty: h.qty == null ? '' : String(h.qty), rate: String(rate || ''),
       // the rate was worked out from cost, not set by anyone: the line says so
       rateGuessed: !isBuy && rateIsGuessed(h.p, priceList),
-      rateEdited: false, flag: false, checked: false, note: '', disc: 0,
+      rateEdited: false, flag: false, checked: false, note: '',
       batch: '', expiry: '',
     };
     setLines((ls) => [line, ...ls]);                 // newest at the TOP
@@ -334,14 +358,26 @@ export default function BillScreen({ route, navigation }) {
         : l)));
   };
 
+  // SWITCHING PRICE LIST MUST NOT EMPTY A RATE.
+  //
+  // This read the price straight off the item and wrote whatever it found.
+  // An item with no price of its own — anything that came in as opening
+  // stock — has nothing there, so the line's rate became an empty string and
+  // the cost-plus-a-tenth figure the app had worked out was thrown away.
+  // Tapping the other price list on a bill full of such items zeroed it.
+  //
+  // saleRate() is the one place that knows what a line should charge, so it
+  // is the one place asked. If it has nothing to offer either, the rate that
+  // is already on the line stands.
   const applyList = (list) => {
     setPriceList(list);
     setLines((ls) => ls.map((l) => {
       if (l.rateEdited || isBuy) return l;
       const p = items.find((x) => x.id === l.item_id);
       if (!p) return l;
-      const r = list === 2 ? (p.price2 || p.sale_price) : p.sale_price;
-      return { ...l, rate: String(r || '') };
+      const r = saleRate(p, list);
+      if (!(r > 0)) return l;
+      return { ...l, rate: String(r) };
     }));
   };
 
@@ -368,16 +404,19 @@ export default function BillScreen({ route, navigation }) {
 
   /* ---------------- totals ---------------- */
 
-  const mode = estimateMode ? 'none' : taxModeFor(org, cust);
+  const mode = isBuy ? purchaseTaxMode(org, cust)
+    : estimateMode ? 'none' : taxModeFor(org, cust, isCash);
   const good = lines.filter((l) => l.item_name.trim() && num(l.qty) > 0);
   const extraAmt  = num(extra);
   // Freight carries the dearest rate on the bill unless he says otherwise.
   const extraRate = extraGst === '' ? topRate(good) : num(extraGst);
-  const calc = computeBill(good, mode, { amount: extraAmt, gst_rate: extraRate });
+  const discAsked = num(less);
+  const calc = computeBill(good, mode,
+    { amount: extraAmt, gst_rate: extraRate, discount: discAsked });
   const grand = calc.total;
   const roundOff = calc.round_off;
   const checked = lines.filter((l) => l.checked).length;
-  const discTotal = good.reduce((t, l) => t + num(l.disc), 0);
+  const discTotal = calc.discount;
   const wantBatch  = showBatch(org);
   const wantExpiry = showExpiry(org);
 
@@ -527,8 +566,10 @@ export default function BillScreen({ route, navigation }) {
     setBusy(true);
     try {
       const pty = cust.id ? cust : await findOrCreateParty(cust.name);
-      const m = estimateMode ? 'none' : taxModeFor(org, pty);
-      const c = computeBill(good, m, { amount: extraAmt, gst_rate: extraRate });
+      const m = isBuy ? purchaseTaxMode(org, pty)
+        : estimateMode ? 'none' : taxModeFor(org, pty, isCash);
+      const c = computeBill(good, m,
+        { amount: extraAmt, gst_rate: extraRate, discount: discAsked });
       const total = c.total;
 
       const payload = {
@@ -542,10 +583,23 @@ export default function BillScreen({ route, navigation }) {
         party_id: pty.id, printed_name: cust.name, is_cash: isCash,
         supplier_invoice_no: isBuy ? supNo : null,
         supplier_invoice_date: isBuy ? supDate : null,
-        place_of_supply_code: pty.state_code || org.state_code,
+        // SECTION 10(1)(c): WHERE THE GOODS ARE HANDED OVER.
+        //
+        // When goods leave the counter with the buyer there is no movement to
+        // follow, so the place of supply is the shop, not wherever the buyer
+        // happens to live. Skwik used the buyer's state either way, which
+        // turned a local sale to a visitor from another state into IGST and
+        // reported it in the wrong table of GSTR-1.
+        //
+        // A cash sale with nobody named on it is a counter sale. A named
+        // customer with a GST number is being supplied wherever he is
+        // registered, so his state stands.
+        place_of_supply_code: placeOfSupply(org, pty, isCash),
+        reverse_charge: !!rcharge,
         godown_id: godown || null,
         tax_mode: m,
         taxable: c.taxable, cgst: c.cgst, sgst: c.sgst, igst: c.igst,
+        discount: c.discount,
         extra_amount: extraAmt, extra_note: extraNote, extra_gst_rate: c.extra_gst_rate,
         round_off: c.round_off, total,
         lines: c.lines.map((l) => ({
@@ -588,7 +642,9 @@ export default function BillScreen({ route, navigation }) {
 
       const rec = {
         voucher: { ...payload, voucher_no: data.voucher_no || supNo,
-                   place_of_supply_name: pty.state_name || org.state_name },
+                   place_of_supply_name: (isCash && !pty.gstin)
+                     ? (org.state_name || pty.state_name)
+                     : (pty.state_name || org.state_name) },
         party: pty, lines: c.lines, queued,
       };
       newParty.current = null; newItems.current = [];
@@ -605,9 +661,19 @@ export default function BillScreen({ route, navigation }) {
     ? invoiceHtml({ org, voucher: saved.voucher, party: saved.party, lines: saved.lines })
     : thermalHtml({ org, voucher: saved.voucher, party: saved.party, lines: saved.lines,
                     width: paper }));
+  // Pratik_59 — who it is for, and which bill. Not a row of random hex.
+  const billFileName = () => {
+    const v = saved?.voucher || {};
+    return pdfName({
+      who: cust?.name || v.printed_name || org?.name,
+      no: v.voucher_no || supNo,
+      fallback: org?.name || 'Bill',
+    });
+  };
+
   const onShare = async () => {
     const { uri } = await Print.printToFileAsync({ html: html() });
-    await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send' });
+    await sharePdf(uri, billFileName());
   };
 
   // THE PDF, STRAIGHT INTO WHATSAPP.
@@ -624,20 +690,10 @@ export default function BillScreen({ route, navigation }) {
     try {
       const { uri } = await Print.printToFileAsync({ html: html() });
       if (Platform.OS !== 'android') {
-        return Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send' });
+        return sharePdf(uri, billFileName());
       }
       // a name the customer will recognise in his chat
-      const v = saved?.voucher || {};
-      const nice = `${(org?.name || 'Bill').replace(/[^A-Za-z0-9 ]/g, '')} ${v.voucher_no || ''}`
-        .trim().replace(/\s+/g, '-') + '.pdf';
-      let sendUri = uri;
-      try {
-        const src = new File(uri);
-        const dst = new File(Paths.cache, nice);
-        try { if (dst.exists) dst.delete(); } catch (e) { /* first time */ }
-        src.copy(dst);
-        sendUri = dst.uri;
-      } catch (e) { /* keep the original name */ }
+      const sendUri = renamed(uri, billFileName());
 
       const content = await FileSystem.getContentUriAsync(sendUri);
       await IntentLauncher.startActivityAsync('android.intent.action.SEND', {
@@ -650,7 +706,7 @@ export default function BillScreen({ route, navigation }) {
       // no WhatsApp, or it refused the handover: the ordinary sheet still works
       try {
         const { uri } = await Print.printToFileAsync({ html: html() });
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send' });
+        await sharePdf(uri, billFileName());
       } catch (e2) {
         Alert.alert('Could not send it', sayPlainly(e2));
       }
@@ -1058,24 +1114,6 @@ export default function BillScreen({ route, navigation }) {
                 </View>
               )}
 
-              {/* what came off this line. Hidden until he wants it, because
-                  most lines have none, and the tax is worked out after it. */}
-              {(l.disc > 0 || l.discOpen) ? (
-                <View style={[S.row, { marginTop: 10, gap: 8 }]}>
-                  <Text style={{ fontSize: 13, color: C.muted }}>Less</Text>
-                  <TextInput style={[S.cell, S.num, { flex: 1 }]} keyboardType="numeric"
-                    placeholder="0" placeholderTextColor={C.faint}
-                    value={l.disc ? String(l.disc) : ''}
-                    selectTextOnFocus
-                    returnKeyType="next" submitBehavior="submit"
-                    onSubmitEditing={() => qRef.current?.focus()}
-                    onChangeText={(t) => setLine(l.key, { disc: num(t) })} />
-                  <Text style={{ fontSize: 13, color: C.muted }}>
-                    = {fmt(Math.max(0, num(l.qty) * num(l.rate) - num(l.disc)))}
-                  </Text>
-                </View>
-              ) : null}
-
               {/* a word about this line, printed under it on the bill */}
               {l.noteOpen || l.note ? (
                 <TextInput
@@ -1091,12 +1129,6 @@ export default function BillScreen({ route, navigation }) {
                     onPress={() => setLine(l.key, { noteOpen: true })}>
                     <Text style={S.tapPillText}>+ note</Text>
                   </TouchableOpacity>
-                  {!l.disc && !l.discOpen && (
-                    <TouchableOpacity style={[S.tapPill, { paddingVertical: 6, paddingHorizontal: 12 }]}
-                      onPress={() => setLine(l.key, { discOpen: true })}>
-                      <Text style={S.tapPillText}>+ less</Text>
-                    </TouchableOpacity>
-                  )}
                   <View style={{ flex: 1 }} />
                 </View>
               )}
@@ -1127,9 +1159,33 @@ export default function BillScreen({ route, navigation }) {
         {!!lines.length && (
           <View style={[S.card, { marginHorizontal: 14, marginTop: 14 }]}>
             <Text style={S.eyebrow}>Totals</Text>
-            {!!discTotal && <Row k="Items" v={fmt(calc.taxable - extraAmt + discTotal)} />}
-            {!!discTotal && <Row k="Less" v={`- ${fmt(discTotal)}`} />}
+            <Row k="Items" v={fmt(calc.gross)} />
+
+            {/* ONE DISCOUNT, AT THE BOTTOM, WHERE IT IS ACTUALLY GIVEN.
+                It is shared out across the lines behind the scenes so each
+                tax rate is charged on what was really taken for it — the
+                customer sees one round figure, the return sees the truth. */}
+            <View style={[S.row, { marginTop: 6, marginBottom: 2, gap: 8 }]}>
+              <Text style={{ flex: 1, fontSize: 14, color: C.muted }}>Less</Text>
+              <TextInput style={[S.cell, S.num, { width: 120, textAlign: 'right' }]}
+                keyboardType="numeric" placeholder="0" placeholderTextColor={C.faint}
+                selectTextOnFocus value={less}
+                onChangeText={setLess} onBlur={() => setLess(settle(less))}
+                returnKeyType="done" />
+            </View>
+            {discAsked > discTotal && (
+              <Text style={{ fontSize: 11.5, color: C.flagInk, marginBottom: 4 }}>
+                Only {fmt(discTotal)} can come off — that is the whole bill.
+              </Text>
+            )}
+
             <Row k={extraAmt ? 'Taxable value' : 'Items total'} v={fmt(calc.taxable)} />
+            {isBuy && taxIsCost(org) && mode !== 'none' && (
+              <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2, lineHeight: 17 }}>
+                You cannot claim this tax back, so Skwik puts it into what the
+                goods cost you. Ten pieces at 100 with 5% on them become 105 each.
+              </Text>
+            )}
             {mode === 'cgst_sgst' && (<><Row k="CGST" v={fmt(calc.cgst)} /><Row k="SGST" v={fmt(calc.sgst)} /></>)}
             {mode === 'igst' && <Row k="IGST" v={fmt(calc.igst)} />}
             {!!extraAmt && (
@@ -1162,7 +1218,7 @@ export default function BillScreen({ route, navigation }) {
             {showExtra && mode !== 'none' && !!extraAmt && (
               <View style={[S.row, { marginTop: 8, gap: 8, flexWrap: 'wrap' }]}>
                 <Text style={{ fontSize: 12.5, color: C.muted }}>GST on it</Text>
-                {[...new Set([topRate(good), 0, 5, 12, 18, 28])].map((r) => {
+                {[...new Set([topRate(good), 0, 5, 18, 40])].map((r) => {
                   const on = extraRate === r;
                   return (
                     <TouchableOpacity key={r} onPress={() => setExtraGst(String(r))}
@@ -1175,6 +1231,29 @@ export default function BillScreen({ route, navigation }) {
                   );
                 })}
               </View>
+            )}
+
+            {/* REVERSE CHARGE.
+                The bill used to print "No" and the return used to say 'N',
+                whatever the truth of it, because nothing anywhere could say
+                otherwise. It is a fact about this bill, so it is asked here
+                and it travels with the bill. Only a registered shop writing a
+                real tax invoice is ever asked. */}
+            {org?.is_gst_registered && !org?.is_composition && !estimateMode && isOut && (
+              <TouchableOpacity onPress={() => setRcharge(!rcharge)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 }}>
+                <View style={{ width: 20, height: 20, borderRadius: 6, borderWidth: 1.5,
+                               alignItems: 'center', justifyContent: 'center',
+                               borderColor: rcharge ? C.accent : C.greyB,
+                               backgroundColor: rcharge ? C.accent : 'transparent' }}>
+                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                    {rcharge ? '✓' : ''}
+                  </Text>
+                </View>
+                <Text style={{ flex: 1, fontSize: 13.5, color: C.ink }}>
+                  Tax on this bill is payable by the buyer (reverse charge)
+                </Text>
+              </TouchableOpacity>
             )}
 
             <View style={[S.tline, { borderTopWidth: 2, borderTopColor: C.ink, marginTop: 8, paddingTop: 10 }]}>
@@ -1368,7 +1447,7 @@ export default function BillScreen({ route, navigation }) {
                 {!!org?.is_gst_registered && (
                   <>
                     <Text style={[S.label, { marginTop: 14 }]}>GST NUMBER</Text>
-                    <Box ref={npGst} next={npState} style={{ marginTop: 6 }}
+                    <Box ref={npGst} next={npOpen} style={{ marginTop: 6 }}
                       autoCapitalize="characters" maxLength={15}
                       placeholder="Leave empty if he is unregistered"
                       value={partySheet.gstin}
@@ -1382,19 +1461,21 @@ export default function BillScreen({ route, navigation }) {
                   </>
                 )}
 
-                <Text style={[S.label, { marginTop: 14 }]}>STATE CODE</Text>
-                <Box ref={npState} next={npOpen} style={[S.num, { marginTop: 6 }]}
-                  keyboardType="number-pad" maxLength={2}
-                  value={String(partySheet.state_code || '')}
-                  onChangeText={(t) => setPartySheet((x) => ({ ...x, state_code: t }))} />
+                {/* The state by its name. The code fills itself in. */}
+                <Text style={[S.label, { marginTop: 14 }]}>STATE</Text>
+                <View style={{ marginTop: 6 }}>
+                  <StateField value={String(partySheet.state_code || '')}
+                    homeCode={String(org?.state_code || '')}
+                    onChange={(code) => setPartySheet((x) => ({ ...x, state_code: code }))} />
+                </View>
                 <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
                   {STATES[partySheet.state_code]
-                    ? `${STATES[partySheet.state_code]}${org?.is_gst_registered
-                        ? ` — ${String(partySheet.state_code) === String(org?.state_code)
-                            ? 'his bills carry CGST and SGST' : 'his bills carry IGST'}`
-                        : ''}`
-                    : 'Two digits — 18 for Assam. It decides whether a bill carries '
-                      + 'CGST and SGST or IGST, and it is needed the day you register.'}
+                    ? (org?.is_gst_registered
+                        ? (String(partySheet.state_code) === String(org?.state_code)
+                            ? 'His bills carry CGST and SGST.' : 'His bills carry IGST.')
+                        : 'Kept for the day you register.')
+                    : 'It decides whether a bill carries CGST and SGST or IGST, and it '
+                      + 'is needed the day you register.'}
                 </Text>
 
                 {!isBuy && (

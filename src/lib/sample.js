@@ -105,18 +105,25 @@ export function makePool(items, stock) {
 export const poolValue = (pool) =>
   n2(pool.reduce((a, p) => a + (p.left === Infinity ? 0 : p.left * p.rate), 0));
 
-// Pick an item, favouring what he has most of. A shop sells what is piled up
-// by the door far more often than the one box at the back — but it still sells
-// the other things, so no single item is allowed to swallow the run. Weight is
-// on the QUANTITY on the shelf, not on what that quantity is worth: ten boxes
-// of a costly item is a small pile, not a big one.
+// Pick an item, favouring what there is most of — measured in MONEY, not in
+// pieces.
+//
+// Counting pieces made nonsense of a mixed shop. Ten thousand washers at ₹2
+// is ₹20,000 of stock; ten machines at ₹5,000 is ₹50,000. By the piece the
+// washers looked a thousand times the bigger pile, so the run emptied the
+// washer bin and barely touched the machines — and bills came out reading
+// "8,000 washers" instead of anything a shop would actually write.
+//
+// By value the machines are rightly the bigger half of the shelf, and both
+// get sold the way a real month sells them.
 function take(r, pool) {
   const live = pool.filter((p) => p.left > 0);
   if (!live.length) return null;
   const weights = live.map((p) => {
     if (p.left === Infinity) return 1;
-    // square root, so a shelf ten times as deep is about three times as likely
-    const w = Math.sqrt(p.left);
+    // square root, so a shelf ten times as valuable is about three times as
+    // likely — a leaning, not a landslide
+    const w = Math.sqrt(p.left * p.rate);
     // and each time it has been billed in this run it steps back a little, so
     // the rest of the list gets a turn
     return w / (1 + (p.used || 0) * 0.5);
@@ -134,30 +141,35 @@ function take(r, pool) {
 /* ---------------- hitting a figure the customer actually paid ---------------- */
 
 // What the lines come to once the tax is on them, as the bill will print it.
-const billTotal = (lines, mode) => computeBill(lines.map((l) => ({
+const billTotal = (lines, mode, discount = null) => computeBill(lines.map((l) => ({
   qty: l.qty, rate: l.rate, gst_rate: Number(l.item.gst_rate) || 0, disc: l.disc || 0,
-})), mode).total;
+})), mode, { discount: discount == null ? lines.discount || 0 : discount }).total;
 
 // A receipt of 5,700 is what the customer PAID — tax and all. So the bill has
-// to come to 5,700 on its face, not 5,700 before tax. The last line's
-// discount is nudged until the printed total is that figure exactly, which is
-// what a shopkeeper does when he rounds a bill off at the counter.
+// to come to 5,700 on its face, not 5,700 before tax.
+//
+// The bill's OWN discount is nudged until the printed total is that figure
+// exactly, which is what a shopkeeper does when he rounds a bill off at the
+// counter. It used to be pushed onto the last line, which put the whole
+// rounding on one tax rate; shared across the bill it lands where it belongs.
 export function fitToTotal(lines, target, mode) {
-  const last = lines[lines.length - 1];
-  const rate = mode === 'none' ? 0 : (Number(last.item.gst_rate) || 0);
-  const gross = n2(last.qty * last.rate);
+  const gross = n2(lines.reduce((a, l) => a + n2(l.qty * l.rate), 0));
+  // the average rate the bill carries, so the first guess is close
+  const avg = mode === 'none' ? 0
+    : (gross > 0
+        ? lines.reduce((a, l) => a + n2(l.qty * l.rate) * (Number(l.item.gst_rate) || 0), 0) / gross
+        : 0);
 
-  for (let i = 0; i < 8; i++) {
-    const total = billTotal(lines, mode);
+  let want = 0;
+  for (let i = 0; i < 10; i++) {
+    const total = billTotal(lines, mode, want);
     const off = total - target;
-    if (off === 0) return true;
-    // taking x off the taxable value takes x * (1 + rate/100) off the total
-    const want = n2(num(last.disc) + off / (1 + rate / 100));
-    if (want < 0 || want >= gross) return false;        // cannot get there on this line
-    last.disc = want;
-    last.amount = n2(gross - want);
+    if (off === 0) { lines.discount = n2(want); return true; }
+    want = n2(want + off / (1 + avg / 100));
+    if (want < 0 || want >= gross) return false;        // cannot get there at all
   }
-  return billTotal(lines, mode) === target;
+  if (billTotal(lines, mode, want) === target) { lines.discount = n2(want); return true; }
+  return false;
 }
 
 /* ---------------- one bill ---------------- */
@@ -167,28 +179,68 @@ export function fitToTotal(lines, target, mode) {
 // to that amount to the rupee, so the last line takes one more piece than it
 // needs and the difference comes off as a discount — which is what happens at
 // a counter anyway, and it shows on the bill.
-export function buildLines(target, pool, r, { exact = false, maxLines = 6, mode = 'none', avgRate = 12 } = {}) {
+// HOW MANY THINGS A BILL OF THIS SIZE CARRIES.
+//
+// A big bill is big because a lot went into the bag, not because one thing
+// was dear. A thirty-thousand-rupee bill with three lines on it looks like a
+// machine wrote it. These are the bands a shopkeeper recognises.
+export function linesWanted(target, r) {
+  const n = (lo, hi) => lo + Math.floor(r() * (hi - lo + 1));
+  if (target >= 30000) return n(15, 20);
+  if (target >= 15000) return n(10, 12);
+  return n(7, 8);
+}
+
+export function buildLines(target, pool, r, { exact = false, maxLines = 0, mode = 'none', avgRate = 12 } = {}) {
   // Aim below the figure when tax is going on top of it, or every bill comes
   // out over by the rate. The shop's own usual rate is a far better guess than
   // a fixed one: a 5% grocer and an 18% hardware shop are not the same.
   const guessRate = mode === 'none' ? 0 : avgRate;
+  const face = target;
   target = target / (1 + guessRate / 100);
   const lines = [];
-  // most bills are two or three lines, a few are long — never one flat spread
-  const spread = r();
-  const want = Math.max(1, Math.min(maxLines,
-    spread < 0.14 ? 1 : spread < 0.48 ? 2 : spread < 0.74 ? 3 : spread < 0.90 ? 4 : 5 + Math.round(r()))); 
+
+  let want = linesWanted(face, r);
+  if (maxLines > 0) want = Math.min(want, maxLines);
+  // a shop with six things on its list cannot write a bill of twenty
+  want = Math.max(1, Math.min(want, pool.filter((p) => p.left > 0).length));
+
   let left = target;
 
   for (let i = 0; i < want && left > 0.5; i++) {
-    const p = take(r, pool);
+    // Reaching for something already on this bill wastes a line: the two
+    // merge and the bill comes out shorter than it should. Try again for
+    // something else before giving in and adding to what is there.
+    let p = take(r, pool);
+    for (let tries = 0; p && tries < 6
+         && lines.some((l) => l.item.id === p.it.id); tries++) {
+      const other = take(r, pool);
+      if (!other || other.it.id === p.it.id) break;
+      p = other;
+    }
     if (!p) break;
 
-    const share = i === want - 1 ? left : left * (0.35 + r() * 0.45);
+    // SPREAD THE BILL, DO NOT FRONT-LOAD IT.
+    //
+    // The old share took a third to four-fifths of everything remaining on
+    // the first line, which is fine for a bill of three and absurd for a bill
+    // of eighteen: the first two lines ate it and the rest came out at one
+    // piece each. Each line now takes roughly its fair portion of what is
+    // left, give or take a half, and the last one takes the remainder.
+    const rest  = want - i;
+    const share = rest <= 1 ? left : left * (1 / rest) * (0.55 + r() * 0.9);
+
     let q = share / p.rate;
     q = p.weighed ? Math.round(q * 4) / 4 : Math.round(q);
     if (q <= 0) q = p.weighed ? 0.25 : 1;
-    if (p.left !== Infinity) q = Math.min(q, p.weighed ? p.left : Math.floor(p.left));
+
+    // NOBODY SELLS THE WHOLE BIN IN ONE BILL.
+    // At most a quarter of what is on the shelf goes out on any one bill, so
+    // ten thousand washers do not leave as a single line of ten thousand.
+    if (p.left !== Infinity) {
+      const cap = p.weighed ? p.left / 4 : Math.max(1, Math.floor(p.left / 4));
+      q = Math.min(q, cap, p.weighed ? p.left : Math.floor(p.left));
+    }
     if (q <= 0) { p.left = 0; i--; continue; }        // nothing left of this one
 
     const amount = n2(q * p.rate);

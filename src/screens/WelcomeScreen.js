@@ -66,6 +66,15 @@ export default function WelcomeScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
+        {/* There was no way to reset a password from anywhere in the app: the
+            screen that could do it was never put in the navigator. */}
+        <TouchableOpacity onPress={() => navigation.navigate('Forgot')}
+          style={{ alignItems: 'center', marginTop: 16, paddingVertical: 8 }}>
+          <Text style={{ fontSize: 14, fontWeight: '700', color: C.muted }}>
+            Forgotten your password?
+          </Text>
+        </TouchableOpacity>
+
         <View style={{ alignItems: 'center', marginTop: 10 }}>
           <Text style={{ fontSize: 13.5, color: C.muted }}>New to Skwik?</Text>
           <TouchableOpacity onPress={() => navigation.navigate('Register')}

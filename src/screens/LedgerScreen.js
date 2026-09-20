@@ -7,39 +7,38 @@ import * as Sharing from 'expo-sharing';
 import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
-import { fmt0, n2 } from '../lib/money';
+import { fmt0, n2, today } from '../lib/money';
 import { invoiceHtml, ledgerHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
 import { Head, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
+import { pdfName, sharePdf } from '../lib/pdf';
 
 export default function LedgerScreen({ route, navigation }) {
   const partyId = route.params?.partyId;
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   const [party, setParty] = useState(null);
   const [data, setData]   = useState({ rows: [], opening: 0, opening_type: 'owes_you' });
   // An account that could not be fetched must never be drawn as zero. A
   // shopkeeper standing at the counter reading "owes you ₹0" acts on it.
   const [failed, setFailed] = useState(false);
   const [making, setMaking] = useState(null);   // which bill's PDF is being built
+  const [busy, setBusy] = useState(false);
 
-  useFocusEffect(useCallback(() => {
-    let on = true;
-    (async () => {
-      try {
-        const [{ data: p, error: pe }, { data: led, error: le }] = await Promise.all([
-          supabase.from('parties').select('*').eq('id', partyId).maybeSingle(),
-          supabase.rpc('party_ledger', { p_party: partyId }),
-        ]);
-        if (!on) return;
-        if (pe || le || !led) { setFailed(true); return; }
-        setParty(p);
-        setData(led);
-        setFailed(false);
-      } catch (e) { if (on) setFailed(true); }
-    })();
-    return () => { on = false; };
-  }, [partyId]));
+  const load = useCallback(async () => {
+    try {
+      const [{ data: p, error: pe }, { data: led, error: le }] = await Promise.all([
+        supabase.from('parties').select('*').eq('id', partyId).maybeSingle(),
+        supabase.rpc('party_ledger', { p_party: partyId }),
+      ]);
+      if (pe || le || !led) { setFailed(true); return; }
+      setParty(p);
+      setData(led);
+      setFailed(false);
+    } catch (e) { setFailed(true); }
+  }, [partyId]);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const rows = data.rows || [];
   const open = Number(data.opening || 0);
@@ -59,6 +58,32 @@ export default function LedgerScreen({ route, navigation }) {
   const balance = n2(sum(left) - sum(right));
   const owes = balance >= 0;
 
+  // Close a balance that is never going to be paid, or was rounded away at
+  // the counter. It is a payment whose mode is neither cash nor bank, so the
+  // cash book and the balance sheet both step over it by name.
+  const askWriteOff = () => {
+    const amt = n2(balance);
+    Alert.alert(
+      `Write off ₹${fmt0(Math.abs(amt))}?`,
+      `${party?.name || 'This account'} will stand at nil.\n\n`
+      + (amt > 0
+          ? 'This is money you are giving up. It does not go in the cash book, '
+            + 'because no cash came in — it shows in your profit and loss as '
+            + 'money written off.'
+          : 'This is money you owed and are not paying. It does not go in the '
+            + 'cash book, because nothing left the cash box.'),
+      [{ text: 'Leave it' },
+       { text: 'Write it off', style: 'destructive', onPress: async () => {
+           setBusy(true);
+           const { error } = await supabase.rpc('write_off', {
+             p_party: partyId, p_amount: amt, p_date: today(), p_note: 'Written off',
+           });
+           setBusy(false);
+           if (error) return Alert.alert('Could not write it off', sayPlainly(error));
+           load();
+         } }]);
+  };
+
   const share = async () => {
     try {
       if (!party) {
@@ -72,7 +97,8 @@ export default function LedgerScreen({ route, navigation }) {
         return Alert.alert('Nothing to share with',
           'This phone has no app set up to receive the file.');
       }
-      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Send account' });
+      await sharePdf(uri, pdfName({ who: party?.name, what: 'account',
+                                    fallback: org?.name || 'Account' }), 'Send account');
     } catch (e) {
       Alert.alert('Could not send', sayPlainly(e));
     }
@@ -125,8 +151,8 @@ export default function LedgerScreen({ route, navigation }) {
         return Alert.alert('Nothing to share with',
           'This phone has no app set up to receive files.');
       }
-      await Sharing.shareAsync(uri, { mimeType: 'application/pdf',
-                                      dialogTitle: r.label || 'Bill' });
+      await sharePdf(uri, pdfName({ who: party?.name, no: v?.voucher_no,
+                                    fallback: org?.name || 'Bill' }), r.label || 'Bill');
     } catch (e) {
       Alert.alert('Could not make the PDF', sayPlainly(e));
     } finally { setMaking(null); }
@@ -197,6 +223,27 @@ export default function LedgerScreen({ route, navigation }) {
                         color: owes ? C.red : C.greenD }, S.num]}>
           ₹ {fmt0(Math.abs(balance))}
         </Text>
+
+        {/* THE LAST HUNDRED RUPEES.
+
+            A customer owing 10,100 pays 10,000 and both sides shake hands on
+            it. There was no way to close the 100 except to enter cash that
+            never came in, which put money in the cash book that is not in the
+            cash box. Writing it off closes his account and touches neither
+            the cash box nor the bank — it shows in the profit and loss for
+            what it is, money given up. */}
+        {isOwner && Math.abs(balance) > 0 && Math.abs(balance) <= 5000 && (
+          <TouchableOpacity onPress={askWriteOff} disabled={busy}
+            style={{ marginTop: 12, alignSelf: 'flex-start', paddingVertical: 8,
+                     paddingHorizontal: 14, borderRadius: 10, borderWidth: 1,
+                     borderColor: owes ? '#F0D2CA' : '#C6E4D3',
+                     backgroundColor: C.surface }}>
+            <Text style={{ fontSize: 13, fontWeight: '700',
+                           color: owes ? C.red : C.greenD }}>
+              {busy ? 'One moment…' : `Write off ₹${fmt0(Math.abs(balance))} and close it`}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* The price list a customer is on belongs on his record, under

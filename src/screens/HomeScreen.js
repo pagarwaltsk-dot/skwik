@@ -26,6 +26,13 @@ import { C, S } from '../theme';
 // number. No tabs, no tiles, no scrolling to find the thing he does forty
 // times a day.
 
+// One day either side, kept as the plain YYYY-MM-DD the rest of Skwik uses.
+const shiftDay = (d, by) => {
+  const t = new Date(`${d}T12:00:00`);
+  t.setDate(t.getDate() + by);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+};
+
 const rupee = (x) => `${n2(x) < 0 ? '-' : ''}${fmt0(Math.abs(n2(x)))}`;
 
 // hh:mm out of a timestamp, in his own time, not the server's
@@ -53,6 +60,11 @@ export default function HomeScreen({ navigation }) {
   const [fyTotal, setFyTotal] = useState(0);
   const [q, setQ] = useState('');
   const [found, setFound] = useState(null);
+  // WHICH DAY'S BOOK.
+  //
+  // It was always today's and there was no way back. A shopkeeper writing up
+  // yesterday evening, or checking what Saturday came to, had nowhere to look.
+  const [day, setDay] = useState(today());
   const estimate = org?.mode === 'estimate';
 
   /* ---------------- the day's entries ---------------- */
@@ -62,11 +74,12 @@ export default function HomeScreen({ navigation }) {
     (async () => {
       countPending?.();
       try {
-        const d = today();
+        const d = day;
+        setBook(null);          // never show one day's entries under another's date
         const [{ data: vs }, { data: ps }] = await Promise.all([
           supabase.from('vouchers')
             .select('id, vtype, voucher_no, printed_name, total, is_cash, created_at')
-            .eq('vdate', d).order('created_at'),
+            .eq('vdate', d).is('cancelled_at', null).order('created_at'),
           supabase.from('payments')
             .select('id, ptype, amount, mode, created_at, parties(name)')
             .eq('pdate', d).order('created_at'),
@@ -105,12 +118,16 @@ export default function HomeScreen({ navigation }) {
 
         setBook({ rows, sold: n2(sold), bills });
 
+        // THE YEAR'S TURNOVER, ADDED UP WHERE THE BILLS ARE.
+        //
+        // This used to pull the year's bills down to the phone and add them
+        // here. Supabase hands back a thousand rows at a time and nobody was
+        // asking for the second page, so the figure stopped growing at a
+        // thousand bills and a composition dealer would have sailed past the
+        // 1.5 crore limit with the warning still showing a fraction of it.
         if (org?.is_composition) {
-          const now = new Date();
-          const fyStart = `${now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1}-04-01`;
-          const { data: fy } = await supabase.from('vouchers')
-            .select('total').eq('vtype', 'sale').gte('vdate', fyStart);
-          if (on && fy) setFyTotal(fy.reduce((a, v) => a + num(v.total), 0));
+          const { data: fy, error: fyErr } = await supabase.rpc('fy_sales_total');
+          if (on && !fyErr && fy != null) setFyTotal(num(fy));
         }
       } catch (e) {
         // A figure that could not be worked out is left standing rather than
@@ -118,7 +135,7 @@ export default function HomeScreen({ navigation }) {
       }
     })();
     return () => { on = false; };
-  }, [org?.is_composition, countPending, navigation]));
+  }, [org?.is_composition, countPending, navigation, day]));
 
   /* ---------------- the box that finds anything ---------------- */
 
@@ -150,21 +167,39 @@ export default function HomeScreen({ navigation }) {
     const t = text.trim();
     if (t.length < 2) return setFound(null);
     try {
-      const [{ data: parties }, { data: items }, { data: bills }] = await Promise.all([
+      const [{ data: parties }, { data: items },
+             { data: byNo }, { data: byName }] = await Promise.all([
         supabase.from('parties').select('id, name, kind, area, phone')
           .ilike('name', `%${t}%`).limit(LOOK),
         supabase.from('items').select('id, name, unit, sale_price').eq('is_active', true)
           .ilike('name', `%${t}%`).limit(LOOK),
+        // TWO QUESTIONS, NOT ONE WITH A COMMA IN IT.
+        //
+        // .or() takes its conditions as one string with commas between them,
+        // and the search text went straight into the middle of it. Anybody
+        // searching for "Sahu, Ramesh" split the filter in half and the query
+        // came back broken. Asking twice and joining the answers here has no
+        // such trap in it.
         supabase.from('vouchers').select('id, vtype, voucher_no, printed_name, total, vdate')
-          .or(`voucher_no.ilike.%${t}%,printed_name.ilike.%${t}%`)
+          .is('cancelled_at', null).ilike('voucher_no', `%${t}%`)
+          .order('vdate', { ascending: false }).limit(LOOK),
+        supabase.from('vouchers').select('id, vtype, voucher_no, printed_name, total, vdate')
+          .is('cancelled_at', null).ilike('printed_name', `%${t}%`)
           .order('vdate', { ascending: false }).limit(LOOK),
       ]);
+
+      const seen = new Set();
+      const bills = [...(byNo || []), ...(byName || [])]
+        .filter((b) => (seen.has(b.id) ? false : seen.add(b.id)))
+        .sort((a, b) => String(b.vdate).localeCompare(String(a.vdate)))
+        .slice(0, LOOK);
+
       setFound({
         parties: rank(parties || [], t),
         items: rank(items || [], t),
-        bills: bills || [],
+        bills,
         more: (parties || []).length >= LOOK || (items || []).length >= LOOK
-           || (bills || []).length >= LOOK,
+           || (byNo || []).length >= LOOK || (byName || []).length >= LOOK,
       });
     } catch (e) {
       setFound({ parties: [], items: [], bills: [], failed: true });
@@ -385,16 +420,47 @@ export default function HomeScreen({ navigation }) {
                 );
               })}
 
-              <TouchableOpacity onPress={() => navigation.navigate('Bills')}
-                style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8,
-                         paddingHorizontal: 14, paddingVertical: 11,
-                         borderBottomWidth: 1.5, borderBottomColor: C.ink }}>
-                <Text style={{ fontSize: 15, fontWeight: '700', color: C.ink }}>Day book</Text>
-                <Text style={[S.num, { flex: 1, fontSize: 12, color: C.muted }]}>
-                  {dmy(today())}
-                </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6,
+                             paddingHorizontal: 8, paddingVertical: 7,
+                             borderBottomWidth: 1.5, borderBottomColor: C.ink }}>
+                <TouchableOpacity onPress={() => setDay(shiftDay(day, -1))}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 8 }}
+                  style={{ paddingHorizontal: 6, paddingVertical: 2 }}>
+                  <Text style={{ fontSize: 20, fontWeight: '700', color: C.muted }}>‹</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity onPress={() => navigation.navigate('Bills')}
+                  style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontWeight: '700', color: C.ink }}>
+                    {day === today() ? 'Day book' : 'Day book'}
+                  </Text>
+                  <Text style={[S.num, { flex: 1, fontSize: 12,
+                                         color: day === today() ? C.muted : C.edit }]}>
+                    {day === today() ? dmy(day) : `${dmy(day)} — not today`}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => { if (day < today()) setDay(shiftDay(day, 1)); }}
+                  disabled={day >= today()}
+                  hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+                  style={{ paddingHorizontal: 6, paddingVertical: 2 }}>
+                  <Text style={{ fontSize: 20, fontWeight: '700',
+                                 color: day >= today() ? C.faint : C.muted }}>›</Text>
+                </TouchableOpacity>
+
                 <Figure size={14.5} weight="700">{book ? rupee(book.sold) : '—'}</Figure>
-              </TouchableOpacity>
+              </View>
+
+              {day !== today() && (
+                <TouchableOpacity onPress={() => setDay(today())}
+                  style={{ paddingHorizontal: 14, paddingVertical: 7,
+                           borderBottomWidth: 1, borderBottomColor: C.line }}>
+                  <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.accent }}>
+                    Back to today
+                  </Text>
+                </TouchableOpacity>
+              )}
 
               <ColHead cols={[{ label: 'TIME', width: 40 },
                               { label: 'PARTICULARS' },
@@ -453,7 +519,8 @@ export default function HomeScreen({ navigation }) {
       {/* the foot: how many entries, and whether they have reached the books */}
       <Foot style={{ borderTopWidth: 1, borderTopColor: C.line, gap: 8 }}>
         <Text style={{ flex: 1, fontSize: 11.5, color: C.muted }}>
-          {book ? `${book.rows.length} entr${book.rows.length === 1 ? 'y' : 'ies'} today` : 'Reading the day book…'}
+          {book ? `${book.rows.length} entr${book.rows.length === 1 ? 'y' : 'ies'} on `
+            + `${day === today() ? 'today' : dmy(day)}` : 'Reading the day book…'}
           {book?.bills ? ` · ${book.bills} bill${book.bills === 1 ? '' : 's'}` : ''}
         </Text>
         <View style={{ width: 7, height: 7, borderRadius: 4,
