@@ -39,8 +39,13 @@ update payments
    set from_voucher = true
  where ref_voucher_id is not null
    and from_voucher = false
+   -- These four wordings are the ONLY ones post_voucher_cash writes, and they
+   -- have to match it exactly. 'Paid for %' was wrong — a purchase says
+   -- 'Paid on ' — so every payment a purchase bill made itself was left
+   -- looking like the shopkeeper's own money, and editing that purchase
+   -- created a second one beside it.
    and (note like 'Cash for %' or note like 'Refund on %'
-     or note like 'Paid for %' or note like 'Received on %');
+     or note like 'Paid on %');
 
 -- WHAT KIND OF SUPPLY A LINE IS.
 --

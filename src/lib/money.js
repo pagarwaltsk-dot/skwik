@@ -309,10 +309,16 @@ export function computeBill(lines, mode, extra = {}) {
     const disc  = shares[i];
     const t     = n2(gross - disc);
     const kind  = supplyOf(l);
-    // Only an ordinary taxable line carries a rate. Nil-rated, exempt and
-    // non-GST lines are carried at value and reported in their own buckets.
-    const rate  = (mode === 'none' || kind !== 'taxable') ? 0 : num(l.gst_rate);
-    const { c, s, i: ig } = split(t, rate);
+    // Only an ordinary taxable line is TAXED. Nil-rated, exempt and non-GST
+    // lines are carried at value and reported in their own buckets.
+    //
+    // `taxAt` is what the tax is worked out on; `l.gst_rate` is what the line
+    // was entered at, and it STAYS on the line. Overwriting it with 0 threw
+    // the shopkeeper's own figure away: mark a 5% line nil-rated, save, and
+    // the 5% was gone for good — switching it back later gave a bill with no
+    // tax on it and nothing on screen to say so.
+    const taxAt = (mode === 'none' || kind !== 'taxable') ? 0 : num(l.gst_rate);
+    const { c, s, i: ig } = split(t, taxAt);
 
     if (kind === 'nil')          nilRated = n2(nilRated + t);
     else if (kind === 'exempt')  exempt   = n2(exempt + t);
@@ -322,7 +328,7 @@ export function computeBill(lines, mode, extra = {}) {
     cgst = n2(cgst + c); sgst = n2(sgst + s); igst = n2(igst + ig);
     return {
       ...l, supply: kind, disc,
-      gross, taxable: t, gst_rate: rate,
+      gross, taxable: t, gst_rate: num(l.gst_rate),
       cgst: c, sgst: s, igst: ig, amount: t,
     };
   });

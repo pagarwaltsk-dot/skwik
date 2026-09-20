@@ -64,8 +64,14 @@ export default function MoneyScreen({ route, navigation }) {
   const load = useCallback(async () => {
     // The names are paged: past 1,000 of them the rest could not be picked.
     // The recent list below is deliberately short and stays as it is.
+    //
+    // allRows THROWS where a plain query resolved with an error, so one bad
+    // signal used to take the whole screen down — no names, no recent
+    // payments, no bank accounts, and no message either. Each part now
+    // answers for itself and the screen shows whatever arrived.
     const [ps, { data: rs }, { data: bs }] = await Promise.all([
-      allRows(() => supabase.from('parties').select('*').order('name').order('id')),
+      allRows(() => supabase.from('parties').select('*').order('name').order('id'))
+        .catch(() => []),
       supabase.from('payments')
         .select('*, parties(name)')
         .eq('ptype', ptype)
@@ -81,7 +87,7 @@ export default function MoneyScreen({ route, navigation }) {
     setAccount((a) => a || list.find((x) => x.is_default)?.id || list[0]?.id || null);
   }, [ptype]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => { load().catch(() => {}); }, [load]));
 
   const matches = text.trim() && !party
     ? parties.filter((p) => p.name.toLowerCase().includes(text.toLowerCase())).slice(0, 5)

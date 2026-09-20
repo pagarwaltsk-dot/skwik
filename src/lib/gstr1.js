@@ -108,6 +108,20 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
 
   const lines = (v) => linesByVoucher[v.id] || [];
 
+  // A CREDIT NOTE GOES WHERE ITS INVOICE WENT, NOT WHERE ITS OWN VALUE PUTS IT.
+  //
+  // A 20,000 note against a 1,50,000 inter-state counter sale is not a b2cs
+  // item: the sale was declared one-by-one in b2cl, so the note has to be
+  // declared one-by-one in cdnur. Judging it on the note's own value netted
+  // it off inside the b2cs summary instead, leaving b2cl carrying the full
+  // 1,50,000 and, very often, a negative b2cs row the portal will not take.
+  const byId = {};
+  for (const v of vouchers || []) byId[v.id] = v;
+  const againstValue = (v) => {
+    const src = v.ref_voucher_id ? byId[v.ref_voucher_id] : null;
+    return n2(num(src ? src.total : v.total));
+  };
+
   // FREIGHT, PACKING, LABOUR — whatever the last box on the bill is called —
   // is part of the value of the supply under section 15(2)(c), and the tax on
   // it was charged to the customer. It was reaching the HSN table and nothing
@@ -231,8 +245,9 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
 
     const p = pos(v);
     const interState = p !== homeState;
-    // Only an inter-state note above the B2CL limit is declared one by one.
-    if (interState && n2(v.total) > B2CL_LIMIT) {
+    // Only a note against an inter-state invoice above the B2CL limit is
+    // declared one by one. The test is the INVOICE's value, not the note's.
+    if (interState && againstValue(v) > B2CL_LIMIT) {
       if (!itms.length) continue;
       cdnur.push({ ...note, typ: 'B2CL', pos: p });
     } else {
@@ -252,12 +267,14 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
       return out;
     });
 
+  const b2csGood = b2cs.filter((e) => e.txval >= 0);
   const b2csNegative = b2cs.filter((e) => e.txval < 0);
   if (b2csNegative.length) {
     problems.push(`${b2csNegative.length} counter-sale summary row${b2csNegative.length === 1 ? '' : 's'} `
       + 'came out negative, because the credit notes this month are worth more than the '
-      + 'counter sales at that rate. The portal will not take a negative row. Carry the '
-      + 'excess to next month, or adjust it on the portal by hand.');
+      + 'counter sales at that rate. The portal will not take a negative row, so '
+      + `${b2csNegative.length === 1 ? 'it has' : 'they have'} been left out of the file. `
+      + 'Carry the excess to next month, or adjust it on the portal by hand.');
   }
 
   /* ---------- Table 8: nil-rated, exempted and non-GST ---------- */
@@ -347,8 +364,12 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
     const sign = v.vtype === 'sale_return' ? -1 : 1;
     for (const l of allLines(v)) addTo(hsnSplit[side], l, sign);
   }
-  const hsnB2b = Object.values(hsnSplit.b2b).map((e, i) => ({ num: i + 1, ...e }));
-  const hsnB2c = Object.values(hsnSplit.b2c).map((e, i) => ({ num: i + 1, ...e }));
+  // Same rule as the hsn block above: a negative row is not something the
+  // portal will take, so the on-screen Table 12 figures match the file.
+  const hsnB2b = Object.values(hsnSplit.b2b)
+    .filter((e) => e.txval >= 0 && e.qty >= 0).map((e, i) => ({ num: i + 1, ...e }));
+  const hsnB2c = Object.values(hsnSplit.b2c)
+    .filter((e) => e.txval >= 0 && e.qty >= 0).map((e, i) => ({ num: i + 1, ...e }));
 
   // the portal wants 4 digits from a firm under 5 crore and 6 from one above,
   // and it rejects the return outright if a code is shorter than that
@@ -416,7 +437,7 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
   const cdnr = Object.values(cdnrMap);
   if (b2b.length)   out.b2b = b2b;
   if (b2cl.length)  out.b2cl = b2cl;
-  if (b2cs.length)  out.b2cs = b2cs;
+  if (b2csGood.length) out.b2cs = b2csGood;
   if (cdnr.length)  out.cdnr = cdnr;
   if (cdnur.length) out.cdnur = cdnur;
   if (nilRows.length) out.nil = { inv: nilRows };
@@ -436,7 +457,8 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
       notes: returns.length,
       b2b: b2b.reduce((n, c) => n + c.inv.length, 0),
       b2cl: b2cl.reduce((n, c) => n + c.inv.length, 0),
-      b2cs: b2cs.length,
+      b2cs: b2csGood.length,
+      b2cs_held_back: b2csNegative.length,
       cdnur: cdnur.length,
       // taxable turnover, with nil-rated and exempt value taken out of it
       taxable: n2(sales.reduce((t, v) => t + num(v.taxable), 0)

@@ -182,7 +182,6 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
   // is how the return asks for it.
   const hsnTaxable = hsn.filter((h) => h.supply === 'taxable');
   const hsnOther   = hsn.filter((h) => h.supply !== 'taxable');
-  const hsnTaxableVal = n2(hsnTaxable.reduce((s, h) => s + h.taxable, 0));
 
   const hsnBlock = !(gst || rcm) ? '' : `
     <table style="border-top:0">

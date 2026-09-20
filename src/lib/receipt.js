@@ -24,7 +24,7 @@
 // so it was added twice. Both figures now come from the lines themselves.
 
 import {
-  amountInWords, fmt, fmt0, hsnApplies, n2, num, pct, qty,
+  amountInWords, fmt, fmt0, hsnApplies, num, pct, qty,
   lineGross, itemsGross, isTaxableLine, supplyShort,
 } from './money';
 import { uqcShort } from './uqc';

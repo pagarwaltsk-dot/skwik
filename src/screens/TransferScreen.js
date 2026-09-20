@@ -409,7 +409,16 @@ export default function TransferScreen({ navigation }) {
       // The test is who MADE the row, not whether it points at a bill. A real
       // receipt can be tied to a bill afterwards, and testing on the link
       // alone dropped those from every restore.
-      const manual = b.payments.filter((pm) => !pm.from_voucher);
+      //
+      // A BACKUP WRITTEN BEFORE 1.9 HAS NO from_voucher AT ALL, and undefined
+      // is not false — every payment in it would have passed this filter and
+      // been written back on top of the one save_voucher had just recreated,
+      // doubling the cash on every restore anyone is holding today. When the
+      // key is missing the old rule is the best guess there is.
+      const cameFromBill = (pm) => (pm.from_voucher === undefined || pm.from_voucher === null
+        ? !!pm.ref_voucher_id
+        : !!pm.from_voucher);
+      const manual = b.payments.filter((pm) => !cameFromBill(pm));
       for (let i = 0; i < manual.length; i += 100) {
         const { error } = await supabase.from('payments')
           .upsert(manual.slice(i, i + 100).map(mine), { onConflict: 'id' });
