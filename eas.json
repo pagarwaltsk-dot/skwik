@@ -7,17 +7,20 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "image": "latest",
       "android": {
         "buildType": "apk"
       }
     },
     "preview": {
       "distribution": "internal",
+      "image": "latest",
       "android": {
         "buildType": "apk"
       }
     },
     "production": {
+      "image": "latest",
       "android": {
         "buildType": "app-bundle"
       }
