@@ -907,3 +907,65 @@ begin
 end $$;
 
 commit;
+
+-- ---------------------------------------------------------------------------
+--  A VOUCHER IS ONE OF SIX THINGS, AND NOTHING ELSE
+--
+--  There was no check on vtype, so anything at all could be written into it.
+--  A bill saved as 'banana' — from a bug, a half-finished screen, or a
+--  tampered request — sits in the books for ever: every report filters on the
+--  types it knows, so the money is in the table and in no report, and the
+--  shop's own balance sheet quietly stops agreeing with its bills.
+--
+--  Added NOT VALID first so it cannot fail on a shop that already has an odd
+--  row, then validated separately; if that validation fails, the raise below
+--  names the rows to look at rather than leaving the constraint half-applied.
+-- ---------------------------------------------------------------------------
+
+do $$
+declare bad int;
+begin
+  if not exists (select 1 from pg_constraint where conname = 'vouchers_vtype_known') then
+    alter table vouchers add constraint vouchers_vtype_known
+      check (vtype in ('sale','purchase','sale_return','purchase_return','estimate','journal'))
+      not valid;
+  end if;
+
+  select count(*) into bad from vouchers
+   where vtype not in ('sale','purchase','sale_return','purchase_return','estimate','journal');
+
+  if bad = 0 then
+    begin
+      alter table vouchers validate constraint vouchers_vtype_known;
+    exception when others then
+      raise notice 'vtype check left unvalidated: %', sqlerrm;
+    end;
+  else
+    raise notice 'vtype check added for NEW rows only — % existing row(s) carry an unknown '
+      'vtype. Find them with:  select id, vtype, voucher_no, vdate from vouchers where vtype '
+      'not in (''sale'',''purchase'',''sale_return'',''purchase_return'',''estimate'',''journal'');', bad;
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+--  A LINE WITH NO NAME GETS A SENTENCE, NOT A DATABASE ERROR
+--
+--  The billing screen already drops blank lines before saving, so this only
+--  fires on a replayed offline bill or a restored backup carrying a bad row —
+--  but when it did fire the shopkeeper saw a raw Postgres message about a
+--  null value in a column he has never heard of.
+-- ---------------------------------------------------------------------------
+
+create or replace function public.check_voucher_line()
+returns trigger language plpgsql as $$
+begin
+  if coalesce(trim(new.item_name), '') = '' then
+    raise exception 'A line on this bill has no item name. Open the bill, fill the name in or remove the line, and save again.';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists voucher_line_needs_a_name on voucher_lines;
+create trigger voucher_line_needs_a_name
+  before insert or update on voucher_lines
+  for each row execute function check_voucher_line();

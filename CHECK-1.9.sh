@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 ok=0; bad=0
 chk () { if grep -q "$2" "$1" 2>/dev/null; then echo "  ok   $1"; ok=$((ok+1));
          else echo "  MISS $1   (looking for: $2)"; bad=$((bad+1)); fi; }
-echo "Skwik 1.9.1 — file check"
+echo "Skwik 1.9.2 — file check"
 chk src/lib/money.js            'SUPPLY_KINDS'
 chk src/lib/money.js            'lineGross'
 chk src/lib/money.js            'reverseCharge'
@@ -38,6 +38,8 @@ chk src/screens/StaffScreen.js  'set_staff_role'
 chk src/screens/WelcomeScreen.js 'login_email_for_phone'
 chk supabase/migrations/1.9-fixes.sql 'assert_can_write'
 chk supabase/migrations/1.9-fixes.sql "Paid on %"
+chk supabase/migrations/1.9-fixes.sql 'vouchers_vtype_known'
+chk supabase/migrations/1.9-fixes.sql 'check_voucher_line'
 echo
 echo "$ok in place, $bad missing."
 [ $bad -eq 0 ] && echo "All 1.9 files are in." || echo "Replace the files marked MISS and run this again."
