@@ -27,7 +27,7 @@
 //   WHO HE SELLS TO. His own customers, in his own proportion of cash to
 //   credit, spread over working days.
 
-import { computeBill, n2, num, taxModeFor } from './money';
+import { computeBill, n2, num, saleRate, taxModeFor } from './money';
 
 /* ---------------- small, predictable randomness ---------------- */
 
@@ -89,13 +89,15 @@ export function makePool(items, stock) {
   (stock || []).forEach((s) => { have[s.item_id] = num(s.qty); });
   const pool = [];
   for (const it of items) {
-    const rate = num(it.sale_price) || num(it.price2);
+    // the same floor the bill screen uses: an item with only a cost on it
+    // still has a rate, so it is not silently left out of the month
+    const rate = saleRate(it, 1) || num(it.price2);
     if (rate <= 0) continue;
     // no stock figures at all — the shop does not keep stock, so there is
     // nothing to run out of
     const qty = stock ? (have[it.id] || 0) : Infinity;
     if (qty <= 0) continue;
-    pool.push({ it, rate, left: qty, weighed: isWeighed(it.unit) });
+    pool.push({ it, rate, left: qty, used: 0, weighed: isWeighed(it.unit) });
   }
   return pool;
 }
@@ -104,11 +106,21 @@ export const poolValue = (pool) =>
   n2(pool.reduce((a, p) => a + (p.left === Infinity ? 0 : p.left * p.rate), 0));
 
 // Pick an item, favouring what he has most of. A shop sells what is piled up
-// by the door far more often than the one box at the back.
+// by the door far more often than the one box at the back — but it still sells
+// the other things, so no single item is allowed to swallow the run. Weight is
+// on the QUANTITY on the shelf, not on what that quantity is worth: ten boxes
+// of a costly item is a small pile, not a big one.
 function take(r, pool) {
   const live = pool.filter((p) => p.left > 0);
   if (!live.length) return null;
-  const weights = live.map((p) => (p.left === Infinity ? 1 : Math.sqrt(p.left * p.rate)));
+  const weights = live.map((p) => {
+    if (p.left === Infinity) return 1;
+    // square root, so a shelf ten times as deep is about three times as likely
+    const w = Math.sqrt(p.left);
+    // and each time it has been billed in this run it steps back a little, so
+    // the rest of the list gets a turn
+    return w / (1 + (p.used || 0) * 0.5);
+  });
   const total = weights.reduce((a, b) => a + b, 0);
   if (total <= 0) return pick(r, live);
   let t = r() * total;
@@ -155,13 +167,17 @@ export function fitToTotal(lines, target, mode) {
 // to that amount to the rupee, so the last line takes one more piece than it
 // needs and the difference comes off as a discount — which is what happens at
 // a counter anyway, and it shows on the bill.
-export function buildLines(target, pool, r, { exact = false, maxLines = 4, mode = 'none' } = {}) {
+export function buildLines(target, pool, r, { exact = false, maxLines = 6, mode = 'none', avgRate = 12 } = {}) {
   // Aim below the figure when tax is going on top of it, or every bill comes
-  // out a fifth too big.
-  const guessRate = mode === 'none' ? 0 : 12;
+  // out over by the rate. The shop's own usual rate is a far better guess than
+  // a fixed one: a 5% grocer and an 18% hardware shop are not the same.
+  const guessRate = mode === 'none' ? 0 : avgRate;
   target = target / (1 + guessRate / 100);
   const lines = [];
-  const want = Math.max(1, Math.min(maxLines, Math.round(1 + r() * (maxLines - 0.6))));
+  // most bills are two or three lines, a few are long — never one flat spread
+  const spread = r();
+  const want = Math.max(1, Math.min(maxLines,
+    spread < 0.14 ? 1 : spread < 0.48 ? 2 : spread < 0.74 ? 3 : spread < 0.90 ? 4 : 5 + Math.round(r()))); 
   let left = target;
 
   for (let i = 0; i < want && left > 0.5; i++) {
@@ -180,6 +196,7 @@ export function buildLines(target, pool, r, { exact = false, maxLines = 4, mode 
     if (at) { at.qty = n2(at.qty + q); at.amount = n2(at.amount + amount); }
     else lines.push({ item: p.it, qty: q, rate: p.rate, amount, disc: 0, _p: p });
     if (p.left !== Infinity) p.left = n2(p.left - q);
+    p.used = (p.used || 0) + 1;
     left = n2(left - amount);
   }
 
@@ -205,6 +222,18 @@ export function planSample({
     (!org || org.mode === 'estimate') ? 'none' : taxModeFor(org, party);
   const days = workingDays(from, to);
   const pool = makePool(items, stock);
+
+  // the rate most of the shelf carries, weighted by what is on it
+  const usualRate = (() => {
+    if (!pool.length) return 12;
+    const by = {};
+    pool.forEach((p) => {
+      const g = Number(p.it.gst_rate) || 0;
+      by[g] = (by[g] || 0) + (p.left === Infinity ? 1 : p.left * p.rate);
+    });
+    const best = Object.entries(by).sort((a, b) => b[1] - a[1])[0];
+    return Number(best[0]) || 0;
+  })();
 
   if (!items.length) {
     return { bills: [], problem: 'Add a few items first. Bills are made from your own '
@@ -244,13 +273,14 @@ export function planSample({
     // for first.
     let lines = null;
     for (let go = 0; go < 3 && !lines; go++) {
-      const tryLines = buildLines(amt, pool, r, { exact: true, mode });
+      const tryLines = buildLines(amt, pool, r, { exact: true, mode, avgRate: usualRate });
       if (!tryLines) break;
       if (fitToTotal(tryLines, Math.round(amt), mode)) { lines = tryLines; break; }
       // put back what that attempt took off the shelf
       tryLines.forEach((l) => {
         const q = pool.find((x) => x.it.id === l.item.id);
         if (q && q.left !== Infinity) q.left = n2(q.left + l.qty);
+        if (q) q.used = Math.max(0, (q.used || 0) - 1);
       });
     }
     if (!lines) continue;                               // leave that receipt alone
@@ -284,7 +314,7 @@ export function planSample({
     for (const amt of amounts) {
       const party = customers.length ? pick(r, customers) : { name: 'CASH' };
       const mode = taxOf(party);
-      const lines = buildLines(amt, pool, r, { exact: false, mode });
+      const lines = buildLines(amt, pool, r, { exact: false, mode, avgRate: usualRate });
       if (!lines) break;
       bills.push({
         vdate: pick(r, days),
@@ -313,6 +343,11 @@ export function planSample({
       cash: bills.filter((b) => b.is_cash).length,
       days: [...new Set(bills.map((b) => b.vdate))].length,
       items: [...new Set(bills.flatMap((b) => b.lines.map((l) => l.item.id)))].length,
+      // how much of his list could be billed at all. A bill cannot sell what
+      // the shop has none of, so if only a few items have stock, only those
+      // few can appear — which is the usual reason a run looks repetitive.
+      catalog: items.length,
+      pooled: pool.length,
       stockRoof: stock ? roof : null,
       capped,
       shortBy: n2(Math.max(0, n2(total) - value)),

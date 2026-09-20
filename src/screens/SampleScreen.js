@@ -290,6 +290,20 @@ export default function SampleScreen({ navigation }) {
             )}
             <Line k="Cash bills" v={s.cash} />
 
+            {s.pooled != null && s.catalog > s.pooled && (
+              <View style={{ backgroundColor: C.flagSoft, borderWidth: 1, borderColor: C.flagLine,
+                             borderRadius: 10, padding: 10, marginTop: 10 }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.flagInk }}>
+                  {s.pooled} of your {s.catalog} items have stock
+                </Text>
+                <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 3, lineHeight: 17 }}>
+                  A bill cannot sell what the shop has none of, so only those{' '}
+                  {s.pooled} can appear — which is why the same few keep coming up.
+                  Put in opening stock or a purchase bill for the rest and run it again.
+                </Text>
+              </View>
+            )}
+
             {s.capped && (
               <View style={{ backgroundColor: C.flagSoft, borderWidth: 1, borderColor: C.flagLine,
                              borderRadius: 10, padding: 10, marginTop: 10 }}>

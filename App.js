@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -22,6 +23,7 @@ import PartiesScreen from './src/screens/PartiesScreen';
 import LedgerScreen  from './src/screens/LedgerScreen';
 import ItemsScreen   from './src/screens/ItemsScreen';
 import StockScreen   from './src/screens/StockScreen';
+import ItemMovesScreen from './src/screens/ItemMovesScreen';
 import MoreScreen    from './src/screens/MoreScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import ExpensesScreen from './src/screens/ExpensesScreen';
@@ -31,6 +33,23 @@ import StaffScreen from './src/screens/StaffScreen';
 import GodownScreen from './src/screens/GodownScreen';
 import SampleScreen from './src/screens/SampleScreen';
 
+// NO FLASH BETWEEN THE ICON AND THE SHOP.
+//
+// The app used to put a spinner on the screen for the fraction of a second it
+// takes to find out which shop this login belongs to. A spinner that appears
+// and vanishes before it can be read is the single thing that makes an app
+// feel unfinished, so the native splash — the icon on the shop's own
+// background — is simply held up until the answer is in, and the first thing
+// drawn after it is the real screen.
+//
+// Held up, not held for ever: if the server never answers, the splash comes
+// down after a few seconds and the spinner takes over, because a shopkeeper
+// staring at a frozen logo has no way to know anything is wrong.
+SplashScreen.preventAutoHideAsync().catch(() => {});
+SplashScreen.setOptions({ duration: 220, fade: true });
+
+const PATIENCE = 6000;
+
 const Stack = createNativeStackNavigator();
 
 function Routes() {
@@ -38,7 +57,28 @@ function Routes() {
 
   // The set-up screen is only for a login with genuinely no shop behind it —
   // never for the second it takes to find out.
-  if (loading || registering || (session && checking && !org)) {
+  const settling = loading || registering || (session && checking && !org);
+
+  // Whether the native splash is still the thing on the screen.
+  const [splashUp, setSplashUp] = useState(true);
+  const dropped = useRef(false);
+
+  const drop = () => {
+    if (dropped.current) return;
+    dropped.current = true;
+    SplashScreen.hideAsync().catch(() => {}).finally(() => setSplashUp(false));
+  };
+
+  useEffect(() => { if (!settling) drop(); }, [settling]);
+  useEffect(() => {
+    const t = setTimeout(drop, PATIENCE);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Splash still up: draw nothing behind it, so nothing can flash past.
+  if (settling && splashUp) return null;
+
+  if (settling) {
     return (
       <View style={{ flex: 1, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator size="large" color={C.green} />
@@ -68,6 +108,7 @@ function Routes() {
           <Stack.Screen name="Ledger"  component={LedgerScreen} />
           <Stack.Screen name="Items"   component={ItemsScreen} />
           <Stack.Screen name="Stock"   component={StockScreen} />
+          <Stack.Screen name="ItemMoves" component={ItemMovesScreen} />
           <Stack.Screen name="More"     component={MoreScreen} />
           <Stack.Screen name="Settings" component={SettingsScreen} />
           <Stack.Screen name="Expenses" component={ExpensesScreen} />

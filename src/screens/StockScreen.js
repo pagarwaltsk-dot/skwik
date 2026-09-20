@@ -98,6 +98,9 @@ export default function StockScreen({ navigation }) {
       <View style={{ padding: 16, paddingBottom: 10 }}>
         <TextInput style={S.input} placeholder="Search" value={q} onChangeText={setQ}
           placeholderTextColor={C.faint} returnKeyType="search" />
+        <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 8 }}>
+          Tap any item to see every movement in and out of it.
+        </Text>
       </View>
 
       <FlatList
@@ -106,9 +109,16 @@ export default function StockScreen({ navigation }) {
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 30 }}
         renderItem={({ item }) => {
           const gone = item.expiry && item.expiry < todayStr;
+          const id = item.item_id || item.id;
           return (
-            <View style={[S.row, { paddingVertical: 14, borderBottomWidth: 1,
-                                   borderBottomColor: C.line }]}>
+            <TouchableOpacity
+              disabled={!id}
+              onPress={() => navigation.navigate('ItemMoves', {
+                itemId: id,
+                itemName: item.item_name || item.name,
+                unit: item.unit })}
+              style={[S.row, { paddingVertical: 14, borderBottomWidth: 1,
+                               borderBottomColor: C.line }]}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text numberOfLines={1} style={{ fontSize: 15.5, fontWeight: '700', color: C.ink }}>
                   {item.item_name || item.name}
@@ -128,7 +138,7 @@ export default function StockScreen({ navigation }) {
                               color: num(item.qty) < 0 ? C.red : C.ink }, S.num]}>
                 {qtyText(item.qty)} {uqcShort(item.unit)}
               </Text>
-            </View>
+            </TouchableOpacity>
           );
         }}
         ListEmptyComponent={

@@ -90,6 +90,43 @@ export function hsnApplies(org) {
   return true;
 }
 
+// NOTHING LEAVES THE SHOP AT NOTHING.
+//
+// An item can reach a sale bill with no selling price on it — bought in a
+// hurry, imported from a list that only carried cost, or created mid-purchase
+// before anyone thought about what it would fetch. A line at zero is not a
+// discount, it is a giveaway: it walks out of the door for free, it drags the
+// day's takings down, and it shows the customer a rate of 0.00 in print.
+//
+// So a sale rate is never nothing. If the item carries its own price that is
+// what is used. If it does not, the rate falls back to what the shop paid for
+// it plus a tenth — a figure that is at worst wrong, which the shopkeeper can
+// see and correct, rather than a figure that is certainly wrong and silent.
+//
+// The markup is deliberately modest. It is a floor to stop a giveaway, not a
+// guess at what the shop actually charges.
+export const MARKUP = 0.10;
+
+export function saleRate(item, list = 1) {
+  const own = Number(list) === 2
+    ? (num(item?.price2) || num(item?.sale_price))
+    : num(item?.sale_price);
+  if (own > 0) return own;
+  const cost = num(item?.purchase_price);
+  if (cost > 0) return n2(cost * (1 + MARKUP));
+  return 0;                                   // nothing known at all
+}
+
+// Was that rate the shop's own, or the one worked out from cost? The bill
+// screen says so on the line, so a made-up figure is never mistaken for a
+// price somebody set.
+export const rateIsGuessed = (item, list = 1) => {
+  const own = Number(list) === 2
+    ? (num(item?.price2) || num(item?.sale_price))
+    : num(item?.sale_price);
+  return own <= 0 && num(item?.purchase_price) > 0;
+};
+
 export function taxModeFor(org, party) {
   if (!org?.is_gst_registered) return 'none';
   // A composition dealer is registered but may NOT collect GST from anyone.

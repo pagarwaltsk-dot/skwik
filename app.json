@@ -36,6 +36,19 @@
     },
     "plugins": [
       [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "resizeMode": "contain",
+          "backgroundColor": "#FAF9F5",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#FAF9F5"
+          }
+        }
+      ],
+      [
         "expo-camera",
         {
           "cameraPermission": "Skwik uses the camera only to read barcodes while you bill."

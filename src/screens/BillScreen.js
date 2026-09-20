@@ -8,10 +8,11 @@ import * as Sharing from 'expo-sharing';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import {
-  computeBill, fmt, fmt0, hsnApplies, num, pct, settle, taxModeFor, today, topRate,
+  computeBill, fmt, fmt0, hsnApplies, num, pct, rateIsGuessed, saleRate, settle,
+  taxModeFor, today, topRate,
 } from '../lib/money';
 import { STATES } from '../lib/states';
-import { showBatch, showExpiry, showGodowns } from '../lib/features';
+import { showBatch, showExpiry, showGodowns, showStock } from '../lib/features';
 import { searchItems, parseQuery, highlightParts, tok } from '../lib/search';
 import { uqcShort } from '../lib/uqc';
 import { checkHsn, hsnExists } from '../lib/hsn';
@@ -24,6 +25,7 @@ import {
 } from '../lib/offline';
 import { BackButton, Bar, Box, Foot, KeyForm, MoreButton, Screen } from '../components/Chrome';
 import { ScanSheet, ScanButton } from '../components/Scan';
+import { ColHead } from '../components/Register';
 import { C, S } from '../theme';
 
 // Matched letters shown marked, the way the estimate app does it.
@@ -84,8 +86,10 @@ export default function BillScreen({ route, navigation }) {
   const xRef = useRef(null);                       // freight amount
   const qName = useRef(null), qAlias = useRef(null);
   const npName = useRef(null), npPhone = useRef(null), npAddr = useRef(null);
+  const npArea = useRef(null), npOpen = useRef(null);
   const npGst = useRef(null), npState = useRef(null);
   const qGst  = useRef(null), qRate  = useRef(null);
+  const qRate2 = useRef(null), qBuy = useRef(null), qOpen = useRef(null);
   const seq  = useRef(0);
   // Every qty and rate box on the bill, so the keyboard's next key can
   // walk from one to the next without anybody tapping.
@@ -209,7 +213,8 @@ export default function BillScreen({ route, navigation }) {
     setPartySheet({
       name: cashInfo.name || 'CASH',
       kind: isBuy ? 'supplier' : 'customer',
-      phone: '', address: '', gstin: '',
+      phone: '', area: '', address: '', gstin: '',
+      opening_balance: '', opening_type: 'owes_you',
       price_list: String(priceList || 1),
       state_code: String(org?.state_code || ''),
     });
@@ -228,8 +233,11 @@ export default function BillScreen({ route, navigation }) {
       name: np.name.trim(), isNew: true,
       kind: np.kind,
       phone: String(np.phone || '').replace(/\D/g, '').slice(-10),
+      area: np.area?.trim() || '',
       address: np.address?.trim() || '',
       gstin: String(np.gstin || '').toUpperCase().trim(),
+      opening_balance: num(np.opening_balance),
+      opening_type: np.opening_type === 'you_owe' ? 'you_owe' : 'owes_you',
       price_list: Number(np.price_list) === 2 ? 2 : 1,
       state_code: code || org?.state_code,
       state_name: STATES[code] || org?.state_name,
@@ -246,9 +254,12 @@ export default function BillScreen({ route, navigation }) {
 
   // Which list this bill is on decides the rate. A rate already typed by hand
   // is never touched by it.
+  // On a purchase bill the rate is what he pays. On a sale bill it is what he
+  // charges — and if nobody ever set that, it is his cost plus a tenth rather
+  // than nothing at all, because a line at zero gives the goods away.
   const listRate = (p, list) => {
     if (isBuy) return p.purchase_price || p.sale_price;
-    return (list || priceList) === 2 ? (p.price2 || p.sale_price) : p.sale_price;
+    return saleRate(p, list || priceList);
   };
 
   // A packet scanned at the counter. Known code: the line goes on and the
@@ -280,6 +291,8 @@ export default function BillScreen({ route, navigation }) {
       key: seq.current, item_id: h.p.id, item_name: h.p.name, hsn: h.p.hsn || '',
       unit: h.p.unit || 'PCS', gst_rate: Number(h.p.gst_rate) || 0,
       qty: h.qty == null ? '' : String(h.qty), rate: String(rate || ''),
+      // the rate was worked out from cost, not set by anyone: the line says so
+      rateGuessed: !isBuy && rateIsGuessed(h.p, priceList),
       rateEdited: false, flag: false, checked: false, note: '', disc: 0,
       batch: '', expiry: '',
     };
@@ -336,6 +349,8 @@ export default function BillScreen({ route, navigation }) {
       item_id: h.p.id, item_name: h.p.name, hsn: h.p.hsn || '', unit: h.p.unit || 'PCS',
       gst_rate: Number(h.p.gst_rate) || 0,
       rate: String(listRate(h.p) || ''),
+      rateGuessed: !isBuy && rateIsGuessed(h.p, priceList),
+      rateEdited: false,
     });
     setSwapFor(null); setSq('');
   };
@@ -370,8 +385,14 @@ export default function BillScreen({ route, navigation }) {
         org_id: org.id, name: quick.name.trim(), alias: quick.alias.trim(),
         unit: quick.unit, hsn: quick.hsn.trim(), gst_rate: num(quick.gst_rate),
         barcode: pendingCode || null,
-        sale_price: isBuy ? 0 : num(quick.rate),
-        purchase_price: isBuy ? num(quick.rate) : 0,
+        // `rate` is whichever rate this bill is asking for; `other` is the one
+        // it is not. An item born on a purchase bill used to go in with no
+        // sale price at all, which left it priceless on every sale bill after
+        // and invisible to anything that reads the shelf by value.
+        sale_price:     isBuy ? num(quick.other) : num(quick.rate),
+        purchase_price: isBuy ? num(quick.rate)  : num(quick.other),
+        price2:         num(quick.rate2),
+        opening_stock:  num(quick.opening_stock),
         is_active: true,
       };
       let saved = body;
@@ -405,6 +426,16 @@ export default function BillScreen({ route, navigation }) {
       return Alert.alert('Check this HSN', `${quick.hsn} is not in our list. Save it anyway?`,
         [{ text: 'Let me check' }, { text: 'Save anyway', onPress: write }]);
     }
+
+    // An item bought but never priced is a rate typed by hand on every sale
+    // bill for the rest of its life, and it is missing from anything that
+    // reads the shelf by value. Asked once, here, while it is cheap to answer.
+    if (isBuy && !num(quick.other)) {
+      return Alert.alert('No sale rate',
+        'This item has nothing to sell at. Every sale bill with it on will come '
+        + 'up blank and you will type the rate in by hand.',
+        [{ text: 'Let me put it in' }, { text: 'Leave it for now', onPress: write }]);
+    }
     write();
   };
 
@@ -422,9 +453,16 @@ export default function BillScreen({ route, navigation }) {
       org_id: org.id, name,
       kind: cust?.kind || (isBuy ? 'supplier' : 'customer'),
       phone: cust?.phone || null,
+      area: cust?.area || null,
       address: cust?.address || null,
       gstin: cust?.gstin || null,
       is_registered: !!cust?.gstin,
+      // what he already owed before this bill — asked on the sheet, because a
+      // customer entered mid-bill with a balance left out of him reads as
+      // settled, and the udhar list is then wrong from the first day
+      opening_balance: num(cust?.opening_balance),
+      opening_type: cust?.opening_type === 'you_owe' ? 'you_owe' : 'owes_you',
+      opening_date: cust?.opening_balance ? today() : null,
       price_list: isBuy ? 1 : (Number(cust?.price_list) || priceList),
       state_code: code,
       state_name: STATES[code] || cust?.state_name || org.state_name,
@@ -448,6 +486,22 @@ export default function BillScreen({ route, navigation }) {
   const save = async (holdOnly) => {
     if (!good.length) return Alert.alert('Nothing to save', 'Add at least one item with a quantity.');
     if (!cust?.name) return Alert.alert('Who is it for?', 'Choose a customer first.');
+
+    // NOTHING LEAVES THE SHOP AT NOTHING. A rate of zero on a sale is not a
+    // discount, it is a giveaway, and it prints as 0.00 on the customer's copy.
+    // Anything with a cost behind it has already been given cost plus a tenth
+    // by the time it reaches here, so a zero at this point means the item has
+    // no price of any kind and only he can say what it is worth.
+    if (isOut) {
+      const free = good.filter((l) => num(l.rate) <= 0);
+      if (free.length) {
+        return Alert.alert('This line has no rate',
+          `${free[0].item_name} would go out at ₹0`
+          + (free.length > 1 ? `, and ${free.length - 1} other line(s) too` : '')
+          + '.\n\nThis item has no selling price and no purchase price either, '
+          + 'so there is nothing to work one out from. Put the rate in.');
+      }
+    }
     if (isOut && isCash && !cashInfo.name && grand >= 50000) {
       return Alert.alert('Name needed',
         'A cash bill of ₹50,000 or more must show the customer name.');
@@ -655,6 +709,7 @@ export default function BillScreen({ route, navigation }) {
               if (hits.length) addHit(hits[0]);
               else if (q.trim()) setQuick({ name: parsed.base || parsed.full, alias: '',
                                             unit: 'PCS', hsn: '', gst_rate: '', rate: '',
+                                            rate2: '', other: '', opening_stock: '',
                                             qty: parsed.qty == null ? '' : String(parsed.qty) });
             }} />
           {isOut && !cust?.price_list && (
@@ -704,6 +759,7 @@ export default function BillScreen({ route, navigation }) {
                 <TouchableOpacity
                   onPress={() => setQuick({ name: parsed.base || parsed.full, alias: '', unit: 'PCS',
                                             hsn: '', gst_rate: '', rate: '',
+                                            rate2: '', other: '', opening_stock: '',
                                             qty: parsed.qty == null ? '' : String(parsed.qty) })}
                   style={{ paddingVertical: 12, paddingHorizontal: 12, backgroundColor: C.soft }}>
                   <Text style={{ fontSize: 14, fontWeight: '600', color: C.accent }}>
@@ -716,11 +772,19 @@ export default function BillScreen({ route, navigation }) {
         </View>
       )}
 
+      {/* the strip that names the columns, the way a ruled book does */}
+      {!!lines.length && (
+        <ColHead cols={[{ label: 'PARTICULARS' },
+                        { label: 'QTY \u00D7 RATE', width: 118 },
+                        { label: 'AMOUNT', width: 74 }]} />
+      )}
+
       <ScrollView keyboardShouldPersistTaps="handled"
-                  contentContainerStyle={{ padding: 14, paddingBottom: 30 }}>
+                  contentContainerStyle={{ paddingBottom: 30 }}>
 
         {!lines.length && !!cust && (
-          <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 40 }}>
+          <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center',
+                         marginTop: 40, paddingHorizontal: 24, lineHeight: 20 }}>
             Type an item above. Put the quantity after it — “thali 12” — and it
             goes straight in.
           </Text>
@@ -729,11 +793,12 @@ export default function BillScreen({ route, navigation }) {
         {lines.map((l) => {
           const amt = num(l.qty) * num(l.rate);
           return (
-            <View key={l.key} style={[S.line, {
-              backgroundColor: l.flag ? C.flagSoft : C.surface,
-              borderColor: l.flag ? C.flagLine : l.checked ? C.okLine : C.line,
-              borderLeftWidth: (l.flag || l.checked) ? 4 : 1,
-              borderLeftColor: l.flag ? C.flag : l.checked ? C.ok : C.line }]}>
+            <View key={l.key} style={{
+              backgroundColor: l.flag ? C.flagSoft : l.checked ? C.okSoft : C.surface,
+              borderBottomWidth: 1, borderBottomColor: C.line,
+              borderLeftWidth: (l.flag || l.checked) ? 3 : 0,
+              borderLeftColor: l.flag ? C.flag : C.ok,
+              paddingHorizontal: 14, paddingVertical: 12 }}>
 
               {/* the name line: what it is, and the two things you can do to it */}
               <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 6,
@@ -825,10 +890,19 @@ export default function BillScreen({ route, navigation }) {
                     onFocus={() => setLine(l.key, { rateTouched: true })}
                     onChangeText={(t) => setLine(l.key, { rate: t, rateEdited: true })} />
                 </View>
-                <Text style={[S.amt, S.num, { paddingBottom: 10, minWidth: 74 }]}>
+                <Text style={[S.amt, { paddingBottom: 10, minWidth: 74 }]}>
                   {amt ? `₹${fmt0(amt)}` : '–'}
                 </Text>
               </View>
+
+              {/* the rate nobody set: say where it came from, so a worked-out
+                  figure is never mistaken for a price somebody chose */}
+              {l.rateGuessed && !l.rateEdited && (
+                <Text style={{ fontSize: 11.5, color: C.edit, marginTop: 7, lineHeight: 16 }}>
+                  No selling price on this item — this is what you paid plus 10%.
+                  Change it if that is not your rate.
+                </Text>
+              )}
 
               {(wantBatch || wantExpiry) && (
                 <View style={[S.row, { marginTop: 10, gap: 8 }]}>
@@ -903,7 +977,7 @@ export default function BillScreen({ route, navigation }) {
         })}
 
         {godowns.length > 1 && (
-          <View style={[S.card, { paddingVertical: 10 }]}>
+          <View style={[S.card, { paddingVertical: 10, marginHorizontal: 14, marginTop: 14 }]}>
             <Text style={S.eyebrow}>{isBuy ? 'Goods came into' : 'Goods went out of'}</Text>
             <View style={[S.row, { gap: 8, flexWrap: 'wrap' }]}>
               {godowns.map((g) => {
@@ -923,7 +997,7 @@ export default function BillScreen({ route, navigation }) {
         )}
 
         {!!lines.length && (
-          <View style={S.card}>
+          <View style={[S.card, { marginHorizontal: 14, marginTop: 14 }]}>
             <Text style={S.eyebrow}>Totals</Text>
             {!!discTotal && <Row k="Items" v={fmt(calc.taxable - extraAmt + discTotal)} />}
             {!!discTotal && <Row k="Less" v={`- ${fmt(discTotal)}`} />}
@@ -992,17 +1066,33 @@ export default function BillScreen({ route, navigation }) {
         )}
       </ScrollView>
 
-      <Foot>
+      {/* THE FOOT OF THE PAGE.
+          A ruled book closes with its total on paper and nothing else beside
+          it, so the figure a shopkeeper reads out loud at the counter is never
+          crowded by buttons. The buttons go below it, on the dark bar, where
+          the phone's own back and home keys used to steal them. */}
+      <View style={{ backgroundColor: C.surface, borderTopWidth: 1.5, borderTopColor: C.ink,
+                     paddingHorizontal: 14, paddingVertical: 10,
+                     flexDirection: 'row', alignItems: 'baseline', gap: 10 }}>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={S.footL}>TOTAL</Text>
-          <Text style={[S.footTot, S.num]}>₹{fmt0(grand)}</Text>
+          <Text style={S.footL}>
+            {good.length} ITEM{good.length === 1 ? '' : 'S'}
+            {mode !== 'none' && (calc.cgst + calc.sgst + calc.igst) > 0
+              ? ` · GST ₹${fmt0(calc.cgst + calc.sgst + calc.igst)}` : ''}
+          </Text>
+          <Text style={S.footTot}>₹{fmt0(grand)}</Text>
         </View>
-        <TouchableOpacity onPress={() => save(true)} disabled={busy} style={S.btnGhost}>
-          <Text style={[S.ghostText, { fontSize: 13, lineHeight: 16 }]}>{'Save\nonly'}</Text>
+      </View>
+
+      <Foot style={{ backgroundColor: C.barInk, borderTopWidth: 0,
+                     paddingHorizontal: 12, gap: 8 }}>
+        <TouchableOpacity onPress={() => save(true)} disabled={busy}
+          style={[S.darkBtn, { flex: 0.8 }, busy && { opacity: 0.5 }]}>
+          <Text style={S.darkBtnText}>Save only</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => save(false)} disabled={busy}
-          style={[S.btn, busy && { backgroundColor: C.faint }]}>
-          <Text style={S.btnText}>
+          style={[S.darkBtn, S.darkBtnOn, { flex: 1.4 }, busy && { opacity: 0.5 }]}>
+          <Text style={S.darkBtnTextOn}>
             {busy ? 'Saving…' : editId ? 'Save changes' : 'Save & send'}
           </Text>
         </TouchableOpacity>
@@ -1083,12 +1173,22 @@ export default function BillScreen({ route, navigation }) {
                   onChangeText={(t) => setPartySheet((x) => ({ ...x, name: t }))} />
 
                 <Text style={[S.label, { marginTop: 14 }]}>PHONE — FOR WHATSAPP</Text>
-                <Box ref={npPhone} next={npAddr} style={[S.num, { marginTop: 6 }]}
+                <Box ref={npPhone} next={npArea} style={[S.num, { marginTop: 6 }]}
                   keyboardType="phone-pad" maxLength={10} placeholder="98640 12345"
                   value={partySheet.phone}
                   onChangeText={(t) => setPartySheet((x) => ({ ...x, phone: t }))} />
                 <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
                   Without it his bill cannot be sent and no reminder can reach him.
+                </Text>
+
+                <Text style={[S.label, { marginTop: 14 }]}>AREA</Text>
+                <Box ref={npArea} next={npAddr} style={{ marginTop: 6 }}
+                  placeholder="Fancy Bazar, Ward 4, GS Road"
+                  value={partySheet.area}
+                  onChangeText={(t) => setPartySheet((x) => ({ ...x, area: t }))} />
+                <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                  His locality, in your own words. Bills sort by it when you send
+                  a boy out with four of them.
                 </Text>
 
                 <Text style={[S.label, { marginTop: 14 }]}>ADDRESS</Text>
@@ -1112,7 +1212,7 @@ export default function BillScreen({ route, navigation }) {
                       }} />
 
                     <Text style={[S.label, { marginTop: 14 }]}>STATE CODE</Text>
-                    <Box ref={npState} onSubmit={takeNewParty} style={[S.num, { marginTop: 6 }]}
+                    <Box ref={npState} next={npOpen} style={[S.num, { marginTop: 6 }]}
                       keyboardType="number-pad" maxLength={2}
                       value={String(partySheet.state_code || '')}
                       onChangeText={(t) => setPartySheet((x) => ({ ...x, state_code: t }))} />
@@ -1151,6 +1251,39 @@ export default function BillScreen({ route, navigation }) {
                       Chosen once. Every bill for him uses that list from now on.
                     </Text>
                   </>
+                )}
+
+                <Text style={[S.label, { marginTop: 14 }]}>
+                  {isBuy ? 'ALREADY OWED TO HIM' : 'ALREADY OWES YOU'}
+                </Text>
+                <Box ref={npOpen} onSubmit={takeNewParty} style={[S.num, { marginTop: 6 }]}
+                  keyboardType="numeric" placeholder="0"
+                  value={partySheet.opening_balance}
+                  onChangeText={(t) => setPartySheet((x) => ({ ...x, opening_balance: t }))} />
+                {num(partySheet.opening_balance) > 0 ? (
+                  <View style={[S.row, { gap: 8, marginTop: 8 }]}>
+                    {[['owes_you', isBuy ? 'You owe him' : 'He owes you'],
+                      ['you_owe',  isBuy ? 'He owes you' : 'You owe him']]
+                      .map(([v, label]) => {
+                        const on = (partySheet.opening_type || 'owes_you') === v;
+                        return (
+                          <TouchableOpacity key={v}
+                            onPress={() => setPartySheet((x) => ({ ...x, opening_type: v }))}
+                            style={{ flex: 1, paddingVertical: 11, borderRadius: 9,
+                                     alignItems: 'center', borderWidth: 1,
+                                     borderColor: on ? C.accent : C.line,
+                                     backgroundColor: on ? C.accentSoft : C.surface }}>
+                            <Text style={{ fontSize: 14, fontWeight: '700',
+                                           color: on ? C.accent : C.muted }}>{label}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                  </View>
+                ) : (
+                  <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                    Old dues from before Skwik. Leave it empty if the slate is clean —
+                    put in later and his account will read as settled when it is not.
+                  </Text>
                 )}
 
                 <TouchableOpacity style={[S.btn, { marginTop: 22 }]} onPress={takeNewParty}>
@@ -1214,9 +1347,57 @@ export default function BillScreen({ route, navigation }) {
                   </>
                 )}
 
-                <Text style={[S.label, { marginTop: 14 }]}>{isBuy ? 'PURCHASE RATE' : 'RATE'}</Text>
-                <Box ref={qRate} onSubmit={saveQuick} style={{ marginTop: 6 }} keyboardType="numeric"
+                <Text style={[S.label, { marginTop: 14 }]}>
+                  {isBuy ? 'PURCHASE RATE' : `RATE — ${(org?.price1_name || 'WHOLESALE').toUpperCase()}`}
+                </Text>
+                <Box ref={qRate} next={isBuy ? qBuy : qRate2} style={{ marginTop: 6 }}
+                  keyboardType="numeric"
                   value={quick.rate} onChangeText={(t) => setQuick((x) => ({ ...x, rate: t }))} />
+
+                {!isBuy && (
+                  <>
+                    <Text style={[S.label, { marginTop: 14 }]}>
+                      RATE — {(org?.price2_name || 'RETAIL').toUpperCase()}
+                    </Text>
+                    <Box ref={qRate2} next={qBuy} style={{ marginTop: 6 }} keyboardType="numeric"
+                      placeholder="Leave empty to use the same rate"
+                      value={quick.rate2}
+                      onChangeText={(t) => setQuick((x) => ({ ...x, rate2: t }))} />
+                  </>
+                )}
+
+                <Text style={[S.label, { marginTop: 14 }]}>
+                  {isBuy ? 'SALE RATE' : 'PURCHASE RATE — WHAT IT COSTS YOU'}
+                </Text>
+                <Box ref={qBuy} next={showStock(org) ? qOpen : null}
+                  onSubmit={showStock(org) ? undefined : saveQuick}
+                  style={{ marginTop: 6 }} keyboardType="numeric"
+                  placeholder={isBuy ? 'What you will sell it at' : 'For the profit figure'}
+                  value={quick.other} onChangeText={(t) => setQuick((x) => ({ ...x, other: t }))} />
+                <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                  {isBuy
+                    ? 'Without it this item has no rate on any sale bill, and you will '
+                      + 'be typing it in by hand every time.'
+                    : 'Without it the profit figure counts this item as pure profit.'}
+                </Text>
+
+                {showStock(org) && (
+                  <>
+                    <Text style={[S.label, { marginTop: 14 }]}>
+                      OPENING STOCK{quick.unit ? ` — ${uqcShort(quick.unit)}` : ''}
+                    </Text>
+                    <Box ref={qOpen} onSubmit={saveQuick} style={{ marginTop: 6 }}
+                      keyboardType="numeric" placeholder="How many you already have"
+                      value={quick.opening_stock}
+                      onChangeText={(t) => setQuick((x) => ({ ...x, opening_stock: t }))} />
+                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                      {isBuy
+                        ? 'What was on the shelf BEFORE this purchase bill. The quantity '
+                          + 'on this bill is added on top.'
+                        : 'What is on the shelf now, before this bill goes out.'}
+                    </Text>
+                  </>
+                )}
 
                 <TouchableOpacity style={[S.btn, { marginTop: 22 }]} onPress={saveQuick}>
                   <Text style={S.btnText}>SAVE AND USE</Text>

@@ -18,7 +18,7 @@ import { C, S } from '../theme';
 // Skwik started.
 
 const empty = {
-  name: '', kind: 'customer', phone: '', gstin: '', address: '',
+  name: '', kind: 'customer', phone: '', gstin: '', area: '', address: '',
   state_code: '', state_name: '', price_list: 1,
   opening_balance: '', opening_type: 'owes_you',
   opening_date: today(),
@@ -32,7 +32,8 @@ export default function PartiesScreen({ navigation }) {
 
   // name → phone → GST → state → address → what was outstanding → its date
   const fName  = useRef(null), fPhone = useRef(null), fGstin = useRef(null);
-  const fState = useRef(null), fAddr  = useRef(null), fOpen  = useRef(null);
+  const fState = useRef(null), fArea  = useRef(null), fAddr  = useRef(null);
+  const fOpen  = useRef(null);
   const fDate  = useRef(null);
 
   const load = () => supabase.from('parties').select('*').order('name')
@@ -40,7 +41,8 @@ export default function PartiesScreen({ navigation }) {
   useFocusEffect(useCallback(() => { load(); }, []));
 
   const shown = rows.filter((r) =>
-    `${r.name} ${r.phone || ''} ${r.gstin || ''}`.toLowerCase().includes(q.toLowerCase()));
+    `${r.name} ${r.phone || ''} ${r.gstin || ''} ${r.area || ''}`
+      .toLowerCase().includes(q.toLowerCase()));
 
   const set = (k) => (v) => setEdit((e) => ({ ...e, [k]: v }));
 
@@ -76,6 +78,7 @@ export default function PartiesScreen({ navigation }) {
       phone: edit.phone.trim() || null,
       gstin: g || null,
       is_registered: !!g,
+      area: (edit.area || '').trim() || null,
       address: edit.address.trim() || null,
       state_code: edit.state_code || org.state_code,
       state_name: edit.state_name || org.state_name,
@@ -94,7 +97,8 @@ export default function PartiesScreen({ navigation }) {
 
   const startEdit = (p) => setEdit({
     ...empty, ...p,
-    phone: p.phone || '', gstin: p.gstin || '', address: p.address || '',
+    phone: p.phone || '', gstin: p.gstin || '',
+    area: p.area || '', address: p.address || '',
     state_code: p.state_code || '', state_name: p.state_name || '',
     price_list: Number(p.price_list) === 2 ? 2 : 1,
     opening_balance: p.opening_balance ? String(p.opening_balance) : '',
@@ -134,7 +138,7 @@ export default function PartiesScreen({ navigation }) {
       </Head>
 
       <View style={{ padding: 16 }}>
-        <TextInput style={S.input} placeholder="Search a name, phone or GST number"
+        <TextInput style={S.input} placeholder="Search a name, area, phone or GST number"
           placeholderTextColor={C.faint} value={q} onChangeText={setQ}  returnKeyType="search" />
       </View>
 
@@ -155,7 +159,8 @@ export default function PartiesScreen({ navigation }) {
               style={{ flex: 1, paddingVertical: 16 }}>
               <Text style={{ fontSize: 17, fontWeight: '700', color: C.ink }}>{item.name}</Text>
               <Text style={{ fontSize: 12, fontWeight: '600', color: C.muted, marginTop: 2 }}>
-                {[item.phone, item.state_name, item.gstin].filter(Boolean).join(' · ') || 'No details yet'}
+                {[item.area, item.phone, item.state_name, item.gstin]
+                  .filter(Boolean).join(' · ') || 'No details yet'}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => startEdit(item)}
@@ -192,7 +197,7 @@ export default function PartiesScreen({ navigation }) {
               value={edit.gstin} onChangeText={setGstin} placeholder="Leave empty if unregistered" />
 
             <Label>State code</Label>
-            <Box ref={fState} next={fAddr} style={[S.num, { marginTop: 6 }]} keyboardType="number-pad"
+            <Box ref={fState} next={fArea} style={[S.num, { marginTop: 6 }]} keyboardType="number-pad"
               maxLength={2} value={String(edit.state_code || '')} onChangeText={setStateCode}
               placeholder="18" />
             <Text style={S.hint}>
@@ -202,6 +207,11 @@ export default function PartiesScreen({ navigation }) {
                     : 'Different state, so bills carry IGST.'}`
                 : 'This decides whether a bill carries CGST and SGST, or IGST.'}
             </Text>
+
+            <Label>Area</Label>
+            <Box ref={fArea} next={fAddr} style={{ marginTop: 6 }}
+              value={edit.area} onChangeText={set('area')}
+              placeholder="Fancy Bazar, Ward 4, GS Road" />
 
             <Label>Address</Label>
             <Box ref={fAddr} next={fOpen} style={{ marginTop: 6 }}
