@@ -7,7 +7,7 @@ import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
 import { readPickedFile } from '../lib/pickfile';
 
-import { supabase } from '../lib/supabase';
+import { supabase, allRows as pageAll } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, today } from '../lib/money';
@@ -383,17 +383,33 @@ export default function TransferScreen({ navigation }) {
       const byVoucher = {};
       b.lines.forEach((l) => { (byVoucher[l.voucher_id] = byVoucher[l.voucher_id] || []).push(l); });
 
-      let bills = 0, already = 0;
+      // A CANCELLED BILL COMES BACK CANCELLED.
+      //
+      // save_voucher has no way to write cancelled_at, so a restore used to
+      // bring every cancelled bill back to life — the number, the goods, the
+      // tax and all. It is saved first, so its number is held, and then
+      // cancelled again with the reason it carried.
+      let bills = 0, already = 0, recancelled = 0;
       for (const v of b.vouchers) {
         const { data, error } = await supabase.rpc('save_voucher',
           { p: backupVoucherPayload(v, byVoucher[v.id]) });
         if (error) throw error;
         if (data?.already) already++; else bills++;
+        if (v.cancelled_at && data?.id && !data?.already) {
+          const { error: cErr } = await supabase.rpc('delete_voucher',
+            { p_id: data.id, p_reason: v.cancel_reason || 'Cancelled before this backup' });
+          if (cErr) throw cErr;
+          recancelled++;
+        }
       }
 
       // Receipts and payments he entered himself. The ones a cash bill wrote
       // are left out — saving the bill writes those again by itself.
-      const manual = b.payments.filter((pm) => !pm.ref_voucher_id);
+      //
+      // The test is who MADE the row, not whether it points at a bill. A real
+      // receipt can be tied to a bill afterwards, and testing on the link
+      // alone dropped those from every restore.
+      const manual = b.payments.filter((pm) => !pm.from_voucher);
       for (let i = 0; i < manual.length; i += 100) {
         const { error } = await supabase.from('payments')
           .upsert(manual.slice(i, i + 100).map(mine), { onConflict: 'id' });
@@ -478,8 +494,13 @@ export default function TransferScreen({ navigation }) {
     setBusy('saving');
     try {
       const table = what === 'items' ? 'items' : 'parties';
-      const { data: have } = await supabase.from(table).select('id, name');
-      const byName = Object.fromEntries((have || []).map((r) => [r.name.trim().toLowerCase(), r.id]));
+      // THE DE-DUPLICATOR HAS TO SEE EVERYTHING.
+      // It loads what is already there to decide what the file is adding. It
+      // stopped at 1,000 rows, so a shop with more than that re-created every
+      // item past row 1,000 as a duplicate on every import.
+      const have = await pageAll(() => supabase.from(table)
+        .select('id, name').order('id'));
+      const byName = Object.fromEntries((have || []).map((r) => [String(r.name || '').trim().toLowerCase(), r.id]));
 
       let added = 0, updated = 0, noState = 0;
       const toAdd = [];

@@ -122,13 +122,20 @@ export default function ReportsScreen({ navigation }) {
       return acc;
     };
 
-    const sales = blank(), purchases = blank(), estimates = blank(), returns = blank();
+    // A CREDIT NOTE RAISED TOO LATE IS A REAL REFUND BUT NOT A TAX REDUCTION.
+    // Section 34(2) closes the door on 30 November. The GSTR-1 file already
+    // left those notes out; this screen did not, so it told the shopkeeper he
+    // owed less than his own return said he owed — and the screen is what he
+    // looks at. `lateReturns` is kept apart so the money still shows.
+    const sales = blank(), purchases = blank(), estimates = blank();
+    const inTime = blank();     // credit notes that still reduce the tax
+    const late   = blank();     // raised after 30 November: money, but no tax relief
     const byDay = {};
     for (const v of vouchers) {
       if (v.vtype === 'sale')      { add(sales, v);
                                      byDay[v.vdate] = n2((byDay[v.vdate] || 0) + Number(v.total || 0)); }
       else if (v.vtype === 'purchase') add(purchases, v);
-      else if (v.vtype === 'sale_return') add(returns, v);
+      else if (v.vtype === 'sale_return') add(v.gst_effective === false ? late : inTime, v);
       else if (v.vtype === 'estimate') { add(estimates, v);
                                      byDay[v.vdate] = n2((byDay[v.vdate] || 0) + Number(v.total || 0)); }
     }
@@ -161,15 +168,30 @@ export default function ReportsScreen({ navigation }) {
       byItem[k].value = n2(byItem[k].value + Number(l.taxable || 0));
     }
 
+    // everything that came back, for the money figures on screen
+    const returns = {
+      taxable: n2(inTime.taxable + late.taxable),
+      cgst:    n2(inTime.cgst + late.cgst),
+      sgst:    n2(inTime.sgst + late.sgst),
+      igst:    n2(inTime.igst + late.igst),
+      total:   n2(inTime.total + late.total),
+    };
+
     return {
       sales, purchases, estimates, returns,
+      lateReturns: late,
       rates: Object.values(byRate).sort((a, b) => a.rate - b.rate),
       b2bTaxable, b2cTaxable,
       days: Object.entries(byDay).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 31),
       items: Object.values(byItem).sort((a, b) => b.value - a.value).slice(0, 15),
-      // credit notes reduce what is owed; leaving them out overstated it
+      // Credit notes reduce what is owed — but only the ones raised in time.
+      // A note past the 30 November deadline in section 34(2) refunds the
+      // customer and changes nothing about the tax, so only `inTime` comes off
+      // here. This is now the same rule the GSTR-1 file uses, so the screen
+      // and the return finally agree.
       gstOwed: n2(sales.cgst + sales.sgst + sales.igst
-                - (returns?.cgst || 0) - (returns?.sgst || 0) - (returns?.igst || 0)),
+                - inTime.cgst - inTime.sgst - inTime.igst),
+      gstLateNotes: n2(late.cgst + late.sgst + late.igst),
       itc: n2(purchases.cgst + purchases.sgst + purchases.igst),
     };
   }, [vouchers, lines]);

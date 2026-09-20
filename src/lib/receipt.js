@@ -7,8 +7,26 @@
 // So this is a receipt drawn for the roll it is going onto: one column, big
 // enough to read, no lines it does not need, and no fixed page height —
 // thermal paper is a roll, so the page is as long as the bill.
+//
+// THE SLIP HAS TO ADD UP, TOP TO BOTTOM, exactly as the customer reads it:
+//
+//   Items      the lines above, added up, BEFORE any discount
+//   Less       the discount, once
+//   Freight    if there is any
+//   Taxable    what tax is worked out on  = Items - Less + Freight
+//   CGST/SGST  the tax
+//   Round off
+//   TOTAL
+//
+// Two things used to break that. The Items figure was built from the stored
+// taxable value, which already has the freight inside it, so it over-stated
+// the goods by the freight. And the freight then printed again below the tax,
+// so it was added twice. Both figures now come from the lines themselves.
 
-import { amountInWords, fmt, fmt0, hsnApplies, n2, num, pct, qty } from './money';
+import {
+  amountInWords, fmt, fmt0, hsnApplies, n2, num, pct, qty,
+  lineGross, itemsGross, isTaxableLine, supplyShort,
+} from './money';
 import { uqcShort } from './uqc';
 
 const esc = (s) => String(s ?? '')
@@ -25,7 +43,9 @@ const PAPER = {
 
 export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   const p = PAPER[String(width)] || PAPER['80'];
-  const gst = voucher.tax_mode && voucher.tax_mode !== 'none';
+  const rcm = !!voucher.reverse_charge;
+  // Under reverse charge the shop collects nothing, so no tax lines print.
+  const gst = voucher.tax_mode && voucher.tax_mode !== 'none' && !rcm;
   // A roll is the only document some shops ever issue, so what is on it has to
   // stand on its own: HSN and the rate per line, not just a total.
   const showHsn = hsnApplies(org) && voucher.vtype !== 'estimate';
@@ -41,15 +61,20 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   const rows = (lines || []).map((l) => {
     const q    = num(l.qty);
     const rate = num(l.rate);
-    const amt  = n2(l.amount != null ? l.amount : q * rate);
+    // GROSS on the line: the discount comes off once, further down, as its
+    // own row. Printing the net here and the discount below takes it twice.
+    const amt  = lineGross(l);
+    const mark = isTaxableLine(l)
+      ? (voucher.tax_mode && voucher.tax_mode !== 'none' && num(l.gst_rate)
+          ? ` &middot; ${pct(l.gst_rate)}%` : '')
+      : ` &middot; ${esc(supplyShort(l.supply))}`;
     return `
       <div class="it">
         <div class="nm">${esc(l.item_name)}${l.flag ? ' <b>★</b>' : ''}</div>
         ${l.note ? `<div class="nt">${esc(l.note)}</div>` : ''}
 
         <div class="qr">
-          <span>${qty(q)} ${esc(uqcShort(l.unit || ''))} &times; ${fmt(rate)}${
-            gst && num(l.gst_rate) ? ` &middot; ${pct(l.gst_rate)}%` : ''}${
+          <span>${qty(q)} ${esc(uqcShort(l.unit || ''))} &times; ${fmt(rate)}${mark}${
             showHsn && l.hsn ? ` &middot; ${esc(l.hsn)}` : ''}</span>
           <span class="amt">${fmt(amt)}</span>
         </div>
@@ -64,11 +89,14 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   const less = Number(voucher.discount)
     ? `<div class="tr"><span>Less</span><span>- ${fmt(Math.abs(Number(voucher.discount)))}</span></div>` : '';
 
+  // Freight belongs ABOVE the taxable line, because it is inside it.
   const extra = Number(voucher.extra_amount)
     ? `<div class="tr"><span>${esc(voucher.extra_note || 'Other')}</span><span>${fmt(voucher.extra_amount)}</span></div>` : '';
 
   const round = Number(voucher.round_off)
     ? `<div class="tr"><span>Round off</span><span>${fmt(voucher.round_off)}</span></div>` : '';
+
+  const items = itemsGross(lines);
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -96,6 +124,8 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
          font-size: ${p.big}px; font-weight: 700; margin-top: 1.5mm; }
   .words { font-size: ${p.base - 1}px; margin-top: 1.5mm; }
   .foot { margin-top: 4mm; font-size: ${p.base - 1}px; }
+  .band { border: 1px solid #000; padding: 1.5mm; text-align: center;
+          font-weight: 700; font-size: ${p.base - 1}px; margin: 2mm 0; }
 </style></head>
 <body>
   <div class="mid">
@@ -111,6 +141,9 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
          collect tax on supplies</b></div>` : ''}
   </div>
 
+  ${rcm ? `<div class="band">TAX PAYABLE ON REVERSE CHARGE BY RECIPIENT.
+     NO TAX COLLECTED ON THIS BILL.</div>` : ''}
+
   <div class="kv sm"><span>No.</span><b>${esc(voucher.voucher_no || '')}</b></div>
   <div class="kv sm"><span>Date</span><span>${dmy(voucher.vdate)}</span></div>
   ${voucher.ref_invoice_no
@@ -124,10 +157,11 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   ${rows}
   <div class="rule"></div>
 
-  <div class="tr"><span>Items</span><span>${fmt(n2(num(voucher.taxable) + Math.abs(num(voucher.discount))))}</span></div>
+  <div class="tr"><span>Items</span><span>${fmt(items)}</span></div>
   ${less}
+  ${extra}
   <div class="tr"><span>Taxable</span><span>${fmt(voucher.taxable)}</span></div>
-  ${taxRows}${extra}${round}
+  ${taxRows}${round}
   <div class="tot"><span>TOTAL</span><span>&#8377; ${fmt0(voucher.total)}</span></div>
   <div class="words muted">${esc(amountInWords(voucher.total))}</div>
 

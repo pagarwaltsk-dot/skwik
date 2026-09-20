@@ -158,7 +158,9 @@ export function AppProvider({ children }) {
       const user = signIn.user;
       if (!user) throw new Error('Logged in, but no user came back. Try again.');
 
-      await supabase.from('profiles').upsert({ id: user.id, phone });
+      const { error: pe1 } = await supabase.from('profiles')
+        .upsert({ id: user.id, phone });
+      if (pe1) throw pe1;
 
       const hasGst = !!d.gstin;
       const code   = hasGst ? String(d.gstin).slice(0, 2) : '18';
@@ -190,7 +192,24 @@ export function AppProvider({ children }) {
         throw e2;
       }
 
-      await supabase.from('profiles').upsert({ id: user.id, org_id: newOrg.id, phone });
+      // THE LINE THAT TIES THE LOGIN TO THE SHOP.
+      //
+      // This was written and never checked. If it failed — a dropped signal,
+      // a policy refusal — the firm row existed and nothing pointed at it, so
+      // my_org_id() came back empty and every screen in the app said "This
+      // login is not linked to a firm yet", for ever, with no way out from
+      // inside Skwik. If it fails now, the firm is taken back out again and
+      // he is told to try once more, which he can.
+      const { error: pe2 } = await supabase.from('profiles')
+        .upsert({ id: user.id, org_id: newOrg.id, phone });
+      if (pe2) {
+        try { await supabase.from('orgs').delete().eq('id', newOrg.id); } catch (_) {}
+        throw new Error(
+          'The shop was made but could not be linked to your login, so it has '
+          + 'been removed again rather than left half-finished. Check your '
+          + 'signal and register once more — nothing has been kept.'
+        );
+      }
       await loadOrg();
     } catch (err) {
       // Half a registration is worse than none: it drops the shopkeeper on the

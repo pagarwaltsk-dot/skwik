@@ -786,6 +786,16 @@ export function readBackup(text) {
 // Turn a backed-up bill back into something save_voucher understands. Its own
 // id and number go with it, so the bill comes back as it was and cannot be
 // written twice.
+//
+// EVERYTHING THE BILL CARRIED HAS TO COME BACK.
+//
+// This list used to stop short: the discount, the freight's tax rate, the
+// reverse-charge flag, whether the bill counted as a sale, whether it was
+// still good for GST, which godown it came out of, and — on every line — the
+// discount share, the batch, the expiry and the cost were all dropped. A
+// restored shop was therefore NOT the shop that was backed up, and the
+// difference was invisible until a return was filed. If a field is on the
+// bill, it is on this list.
 export function backupVoucherPayload(v, linesFor) {
   return {
     id: v.id,
@@ -801,7 +811,19 @@ export function backupVoucherPayload(v, linesFor) {
     tax_mode: v.tax_mode,
     taxable: v.taxable, cgst: v.cgst, sgst: v.sgst, igst: v.igst,
     extra_amount: v.extra_amount, extra_note: v.extra_note,
+    extra_gst_rate: v.extra_gst_rate ?? 0,
     round_off: v.round_off, total: v.total, notes: v.notes,
+    discount: v.discount ?? 0,
+    reverse_charge: !!v.reverse_charge,
+    counts_as_sale: v.counts_as_sale !== false,
+    gst_effective: v.gst_effective !== false,
+    godown_id: v.godown_id || null,
+    nil_rated: v.nil_rated ?? 0,
+    exempt: v.exempt_amt ?? 0,
+    non_gst: v.non_gst ?? 0,
+    // carried so the restore can put a cancelled bill back as cancelled
+    cancelled_at: v.cancelled_at || null,
+    cancel_reason: v.cancel_reason || null,
     // a credit note with no link back to its bill is an orphan: the return
     // screen can no longer see what has already come back
     ref_voucher_id: v.ref_voucher_id || null,
@@ -813,6 +835,12 @@ export function backupVoucherPayload(v, linesFor) {
       qty: l.qty, rate: l.rate, gst_rate: l.gst_rate,
       taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
       amount: l.amount, flag: l.flag, checked: l.checked,
+      disc: l.disc ?? 0,
+      batch: l.batch || null,
+      expiry: l.expiry || null,
+      cost: l.cost ?? 0,
+      supply: l.supply || 'taxable',
+      godown_id: l.godown_id || null,
     })),
   };
 }

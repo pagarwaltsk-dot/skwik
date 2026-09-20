@@ -7,7 +7,7 @@ import * as Sharing from 'expo-sharing';
 
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { computeBill, fmt, fmt0, num, settle, today } from '../lib/money';
+import { computeBill, fmt, fmt0, num, settle, today, supplyOf } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
@@ -147,13 +147,23 @@ export default function ReturnScreen({ route, navigation }) {
       return {
         item_id: r.item_id, item_name: r.item_name, hsn: r.hsn, unit: r.unit,
         gst_rate: Number(r.gst_rate) || 0, qty: back, rate: Number(r.rate),
+        // A nil-rated packet coming back is still nil-rated. Dropping this
+        // put the credit note into the taxable tables and left Table 8 of the
+        // return one-sided — sales in it, returns not.
+        supply: supplyOf(r),
         disc: Math.round(num(r.disc) * share * 100) / 100,
         note: r.note || null, flag: false, checked: false,
       };
     }), [rows]);
 
+  // No bill-level discount is passed: the shares already sit on the lines,
+  // worked out above from what each line actually carried. Reverse charge
+  // follows the original bill — a note against a bill that collected no tax
+  // must not refund any.
   const calc = useMemo(
-    () => computeBill(coming, bill?.tax_mode || 'none'), [coming, bill?.tax_mode]);
+    () => computeBill(coming, bill?.tax_mode || 'none',
+      { reverseCharge: !!bill?.reverse_charge }),
+    [coming, bill?.tax_mode, bill?.reverse_charge]);
   const exact = calc.taxable + calc.cgst + calc.sgst + calc.igst;
   const total = Math.round(exact);
 
@@ -191,6 +201,8 @@ export default function ReturnScreen({ route, navigation }) {
         place_of_supply_code: bill.place_of_supply_code,
         tax_mode: bill.tax_mode,
         taxable: calc.taxable, cgst: calc.cgst, sgst: calc.sgst, igst: calc.igst,
+        reverse_charge: !!bill?.reverse_charge,
+        nil_rated: calc.nil_rated, exempt: calc.exempt, non_gst: calc.non_gst,
         // the share of the bill's discount that is coming back with these
         // goods, so the note reverses exactly what was charged
         discount: calc.discount,
@@ -199,7 +211,7 @@ export default function ReturnScreen({ route, navigation }) {
         lines: calc.lines.map((l) => ({
           item_id: l.item_id, item_name: l.item_name, hsn: l.hsn, unit: l.unit,
           qty: num(l.qty), rate: num(l.rate), gst_rate: l.gst_rate,
-          disc: num(l.disc),
+          disc: num(l.disc), supply: l.supply || 'taxable',
           taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
           amount: l.amount, flag: false, checked: false, note: l.note,
         })),

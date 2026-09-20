@@ -36,3 +36,33 @@ if (AppState.currentState === 'active') supabase.auth.startAutoRefresh();
 // one from the number. The shopkeeper never sees it and never types it.
 export const phoneToEmail = (phone) =>
   `${String(phone).replace(/\D/g, '')}@gstbill.app`;
+
+// EVERY ROW, NOT THE FIRST THOUSAND.
+//
+// PostgREST answers with at most 1,000 rows unless it is asked to page, and it
+// says nothing about the ones it left out. A shop with 1,200 items did not see
+// a bug — it simply could not find items 1,001 onward on the billing screen,
+// which reads as "I must have forgotten to add it" and is far worse than an
+// error. Reports and the backup already paged; the counter screens did not.
+//
+// Pass a function that BUILDS the query fresh each time, because a PostgREST
+// builder cannot be re-used once it has been sent:
+//
+//   const items = await allRows(() => supabase.from('items').select('*').order('name'));
+//
+// Always order by something unique as the last key — id will do. Two rows that
+// sort the same have no order of their own, and a page boundary falling
+// between them drops one and repeats another.
+const PAGE = 1000;
+
+export async function allRows(build, { pageSize = PAGE, cap = 100000 } = {}) {
+  const out = [];
+  for (let from = 0; from < cap; from += pageSize) {
+    const { data, error } = await build().range(from, from + pageSize - 1);
+    if (error) throw error;
+    const got = data || [];
+    out.push(...got);
+    if (got.length < pageSize) break;
+  }
+  return out;
+}

@@ -176,10 +176,16 @@ export default function SettingsScreen({ navigation }) {
     const { error } = await supabase.auth.updateUser({ email: e });
     setBusy(false);
     if (error) return Alert.alert('Could not save it', sayPlainly(error));
-    Alert.alert('Check that inbox',
-      `A confirmation has gone to ${e}. Open it, and from then on you can reset `
-      + 'your password from the login screen.\n\nYou still log in with your '
-      + 'mobile number as before — nothing about that changes.');
+    // This really does move the account onto the new address. The login
+    // screen looks the number up so the mobile number keeps working, but the
+    // shopkeeper should be told the truth about what just happened, and told
+    // that nothing takes effect until he opens the confirmation.
+    Alert.alert('Open the email to finish',
+      `A confirmation has gone to ${e}. Nothing changes until you open it.\n\n`
+      + 'Once you do, that address is the one on your account, and a password '
+      + 'reset link can reach you.\n\nYou still log in with your mobile number '
+      + 'and the same password. Keep this address — you can also log in with it '
+      + 'if the number ever gives trouble.');
   };
 
   return (

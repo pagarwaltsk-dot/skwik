@@ -18,9 +18,17 @@
 //   (q) signature — not required on a bill sent electronically
 // Rule 49 covers the bill of supply a composition dealer issues instead, with
 // no tax on it and the declaration printed at the foot.
+//
+// THE COLUMN HAS TO ADD UP. Every figure that moves the total appears in the
+// amount column, once, and the column adds to the total printed under it. That
+// is the first thing a customer checks and the first thing an officer checks.
+// Line amounts are therefore printed GROSS — what the goods came to before the
+// discount — with the discount shown once, as its own row, the way it was
+// given. Printing the net amount and the discount row takes it off twice.
 
 import {
-  fmt, fmt0, qty, pct, amountInWords, hsnSummary, n2, hsnApplies, extraAsLine,
+  fmt, fmt0, qty, pct, amountInWords, hsnSummary, n2, num, hsnApplies,
+  extraAsLine, lineGross, supplyOf, supplyShort, isTaxableLine,
 } from './money';
 import { uqcShort } from './uqc';
 
@@ -62,19 +70,28 @@ const CSS = `
   .sig { text-align: right; }
   .cg { text-align: center; font-size: 7.2pt; padding-top: 3pt; }
   .it { font-style: italic; font-size: 7.4pt; }
+  .tag { font-size: 6.8pt; letter-spacing: .3pt; }
   /* Rule 5(1)(f) wants these words at the TOP of a bill of supply, not in
      the small print at the bottom where they were. */
   .compband { border: 1pt solid #000; padding: 2pt 4pt; text-align: center;
               font-size: 8.4pt; font-weight: bold; margin-bottom: 3pt; }
+  /* Rule 46(p): a reverse-charge supply has to say so on its face, and it has
+     to be impossible to miss, because the tax is NOT on this bill. */
+  .rcband { border: 1.2pt solid #000; padding: 3pt 4pt; text-align: center;
+            font-size: 8.6pt; font-weight: bold; margin-bottom: 3pt; }
 `;
 
 export function invoiceHtml({ org, voucher, party, lines, copy }) {
-  const gst     = voucher.tax_mode !== 'none';
+  const rcm     = !!voucher.reverse_charge;
+  // Under reverse charge the shop collects no tax, so no tax columns print.
+  const gst     = voucher.tax_mode !== 'none' && !rcm;
   const igst    = voucher.tax_mode === 'igst';
   const comp    = !!org.is_composition;
   const est     = voucher.vtype === 'estimate' || org.mode === 'estimate';
   const showHsn = hsnApplies(org) && !est;
-  const cols    = 6 + (showHsn ? 1 : 0) + (gst ? 1 : 0);   // columns before AMOUNT
+  // the rate column still prints under reverse charge, because the rate is
+  // what the recipient has to pay tax at
+  const showRate = voucher.tax_mode !== 'none';
 
   // A credit note is a credit note whatever style of billing the shop uses.
   // The estimate test came first, so a shop billing on estimates printed its
@@ -98,11 +115,22 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
   const unitAll = [...new Set(lines.map((l) => uqcShort(l.unit)))];
   const taxTot  = n2(Number(voucher.cgst || 0) + Number(voucher.sgst || 0) + Number(voucher.igst || 0));
 
+  // Nil-rated, exempt and non-GST value on this bill, so the foot can say so.
+  const untaxed = lines.filter((l) => !isTaxableLine(l));
+  const untaxedVal = n2(untaxed.reduce((s, l) => s + num(l.taxable != null ? l.taxable : l.amount), 0));
+
   // Rule 46(e): an unregistered buyer taking Rs 50,000 or more of goods must be
   // named on the bill, with where it is going and which State that is.
   const bigCash = !party?.gstin && Number(voucher.taxable || 0) >= 50000;
 
   const th = (t, cls = '') => `<th class="${cls}">${t}</th>`;
+
+  // What goes in the rate column for a line. A nil-rated or exempt line has no
+  // rate — printing "0%" makes it look like an ordinary taxable sale at zero,
+  // which is exactly the confusion that empties Table 8 of the return.
+  const rateCell = (l) => (isTaxableLine(l)
+    ? `${pct(l.gst_rate)}%`
+    : `<span class="tag">${esc(supplyShort(l.supply))}</span>`);
 
   const itemRows = lines.map((l, i) => `
     <tr>
@@ -110,11 +138,11 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
       <td><b>${esc(l.item_name)}</b>${l.note ? `<div class="it">${esc(l.note)}</div>` : ''}${
         ''}</td>
       ${showHsn ? `<td class="c">${esc(l.hsn || '')}</td>` : ''}
-      ${gst ? `<td class="c">${pct(l.gst_rate)}%</td>` : ''}
+      ${showRate ? `<td class="c">${rateCell(l)}</td>` : ''}
       <td class="r">${qty(l.qty)} ${esc(uqcShort(l.unit))}</td>
       <td class="r">${fmt(l.rate)}</td>
       <td class="c">${esc(uqcShort(l.unit))}</td>
-      <td class="r"><b>${fmt(l.amount)}</b></td>
+      <td class="r"><b>${fmt(lineGross(l))}</b></td>
     </tr>`).join('');
 
   // Tally puts freight, the tax heads and the rounding as further lines of the
@@ -125,7 +153,7 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
       <td class="c"></td>
       <td class="r"><b>${esc(label)}</b></td>
       ${showHsn ? '<td></td>' : ''}
-      ${gst ? '<td></td>' : ''}
+      ${showRate ? '<td></td>' : ''}
       <td></td><td></td><td></td>
       <td class="r">${fmt(value)}</td>
     </tr>`;
@@ -134,7 +162,8 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
   // total leaves a bill whose own lines do not add up to it.
   // ONE DISCOUNT, WHERE IT IS GIVEN: at the bottom, once. It is shared out
   // across the lines inside the books so each rate is taxed on what was
-  // really taken for it, but the customer is shown the round figure.
+  // really taken for it, but the customer is shown the round figure — and the
+  // lines above it are printed gross, so taking it off here takes it off once.
   const lessRow = Number(voucher.discount)
     ? addLine('Less (discount)', -Math.abs(Number(voucher.discount))) : '';
 
@@ -143,12 +172,19 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
         || (Number(voucher.extra_amount) < 0 ? 'Less' : 'Freight & Other Charges'),
       voucher.extra_amount) : '';
 
-  const taxRows = !gst ? '' : (igst
+  const taxRows = (!gst ? '' : (igst
     ? addLine('IGST', voucher.igst)
-    : addLine('CGST', voucher.cgst) + addLine('SGST', voucher.sgst))
+    : addLine('CGST', voucher.cgst) + addLine('SGST', voucher.sgst)))
     + (Number(voucher.round_off) ? addLine('Round Off', voucher.round_off) : '');
 
-  const hsnBlock = !gst ? '' : `
+  // The HSN block covers taxable supplies. Nil-rated, exempt and non-GST value
+  // is shown under it as its own line rather than mixed in at 0%, because that
+  // is how the return asks for it.
+  const hsnTaxable = hsn.filter((h) => h.supply === 'taxable');
+  const hsnOther   = hsn.filter((h) => h.supply !== 'taxable');
+  const hsnTaxableVal = n2(hsnTaxable.reduce((s, h) => s + h.taxable, 0));
+
+  const hsnBlock = !(gst || rcm) ? '' : `
     <table style="border-top:0">
       <tr>
         ${th('HSN/SAC')}${th('Taxable Value')}
@@ -162,7 +198,7 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
                : '<td class="c k">Rate&nbsp;&nbsp;Amount</td><td class="c k">Rate&nbsp;&nbsp;Amount</td>'}
         <td class="nb" style="border-top:0;border-right:0"></td>
       </tr>
-      ${hsn.map((h) => `
+      ${hsnTaxable.map((h) => `
       <tr>
         <td>${esc(h.hsn)}</td>
         <td class="r">${fmt(h.taxable)}</td>
@@ -171,6 +207,15 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
           : `<td class="r">${pct(h.gst_rate / 2)}%&nbsp;&nbsp;${fmt(h.cgst)}</td>
              <td class="r">${pct(h.gst_rate / 2)}%&nbsp;&nbsp;${fmt(h.sgst)}</td>`}
         <td class="r">${fmt(n2(h.cgst + h.sgst + h.igst))}</td>
+      </tr>`).join('')}
+      ${hsnOther.map((h) => `
+      <tr>
+        <td>${esc(h.hsn)}</td>
+        <td class="r">${fmt(h.taxable)}</td>
+        ${igst
+          ? `<td class="c tag">${esc(supplyShort(h.supply))}</td>`
+          : `<td class="c tag">${esc(supplyShort(h.supply))}</td><td class="c tag">&mdash;</td>`}
+        <td class="r">${fmt(0)}</td>
       </tr>`).join('')}
       <tr>
         <td class="r"><b>Total</b></td>
@@ -181,13 +226,26 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
         <td class="r"><b>${fmt(taxTot)}</b></td>
       </tr>
     </table>
+    ${untaxedVal ? `
+    <table style="border-top:0">
+      <tr><td style="border-left:0;border-right:0">
+        <span class="k">Of the above,</span>
+        <b>${fmt(untaxedVal)}</b>
+        <span class="k">is nil-rated, exempt or outside GST, and carries no tax.</span>
+        <span class="k">Taxable value:</span> <b>${fmt(n2(Number(voucher.taxable || 0) - untaxedVal))}</b>
+      </td></tr>
+    </table>` : ''}
+    ${rcm ? '' : `
     <table style="border-top:0">
       <tr><td style="border-left:0;border-right:0">
         <span class="k">Tax Amount (in words):</span> <b>${amountInWords(taxTot, true)}</b>
       </td></tr>
-    </table>`;
+    </table>`}`;
 
-  const declaration = comp
+  const declaration = rcm
+    ? 'Tax on this supply is payable by the recipient on reverse charge under '
+      + 'section 9(3)/9(4) of the CGST Act. No tax has been charged or collected on this invoice.'
+    : comp
     ? 'Composition taxable person, not eligible to collect tax on supplies.'
     : est
     ? 'This is an estimate and not a tax invoice. No tax is charged on it.'
@@ -201,6 +259,8 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
     ${taxDoc ? `<div class="copy">${esc(copy || 'ORIGINAL FOR RECIPIENT')}</div>` : ''}
     ${comp && !est ? `<div class="compband">Composition taxable person, not eligible to
        collect tax on supplies</div>` : ''}
+    ${rcm ? `<div class="rcband">TAX PAYABLE ON REVERSE CHARGE BY THE RECIPIENT &mdash;
+       NO TAX COLLECTED ON THIS INVOICE</div>` : ''}
     <div class="t">${title}</div>
 
     <table style="border-left:0;border-right:0">
@@ -224,7 +284,7 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
           <div>${voucher.is_cash ? 'Cash' : 'Credit'}</div></td>
         <td style="border-right:0">${taxDoc
           ? `<span class="k">Reverse Charge</span>
-             <div>${voucher.reverse_charge ? 'Yes' : 'No'}</div>`
+             <div><b>${rcm ? 'Yes' : 'No'}</b></div>`
           : '&nbsp;'}</td>
       </tr>
       <tr>
@@ -258,19 +318,19 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
       <tr>
         ${th('Sl<br>No.')}${th('Description of Goods')}
         ${showHsn ? th('HSN/SAC') : ''}
-        ${gst ? th('GST<br>Rate') : ''}
+        ${showRate ? th('GST<br>Rate') : ''}
         ${th('Quantity')}${th('Rate')}${th('per')}${th('Amount')}
       </tr>
       ${itemRows}
       ${lessRow}${extraRow}
       ${taxRows}
-      <tr class="fill"><td></td><td></td>${showHsn ? '<td></td>' : ''}${gst ? '<td></td>' : ''}
+      <tr class="fill"><td></td><td></td>${showHsn ? '<td></td>' : ''}${showRate ? '<td></td>' : ''}
         <td></td><td></td><td></td><td></td></tr>
       <tr class="rule">
         <td></td>
         <td class="r big">Total</td>
         ${showHsn ? '<td></td>' : ''}
-        ${gst ? '<td></td>' : ''}
+        ${showRate ? '<td></td>' : ''}
         <td class="r big">${unitAll.length === 1 ? `${qty(qtyAll)} ${esc(unitAll[0])}` : ''}</td>
         <td></td><td></td>
         <td class="r big">&#8377; ${fmt(voucher.total)}</td>

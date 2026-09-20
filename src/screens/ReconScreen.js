@@ -4,7 +4,7 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
-import { supabase } from '../lib/supabase';
+import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt0, today } from '../lib/money';
 import { readPickedFile } from '../lib/pickfile';
@@ -69,13 +69,16 @@ export default function ReconScreen({ navigation }) {
       // the books, wide enough to catch late filing on either side
       const from = firstOf(new Date(new Date().getFullYear(),
                                     new Date().getMonth() - (back - 1), 1));
-      const { data, error } = await supabase.from('vouchers')
+      // Paged: a busy shop can easily pass 1,000 purchase bills across the
+      // months this looks at, and the ones past that were silently missing
+      // from the reconciliation — which reads as the supplier not having
+      // filed them.
+      const data = await allRows(() => supabase.from('vouchers')
         .select('id, vtype, vdate, voucher_no, supplier_invoice_no, supplier_invoice_date,'
               + ' taxable, cgst, sgst, igst, total, printed_name, parties(name, gstin)')
         .in('vtype', ['purchase', 'purchase_return'])
         .gte('vdate', from).lte('vdate', today())
-        .order('vdate');
-      if (error) throw error;
+        .order('vdate').order('id'));
 
       setPeriod(file.period
         ? `${MONTHS[Number(file.period.slice(0, 2)) - 1]} ${file.period.slice(2)}`

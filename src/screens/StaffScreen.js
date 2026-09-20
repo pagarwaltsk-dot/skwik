@@ -17,6 +17,13 @@ import { C, S } from '../theme';
 //
 // This is the thing shopkeepers complain about most in the apps they might
 // buy instead, where a second person means a second licence.
+//
+// AND THE ACCOUNTANT.
+//
+// The shop's CA is not staff. He needs to see everything and should be able
+// to change nothing — and he is a gatekeeper: he will talk his client out of
+// software he cannot look into. Both the apps Skwik is up against give him a
+// seat for nothing, so this one does too.
 
 export default function StaffScreen({ navigation }) {
   const { org, reloadOrg, isOwner } = useApp();
@@ -69,6 +76,20 @@ export default function StaffScreen({ navigation }) {
     if (error) return Alert.alert('Could not close it', sayPlainly(error));
     await reloadOrg();
   };
+
+  const setRole = (p, role) => Alert.alert(
+    role === 'accountant' ? 'Make him your accountant?' : 'Put him on the counter?',
+    role === 'accountant'
+      ? `${p.phone || 'He'} will be able to see every bill, every report and `
+        + 'the whole of your books — and will not be able to change any of it. '
+        + 'He cannot write a bill or take money.'
+      : `${p.phone || 'He'} will be able to write bills and take money again.`,
+    [{ text: 'Leave it' },
+     { text: 'Yes', onPress: async () => {
+         const { error } = await supabase.rpc('set_staff_role', { p_id: p.id, p_role: role });
+         if (error) return Alert.alert('Could not change it', sayPlainly(error));
+         load();
+       } }]);
 
   const remove = (p) => Alert.alert('Remove him?',
     `${p.phone || 'This person'} will not be able to open your shop again. `
@@ -135,19 +156,39 @@ export default function StaffScreen({ navigation }) {
 
         <Text style={[S.eyebrow, { marginTop: 18 }]}>In your shop</Text>
         {list.map((p) => (
-          <View key={p.id} style={[S.hit, { paddingHorizontal: 4 }]}>
-            <View style={{ flex: 1 }}>
-              <Text style={S.hitName}>
-                {p.phone || '—'}{p.me ? '  (you)' : ''}
-              </Text>
-              <Text style={S.hitSub}>
-                {p.role === 'owner' ? 'Owner — everything' : 'Counter — bills and money only'}
-              </Text>
+          <View key={p.id} style={{ paddingVertical: 10, paddingHorizontal: 4,
+                                    borderBottomWidth: 1, borderBottomColor: C.line }}>
+            <View style={S.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={S.hitName}>
+                  {p.phone || '—'}{p.me ? '  (you)' : ''}
+                </Text>
+                <Text style={S.hitSub}>
+                  {p.role === 'owner' ? 'Owner — everything'
+                    : p.role === 'accountant' ? 'Accountant — reads everything, changes nothing'
+                    : 'Counter — bills and money only'}
+                </Text>
+              </View>
+              {p.role !== 'owner' && !p.me && (
+                <TouchableOpacity onPress={() => remove(p)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: C.danger }}>REMOVE</Text>
+                </TouchableOpacity>
+              )}
             </View>
             {p.role !== 'owner' && !p.me && (
-              <TouchableOpacity onPress={() => remove(p)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Text style={{ fontSize: 13, fontWeight: '800', color: C.danger }}>REMOVE</Text>
-              </TouchableOpacity>
+              <View style={[S.row, { gap: 8, marginTop: 8 }]}>
+                <TouchableOpacity
+                  style={[p.role === 'accountant' ? S.btnGhost : S.btn, { flex: 1, paddingVertical: 8 }]}
+                  onPress={() => p.role === 'accountant' && setRole(p, 'staff')}>
+                  <Text style={p.role === 'accountant' ? S.ghostText : S.btnText}>Counter</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[p.role === 'accountant' ? S.btn : S.btnGhost, { flex: 1, paddingVertical: 8 }]}
+                  onPress={() => p.role !== 'accountant' && setRole(p, 'accountant')}>
+                  <Text style={p.role === 'accountant' ? S.btnText : S.ghostText}>Accountant</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
         ))}
@@ -157,9 +198,14 @@ export default function StaffScreen({ navigation }) {
             What the counter can and cannot do
           </Text>
           <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 6, lineHeight: 19 }}>
-            He can write bills, take money and add a customer or an item.{'\n'}
-            He cannot remove a bill, change your settings, see what you paid for
-            your goods, or look at the reports.
+            <Text style={{ fontWeight: '800' }}>Counter.</Text> He can write
+            bills, take money and add a customer or an item. He cannot remove a
+            bill, change your settings, see what you paid for your goods, or
+            look at the reports.{'\n'}{'\n'}
+            <Text style={{ fontWeight: '800' }}>Accountant.</Text> He can open
+            every bill, every report and the whole of your books, and take the
+            GSTR-1 file — and he cannot change a single thing. Give this to your
+            CA. It costs you nothing.
           </Text>
         </View>
       </ScrollView>

@@ -3,7 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { supabase } from '../lib/supabase';
+import { supabase, allRows } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, num, settle, today } from '../lib/money';
@@ -62,8 +62,10 @@ export default function MoneyScreen({ route, navigation }) {
   const fDate = useRef(null);
 
   const load = useCallback(async () => {
-    const [{ data: ps }, { data: rs }, { data: bs }] = await Promise.all([
-      supabase.from('parties').select('*').order('name'),
+    // The names are paged: past 1,000 of them the rest could not be picked.
+    // The recent list below is deliberately short and stays as it is.
+    const [ps, { data: rs }, { data: bs }] = await Promise.all([
+      allRows(() => supabase.from('parties').select('*').order('name').order('id')),
       supabase.from('payments')
         .select('*, parties(name)')
         .eq('ptype', ptype)

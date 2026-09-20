@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, FlatList, Modal, Alert, ScrollView } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { supabase } from '../lib/supabase';
+import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { fmt0, num, settle, hsnApplies } from '../lib/money';
+import { fmt0, num, settle, hsnApplies, SUPPLY_KINDS, supplyOf } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { checkHsn, hsnExists, hsnDesc } from '../lib/hsn';
 import { HsnField, UomField } from '../components/Pickers';
@@ -18,6 +18,7 @@ const FIELD = {
 };
 
 const empty = { name: '', search_words: '', alias: '', hsn: '', unit: 'PCS', barcode: '',
+  supply: 'taxable',
                 sale_price: '', price2: '', purchase_price: '', gst_rate: '', opening_stock: '' };
 
 export default function ItemsScreen({ navigation }) {
@@ -112,9 +113,13 @@ export default function ItemsScreen({ navigation }) {
 
   // Retired items are kept, never deleted — old bills must still be able to
   // show what was sold and at what rate.
-  const load = () => supabase.from('items').select('*')
+  // Paged: a shop with more than 1,000 items was shown only the first 1,000,
+  // with nothing on screen to say the rest existed.
+  const load = () => allRows(() => supabase.from('items').select('*')
     .eq('is_active', !showGone)
-    .order('name').then(({ data }) => setRows(data || []));
+    .order('name').order('id'))
+    .then((data) => setRows(data || []))
+    .catch(() => {});
   useFocusEffect(useCallback(() => { load(); }, [showGone]));
   useEffect(() => { load(); }, [showGone]);
 
@@ -152,6 +157,7 @@ export default function ItemsScreen({ navigation }) {
         name: edit.name.trim(),
         search_words: edit.search_words.trim(),
         barcode: (edit.barcode || '').trim() || null,
+        supply: supplyOf(edit),
         variant_of: edit.variant_of || null,
         variant: (edit.variant || '').trim() || null,
         alias: (edit.alias || '').trim(),
@@ -369,6 +375,42 @@ export default function ItemsScreen({ navigation }) {
                 <Text style={S.ghostText}>SCAN</Text>
               </TouchableOpacity>
             </View>
+
+            {/* WHAT KIND OF SUPPLY THIS IS.
+                After GST 2.0 a great deal of a kirana shop's counter is
+                nil-rated — milk, paneer, Indian breads — and billing those as
+                ordinary 0% taxable lines leaves Table 8 of GSTR-1 empty and
+                overstates the shop's taxable turnover. Set it once, on the
+                item, and every bill it goes on gets it right. */}
+            {hsnApplies(org) && (
+              <>
+                <Text style={[S.label, { marginTop: 14 }]}>KIND OF SUPPLY</Text>
+                <View style={[S.row, { marginTop: 6, gap: 6, flexWrap: 'wrap' }]}>
+                  {SUPPLY_KINDS.map((k) => {
+                    const on = supplyOf(edit) === k.key;
+                    return (
+                      <TouchableOpacity key={k.key} onPress={() => set('supply')(k.key)}
+                        style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
+                                 borderWidth: 1,
+                                 borderColor: on ? C.ink : C.greyB,
+                                 backgroundColor: on ? C.ink : 'transparent' }}>
+                        <Text style={{ fontSize: 12.5, fontWeight: '700',
+                                       color: on ? '#fff' : C.muted }}>{k.label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 5, lineHeight: 17 }}>
+                  {supplyOf(edit) === 'taxable'
+                    ? 'Ordinary goods. Tax is charged at the rate below.'
+                    : supplyOf(edit) === 'nil'
+                    ? 'Nil-rated: inside GST, but the rate is zero — milk, bread, fresh produce.'
+                    : supplyOf(edit) === 'exempt'
+                    ? 'Exempted by notification. No tax, and reported apart from taxable sales.'
+                    : 'Outside GST altogether — petrol, diesel, liquor, electricity.'}
+                </Text>
+              </>
+            )}
 
             <Text style={[S.label, { marginTop: 14 }]}>OTHER SEARCH WORDS</Text>
             <Box ref={fWords} next={fGst} style={{ marginTop: 6 }} placeholder="thali, plate, steel"

@@ -11,13 +11,14 @@ import * as FileSystem from 'expo-file-system/legacy';
 
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { supabase } from '../lib/supabase';
+import { supabase, allRows } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import {
   computeBill, fmt, fmt0, hsnApplies, num, pct, placeOfSupply, purchaseTaxMode,
   rateIsGuessed, saleRate, settle, taxIsCost,
   taxModeFor, today, topRate,
+  SUPPLY_KINDS, supplyOf, supplyShort,
 } from '../lib/money';
 import { pdfName, renamed, sharePdf } from '../lib/pdf';
 import { STATES } from '../lib/states';
@@ -121,16 +122,20 @@ export default function BillScreen({ route, navigation }) {
   useEffect(() => {
     (async () => {
       try {
+        // EVERY item and EVERY name, not the first thousand of each.
+        // PostgREST stops at 1,000 rows without a word, so a shop with 1,200
+        // items simply could not find the last 200 anywhere on this screen.
         const [i, p] = await withTimeout(Promise.all([
-          supabase.from('items').select('*').eq('is_active', true).order('name'),
-          supabase.from('parties').select('*').order('name'),
+          allRows(() => supabase.from('items').select('*')
+            .eq('is_active', true).order('name').order('id')),
+          allRows(() => supabase.from('parties').select('*').order('name').order('id')),
         ]));
-        if (i.error || p.error) throw (i.error || p.error);
-        setItems(i.data || []);
-        setParties(p.data || []);
+        setItems(i || []);
+        setParties(p || []);
         setOffline(false);
         if (showGodowns(org)) {
-          const { data: gs } = await supabase.from('godowns').select('*').order('name');
+          const gs = await allRows(() => supabase.from('godowns')
+            .select('*').order('name').order('id'));
           setGodowns(gs || []);
           setGodown(org?.default_godown_id
             || (gs || []).find((g) => g.is_main)?.id || (gs || [])[0]?.id || null);
@@ -196,6 +201,7 @@ export default function BillScreen({ route, navigation }) {
         return {
           key: seq.current, item_id: l.item_id, item_name: l.item_name,
           hsn: l.hsn || '', unit: l.unit || 'PCS', gst_rate: Number(l.gst_rate) || 0,
+          supply: supplyOf(l),
           qty: String(Number(l.qty)), rate: String(Number(l.rate)),
           disc: Number(l.disc) || 0,
           batch: l.batch || '', expiry: l.expiry || '',
@@ -325,6 +331,9 @@ export default function BillScreen({ route, navigation }) {
     const line = {
       key: seq.current, item_id: h.p.id, item_name: h.p.name, hsn: h.p.hsn || '',
       unit: h.p.unit || 'PCS', gst_rate: Number(h.p.gst_rate) || 0,
+      // Milk is always nil-rated; the item master knows it, so the line does
+      // not have to be told every time.
+      supply: supplyOf(h.p),
       qty: h.qty == null ? '' : String(h.qty), rate: String(rate || ''),
       // the rate was worked out from cost, not set by anyone: the line says so
       rateGuessed: !isBuy && rateIsGuessed(h.p, priceList),
@@ -395,6 +404,7 @@ export default function BillScreen({ route, navigation }) {
     setLine(swapFor, {
       item_id: h.p.id, item_name: h.p.name, hsn: h.p.hsn || '', unit: h.p.unit || 'PCS',
       gst_rate: Number(h.p.gst_rate) || 0,
+      supply: supplyOf(h.p),
       rate: String(listRate(h.p) || ''),
       rateGuessed: !isBuy && rateIsGuessed(h.p, priceList),
       rateEdited: false,
@@ -411,8 +421,12 @@ export default function BillScreen({ route, navigation }) {
   // Freight carries the dearest rate on the bill unless he says otherwise.
   const extraRate = extraGst === '' ? topRate(good) : num(extraGst);
   const discAsked = num(less);
+  // `discount` is passed even when the box is empty — 0 is how a discount is
+  // TAKEN OFF a bill that already had one, and leaving it out was why it could
+  // not be removed once saved.
   const calc = computeBill(good, mode,
-    { amount: extraAmt, gst_rate: extraRate, discount: discAsked });
+    { amount: extraAmt, gst_rate: extraRate, discount: discAsked,
+      reverseCharge: !!rcharge });
   const grand = calc.total;
   const roundOff = calc.round_off;
   const checked = lines.filter((l) => l.checked).length;
@@ -569,7 +583,8 @@ export default function BillScreen({ route, navigation }) {
       const m = isBuy ? purchaseTaxMode(org, pty)
         : estimateMode ? 'none' : taxModeFor(org, pty, isCash);
       const c = computeBill(good, m,
-        { amount: extraAmt, gst_rate: extraRate, discount: discAsked });
+        { amount: extraAmt, gst_rate: extraRate, discount: discAsked,
+          reverseCharge: !!rcharge });
       const total = c.total;
 
       const payload = {
@@ -599,12 +614,15 @@ export default function BillScreen({ route, navigation }) {
         godown_id: godown || null,
         tax_mode: m,
         taxable: c.taxable, cgst: c.cgst, sgst: c.sgst, igst: c.igst,
+        // GSTR-1 Table 8 wants these three apart from the taxable turnover
+        nil_rated: c.nil_rated, exempt: c.exempt, non_gst: c.non_gst,
         discount: c.discount,
         extra_amount: extraAmt, extra_note: extraNote, extra_gst_rate: c.extra_gst_rate,
         round_off: c.round_off, total,
         lines: c.lines.map((l) => ({
           item_id: l.item_id, item_name: l.item_name, hsn: l.hsn, unit: l.unit,
           qty: num(l.qty), rate: num(l.rate), gst_rate: l.gst_rate, disc: l.disc || 0,
+          supply: l.supply || 'taxable',
           batch: (l.batch || '').trim() || null,
           expiry: (l.expiry || '').trim() || null,
           taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
@@ -1015,6 +1033,31 @@ export default function BillScreen({ route, navigation }) {
                       <Text style={S.tapPillText}>change</Text>
                     </TouchableOpacity>
                     <Text style={S.unitPill}>{uqcShort(l.unit)}</Text>
+
+                    {/* NIL-RATED, EXEMPT, OR OUTSIDE GST.
+                        Most of a kirana counter is not taxable: milk, bread,
+                        fresh produce. Billed as an ordinary 0% line they land
+                        in the taxable turnover and leave Table 8 of the return
+                        empty. The item master usually knows already; this is
+                        here for the times it does not. Tap to cycle. */}
+                    {org?.is_gst_registered && !org?.is_composition && !estimateMode && (
+                      <TouchableOpacity
+                        onPress={() => {
+                          const i = SUPPLY_KINDS.findIndex((k) => k.key === supplyOf(l));
+                          setLine(l.key, {
+                            supply: SUPPLY_KINDS[(i + 1) % SUPPLY_KINDS.length].key,
+                          });
+                        }}
+                        style={[S.tapPill, supplyOf(l) !== 'taxable' && {
+                          backgroundColor: C.flagSoft, borderColor: C.flag }]}>
+                        <Text style={[S.tapPillText, supplyOf(l) !== 'taxable' && {
+                          color: C.flag, fontWeight: '800' }]}>
+                          {supplyOf(l) === 'taxable'
+                            ? `${pct(l.gst_rate)}%`
+                            : supplyShort(l.supply)}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </View>
 
@@ -1234,11 +1277,13 @@ export default function BillScreen({ route, navigation }) {
             )}
 
             {/* REVERSE CHARGE.
-                The bill used to print "No" and the return used to say 'N',
-                whatever the truth of it, because nothing anywhere could say
-                otherwise. It is a fact about this bill, so it is asked here
-                and it travels with the bill. Only a registered shop writing a
-                real tax invoice is ever asked. */}
+                Ticking this means the BUYER pays the tax to the government
+                himself, so the shop must not collect it. Skwik used to tick
+                the box, print "Reverse charge: Yes", and add CGST and SGST to
+                the total anyway — which is tax collected without authority:
+                section 76 takes 100% of it as penalty, in cash, with no
+                set-off. Now the tax comes off the bill the moment it is
+                ticked, and the total below changes in front of him. */}
             {org?.is_gst_registered && !org?.is_composition && !estimateMode && isOut && (
               <TouchableOpacity onPress={() => setRcharge(!rcharge)}
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 }}>
@@ -1250,9 +1295,17 @@ export default function BillScreen({ route, navigation }) {
                     {rcharge ? '✓' : ''}
                   </Text>
                 </View>
-                <Text style={{ flex: 1, fontSize: 13.5, color: C.ink }}>
-                  Tax on this bill is payable by the buyer (reverse charge)
-                </Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 13.5, color: C.ink }}>
+                    Tax on this bill is payable by the buyer (reverse charge)
+                  </Text>
+                  {rcharge && (
+                    <Text style={{ fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 17 }}>
+                      No GST is added to this bill. The buyer pays it to the
+                      government himself, and the bill says so.
+                    </Text>
+                  )}
+                </View>
               </TouchableOpacity>
             )}
 

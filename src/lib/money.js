@@ -28,7 +28,7 @@ export function calc(x) {
   }
   let s = raw.replace(/\s+/g, '').replace(/,/g, '');
   if (!s) return 0;
-  s = s.replace(/[xX\u00D7*]/g, '*').replace(/[\u00F7]/g, '/');
+  s = s.replace(/[xX×*]/g, '*').replace(/[÷]/g, '/');
   if (/^[0-9]*\.?[0-9]*$/.test(s)) return Number(s) || 0;      // a plain number
   if (!/^[0-9+\-*/().]+$/.test(s)) return Number(s.replace(/[^0-9.]/g, '')) || 0;
   try {
@@ -74,6 +74,43 @@ export const pct = (x) => {
   const v = Number(x) || 0;
   return (Math.abs(v % 1) < 0.0005 ? v.toFixed(0) : String(Math.round(v * 1000) / 1000));
 };
+
+// WHAT KIND OF SUPPLY A LINE IS.
+//
+// Not everything a shop sells carries tax, and the difference is not cosmetic:
+// GSTR-1 Table 8 asks for nil-rated, exempted and non-GST supplies as three
+// separate figures, and a kirana shop's counter is full of them. After GST 2.0
+// (22 September 2025) UHT milk, paneer and Indian breads are nil-rated, and a
+// shop that bills them as "0% taxable" files a return with an empty Table 8
+// and an overstated taxable turnover.
+//
+//   taxable  — ordinary goods, tax at the line's rate
+//   nil      — nil-rated: inside GST, rate is zero (milk, bread, fresh produce)
+//   exempt   — exempted by notification, or wholly exempt supplies
+//   non_gst  — outside GST altogether (petrol, diesel, alcohol for human
+//              consumption, electricity)
+//
+// Only 'taxable' ever produces tax. The other three are carried at their value
+// and reported separately.
+export const SUPPLY_KINDS = [
+  { key: 'taxable', label: 'Taxable',      short: '' },
+  { key: 'nil',     label: 'Nil-rated',    short: 'NIL' },
+  { key: 'exempt',  label: 'Exempt',       short: 'EXM' },
+  { key: 'non_gst', label: 'Outside GST',  short: 'NON-GST' },
+];
+
+export const supplyOf = (l) => {
+  const s = String(l?.supply || '').trim().toLowerCase();
+  return (s === 'nil' || s === 'exempt' || s === 'non_gst') ? s : 'taxable';
+};
+
+export const isTaxableLine = (l) => supplyOf(l) === 'taxable';
+
+export const supplyLabel = (k) =>
+  (SUPPLY_KINDS.find((s) => s.key === supplyOf({ supply: k })) || SUPPLY_KINDS[0]).label;
+
+export const supplyShort = (k) =>
+  (SUPPLY_KINDS.find((s) => s.key === supplyOf({ supply: k })) || SUPPLY_KINDS[0]).short;
 
 // Which tax applies. The shopkeeper never chooses this.
 //   firm not registered            -> no GST at all
@@ -147,18 +184,25 @@ export function placeOfSupply(org, party, overTheCounter = false) {
 // WHAT A PURCHASE BILL CARRIES.
 //
 // A shop's own SALES follow taxModeFor: unregistered and composition shops
-// charge nothing. A PURCHASE is the supplier's bill, and the supplier charges
-// tax whatever kind of shop this is. It has to be recorded, because:
+// charge nothing. A PURCHASE is the supplier's bill, and a REGISTERED supplier
+// charges tax whatever kind of shop this is. It has to be recorded, because:
 //
 //   * a registered shop claims it back, so the goods cost the price before tax
 //   * a composition dealer and an unregistered shop claim nothing, so the tax
 //     is part of what the goods cost — 10 pieces at 100 with 5% on them cost
 //     105 each, not 100
 //
-// Skwik used to record nothing at all for the second kind, so their purchase
-// price was short by the tax and every sale looked more profitable than it
-// was. purchase_unit_cost() in the database decides which of the two applies.
+// AN UNREGISTERED SUPPLIER CHARGES NO TAX AT ALL, and this is the part Skwik
+// used to get wrong: it taxed every purchase, whoever it came from, so a shop
+// buying from the man down the road was recording input credit that does not
+// exist. Claiming it is a section 16 problem on assessment. A supplier with no
+// GSTIN on file carries no tax — the same test the rest of the app uses to
+// decide whether a buyer is registered.
+//
+// purchase_unit_cost() in the database decides which of the first two applies.
 export function purchaseTaxMode(org, party) {
+  // no GST number on the supplier: he cannot have charged GST
+  if (!String(party?.gstin || '').trim()) return 'none';
   const here  = String(org?.state_code || '').trim();
   const there = String(party?.state_code || '').trim() || here;
   if (!here) return 'cgst_sgst';
@@ -220,10 +264,26 @@ function shareOut(discount, grosses) {
   return parts;
 }
 
+// REVERSE CHARGE: THE SHOP DOES NOT COLLECT THE TAX.
+//
+// When a supply is under reverse charge the RECIPIENT pays the tax to the
+// government himself. Section 9(3)/9(4) puts the liability on him, and the
+// supplier's job under Rule 46(p) is only to say so on the face of the
+// invoice. A supplier who collects it anyway has collected tax he was never
+// entitled to: section 76 takes 100% of it as penalty, recoverable in cash,
+// with no set-off against input credit.
+//
+// Skwik used to tick the box, print "Reverse charge: Yes", and still add CGST
+// and SGST to the total. It no longer does. Under reverse charge the bill
+// carries the taxable value and nothing else, and the declaration prints.
 export function computeBill(lines, mode, extra = {}) {
   let taxable = 0, cgst = 0, sgst = 0, igst = 0;
+  let nilRated = 0, exempt = 0, nonGst = 0;
+
+  const rcm = !!extra.reverseCharge;
 
   const split = (t, rate) => {
+    if (rcm) return { c: 0, s: 0, i: 0 };
     const tax = n2((n2(t) * num(rate)) / 100);
     if (mode === 'cgst_sgst') { const c = n2(tax / 2); return { c, s: c, i: 0 }; }
     if (mode === 'igst') return { c: 0, s: 0, i: tax };
@@ -233,8 +293,14 @@ export function computeBill(lines, mode, extra = {}) {
   const grosses = lines.map((l) => n2(num(l.qty) * num(l.rate)));
   // The bill's own discount when there is one; otherwise whatever the lines
   // are already carrying, so a bill written before this change still adds up.
+  //
+  // `extra.discount` of 0 is a real answer, not an absent one: it is how a
+  // discount is TAKEN OFF a bill that already had one. So the bill's figure
+  // wins whenever the caller supplied one at all, and the per-line fallback
+  // is only for bills written before this screen existed.
+  const hasBillDisc = extra.discount !== undefined && extra.discount !== null && extra.discount !== '';
   const billDisc = n2(num(extra.discount));
-  const shares = billDisc > 0
+  const shares = hasBillDisc
     ? shareOut(billDisc, grosses)
     : lines.map((l, i) => Math.min(Math.abs(n2(num(l.disc))), grosses[i]));
 
@@ -242,12 +308,23 @@ export function computeBill(lines, mode, extra = {}) {
     const gross = grosses[i];
     const disc  = shares[i];
     const t     = n2(gross - disc);
-    const rate  = mode === 'none' ? 0 : num(l.gst_rate);
+    const kind  = supplyOf(l);
+    // Only an ordinary taxable line carries a rate. Nil-rated, exempt and
+    // non-GST lines are carried at value and reported in their own buckets.
+    const rate  = (mode === 'none' || kind !== 'taxable') ? 0 : num(l.gst_rate);
     const { c, s, i: ig } = split(t, rate);
+
+    if (kind === 'nil')          nilRated = n2(nilRated + t);
+    else if (kind === 'exempt')  exempt   = n2(exempt + t);
+    else if (kind === 'non_gst') nonGst   = n2(nonGst + t);
 
     taxable = n2(taxable + t);
     cgst = n2(cgst + c); sgst = n2(sgst + s); igst = n2(igst + ig);
-    return { ...l, disc, taxable: t, cgst: c, sgst: s, igst: ig, amount: t };
+    return {
+      ...l, supply: kind, disc,
+      gross, taxable: t, gst_rate: rate,
+      cgst: c, sgst: s, igst: ig, amount: t,
+    };
   });
 
   // freight and the like, taxed at the rate the bill carries
@@ -266,15 +343,19 @@ export function computeBill(lines, mode, extra = {}) {
     discount: n2(out.reduce((a, l) => a + num(l.disc), 0)),
     gross: n2(grosses.reduce((a, g) => a + g, 0)),
     extra_amount: extraAmt, extra_gst_rate: extraRate,
+    reverse_charge: rcm,
+    // GSTR-1 Table 8 wants these three apart from one another
+    nil_rated: nilRated, exempt, non_gst: nonGst,
     round_off: n2(total - exact), total,
   };
 }
 
 // What freight should be taxed at, offered before he is asked: the highest
 // rate on the bill. A composite supply carries the rate of its principal
-// supply, and on a shop's bill that is the dearest-taxed thing on it.
+// supply, and on a shop's bill that is the dearest-taxed thing on it. A
+// nil-rated or exempt line has no rate to offer, so it is passed over.
 export const topRate = (lines) =>
-  (lines || []).reduce((m, l) => Math.max(m, num(l.gst_rate)), 0);
+  (lines || []).reduce((m, l) => (isTaxableLine(l) ? Math.max(m, num(l.gst_rate)) : m), 0);
 
 // FREIGHT, AS IF IT WERE A LINE.
 //
@@ -287,13 +368,15 @@ export function extraAsLine(voucher, lines = []) {
   if (!amt) return null;
   const rate = num(voucher?.extra_gst_rate);
   const mode = voucher?.tax_mode;
-  const tax  = mode === 'none' ? 0 : n2((amt * rate) / 100);
+  const rcm  = !!voucher?.reverse_charge;
+  const tax  = (mode === 'none' || rcm) ? 0 : n2((amt * rate) / 100);
   const half = n2(tax / 2);
   const like = lines.find((l) => num(l.gst_rate) === rate);
   return {
     item_name: voucher?.extra_note || 'Freight & other charges',
     hsn: like?.hsn || '', unit: '', qty: 0, rate: amt, disc: 0,
-    gst_rate: rate, taxable: amt, amount: amt,
+    supply: 'taxable',
+    gst_rate: rate, taxable: amt, gross: amt, amount: amt,
     cgst: mode === 'cgst_sgst' ? half : 0,
     sgst: mode === 'cgst_sgst' ? half : 0,
     igst: mode === 'igst' ? tax : 0,
@@ -301,12 +384,18 @@ export function extraAsLine(voucher, lines = []) {
 }
 
 // Group the lines by HSN for the summary table on a tax invoice.
+// Nil-rated, exempt and non-GST lines are kept apart from taxable ones even
+// when they share an HSN, because they are reported apart.
 export function hsnSummary(lines) {
   const map = {};
   lines.forEach((l) => {
-    const k = `${l.hsn || '-'}|${num(l.gst_rate)}`;
+    const kind = supplyOf(l);
+    const k = `${l.hsn || '-'}|${num(l.gst_rate)}|${kind}`;
     if (!map[k]) {
-      map[k] = { hsn: l.hsn || '-', taxable: 0, cgst: 0, sgst: 0, igst: 0, gst_rate: num(l.gst_rate) };
+      map[k] = {
+        hsn: l.hsn || '-', taxable: 0, cgst: 0, sgst: 0, igst: 0,
+        gst_rate: num(l.gst_rate), supply: kind,
+      };
     }
     map[k].taxable = n2(map[k].taxable + n2(l.taxable));
     map[k].cgst    = n2(map[k].cgst + n2(l.cgst));
@@ -315,6 +404,24 @@ export function hsnSummary(lines) {
   });
   return Object.values(map);
 }
+
+// What each line was worth BEFORE its share of the bill discount came off.
+//
+// The printed bill shows the gross amount on the line and the discount once,
+// as a single round figure at the foot. Showing the net amount AND the
+// discount row takes the discount off twice on the paper, and the column
+// stops adding up to the total printed under it — which is the first thing a
+// customer or an officer checks. Stored lines carry the net amount, so the
+// gross is the net plus that line's share.
+export const lineGross = (l) =>
+  (l?.gross != null ? n2(num(l.gross)) : n2(num(l?.amount) + Math.abs(num(l?.disc))));
+
+// What the item lines add up to before the discount — the "Items" figure on a
+// counter slip. It has to come from the lines themselves: voucher.taxable
+// already has freight inside it, so adding the discount back to that figure
+// over-states the goods by the freight.
+export const itemsGross = (lines = []) =>
+  n2((lines || []).reduce((s, l) => s + lineGross(l), 0));
 
 const ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
   'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];

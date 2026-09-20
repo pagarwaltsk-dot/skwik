@@ -3,7 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, FlatList, Modal, Alert, ScrollView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { supabase } from '../lib/supabase';
+import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { num, today } from '../lib/money';
 import { STATES } from '../lib/states';
@@ -46,9 +46,12 @@ export default function PartiesScreen({ navigation }) {
 
   // newest first, like every other list in the app: the name he just wrote on
   // a bill is the one he is looking for
-  const load = () => supabase.from('parties').select('*')
-    .order('created_at', { ascending: false })
-    .then(({ data }) => setRows(data || []));
+  // Paged, for the same reason as the item list: past 1,000 names the rest
+  // were simply missing, with no error to explain it.
+  const load = () => allRows(() => supabase.from('parties').select('*')
+    .order('created_at', { ascending: false }).order('id'))
+    .then((data) => setRows(data || []))
+    .catch(() => {});
   useFocusEffect(useCallback(() => { load(); }, []));
 
   const shown = rows

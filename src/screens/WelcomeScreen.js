@@ -19,9 +19,26 @@ export default function WelcomeScreen({ navigation }) {
     if (!pw)           return Alert.alert('Password', 'Type your password.');
 
     setBusy(true);
-    const { error } = await supabase.auth.signInWithPassword({
+    // The number stands in for an email address behind the scenes. But saving
+    // a recovery email under Settings REPLACES that address on the account,
+    // and then the made-up one matches nothing — which used to lock the
+    // shopkeeper out of his own shop with the right password in his hand.
+    // So: try the made-up address, and if the account has moved on, ask the
+    // database which address that number belongs to now and try that.
+    let { error } = await supabase.auth.signInWithPassword({
       email: phoneToEmail(p), password: pw,
     });
+
+    if (error && /invalid/i.test(error.message)) {
+      try {
+        const { data: real } = await supabase.rpc('login_email_for_phone', { p_phone: p });
+        if (real && real !== phoneToEmail(p)) {
+          const second = await supabase.auth.signInWithPassword({ email: real, password: pw });
+          error = second.error || null;
+        }
+      } catch (_) { /* offline, or an older database: leave the first answer */ }
+    }
+
     setBusy(false);
     if (error) {
       Alert.alert('Could not log in',
