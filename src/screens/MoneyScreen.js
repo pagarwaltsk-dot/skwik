@@ -53,6 +53,7 @@ export default function MoneyScreen({ route, navigation }) {
   const [batch, setBatch] = useState(null);   // null = one entry at a time
   const [dateOpen, setDateOpen] = useState(false);
   const gridRef = useRef({});        // every box in the grid, so tab can walk it
+  const [onRow, setOnRow] = useState(null);   // which line's name box is being typed in
   const [editing, setEditing] = useState(null);   // the entry being corrected
   const [busy, setBusy]   = useState(false);
 
@@ -214,6 +215,32 @@ export default function MoneyScreen({ route, navigation }) {
   };
 
   const filledRows = (batch || []).filter((r) => r.name.trim() && num(r.amount) > 0);
+
+  // NAMES OFFERED AS HE TYPES, LINE BY LINE.
+  //
+  // A register is written from memory and from slips, and a shopkeeper types
+  // three letters of a name he has used a hundred times. Nothing is offered
+  // once the name is already exactly right — a list that stays open over the
+  // next line is worse than no list.
+  const rowHits = (r) => {
+    const t = (r.name || '').trim().toLowerCase();
+    if (!t || onRow !== r.key) return [];
+    if (parties.some((p) => p.name.toLowerCase() === t)) return [];
+    return parties
+      .filter((p) => p.name.toLowerCase().includes(t)
+                  || String(p.phone || '').includes(t))
+      .sort((a, b) => {
+        const A = a.name.toLowerCase(), B = b.name.toLowerCase();
+        return (A.startsWith(t) ? 0 : 1) - (B.startsWith(t) ? 0 : 1) || A.localeCompare(B);
+      })
+      .slice(0, 5);
+  };
+
+  const takeHit = (r, p) => {
+    setRow(r.key, { name: p.name });
+    setOnRow(null);
+    setTimeout(() => gridRef.current[`a${r.key}`]?.focus(), 40);
+  };
 
   const saveBatch = async () => {
     const lines = filledRows.map((r) => ({
@@ -497,7 +524,14 @@ export default function MoneyScreen({ route, navigation }) {
                       placeholderTextColor={C.faint}
                       value={r.name}
                       returnKeyType="next" submitBehavior="submit"
-                      onSubmitEditing={() => gridRef.current[`a${r.key}`]?.focus()}
+                      onFocus={() => setOnRow(r.key)}
+                      onSubmitEditing={() => {
+                        // the first name offered is almost always the one meant
+                        const h = rowHits(r);
+                        if (h.length) return takeHit(r, h[0]);
+                        setOnRow(null);
+                        gridRef.current[`a${r.key}`]?.focus();
+                      }}
                       onChangeText={(t) => setRow(r.key, { name: t })} />
                     <TextInput
                       ref={(x) => { gridRef.current[`a${r.key}`] = x; }}
@@ -517,7 +551,23 @@ export default function MoneyScreen({ route, navigation }) {
                       </TouchableOpacity>
                     )}
                   </View>
-                  {isNew && (
+                  {/* the names he might mean, under the line he is on */}
+                  {rowHits(r).map((p) => (
+                    <TouchableOpacity key={p.id} onPress={() => takeHit(r, p)}
+                      style={{ marginLeft: 38, marginRight: 10, marginBottom: 6,
+                               paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8,
+                               borderWidth: 1, borderColor: C.line, backgroundColor: C.accentSoft }}>
+                      <Text numberOfLines={1}
+                        style={{ fontSize: 13.5, fontWeight: '700', color: C.ink }}>
+                        {p.name}
+                        {!!p.area && (
+                          <Text style={{ fontWeight: '500', color: C.muted }}> · {p.area}</Text>
+                        )}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+
+                  {isNew && !rowHits(r).length && (
                     <Text style={{ fontSize: 10.5, color: C.edit, paddingHorizontal: 38,
                                    paddingBottom: 6 }}>
                       new name — will be added to your book
