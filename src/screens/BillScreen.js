@@ -30,7 +30,9 @@ import {
   uuid, withTimeout, looksOffline, cacheItems, cacheParties,
   cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue,
 } from '../lib/offline';
-import { BackButton, Bar, Box, Foot, KeyForm, MoreButton, Screen } from '../components/Chrome';
+import {
+  BackButton, Bar, Box, Foot, KeyForm, MoreButton, Screen, useKeyboardGap,
+} from '../components/Chrome';
 import { ScanSheet, ScanButton } from '../components/Scan';
 import { ColHead } from '../components/Register';
 import { C, S } from '../theme';
@@ -51,6 +53,7 @@ export default function BillScreen({ route, navigation }) {
   const editId = route.params?.voucherId || null;    // set when opening a saved bill
   const { org } = useApp();
   const insets = useSafeAreaInsets();
+  const keyGap = useKeyboardGap();      // > 0 while the keyboard is up
   const estimateMode = org?.mode === 'estimate';
   // A saved bill keeps the kind it was saved as, whatever the screen was opened with.
   const [loadedType, setLoadedType] = useState(null);
@@ -752,21 +755,30 @@ export default function BillScreen({ route, navigation }) {
   return (
     <Screen ruler={!!org?.debug_keyboard}>
 
-      {/* PINNED HEAD — who it is for, and what it comes to */}
-      <Bar>
+      {/* PINNED HEAD — who it is for, and what it comes to.
+          It goes to one slim line while the keyboard is up: the second line
+          and the running total are both repeated at the foot, and every pixel
+          of furniture up here is a pixel of his own bill he cannot see. */}
+      {/* only the BOTTOM padding is trimmed: the top is the notch, and taking
+          that would put the name under the status bar */}
+      <Bar style={keyGap > 0 ? { paddingBottom: 6 } : null}>
         <BackButton navigation={navigation} onPress={leave} />
         <TouchableOpacity style={{ flex: 1, minWidth: 0 }} onPress={() => setCustOpen(true)}>
           <Text numberOfLines={1} style={S.barName}>
             {cust ? (isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name)
                   : 'Tap to choose customer'}
           </Text>
-          <Text numberOfLines={1} style={S.barSub}>{docName}</Text>
+          {keyGap === 0 && (
+            <Text numberOfLines={1} style={S.barSub}>{docName}</Text>
+          )}
         </TouchableOpacity>
-        {!!cust && <ScanButton light onPress={() => setScanOpen(true)} />}
-        <View style={{ alignItems: 'flex-end' }}>
-          <Text style={S.barTotL}>TOTAL</Text>
-          <Text style={[S.barTot, S.num]}>₹{fmt0(grand)}</Text>
-        </View>
+        {!!cust && keyGap === 0 && <ScanButton light onPress={() => setScanOpen(true)} />}
+        {keyGap === 0 && (
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={S.barTotL}>TOTAL</Text>
+            <Text style={[S.barTot, S.num]}>₹{fmt0(grand)}</Text>
+          </View>
+        )}
       </Bar>
 
       {offline && (
@@ -1182,37 +1194,70 @@ export default function BillScreen({ route, navigation }) {
         )}
       </ScrollView>
 
-      {/* THE FOOT OF THE PAGE.
-          A ruled book closes with its total on paper and nothing else beside
-          it, so the figure a shopkeeper reads out loud at the counter is never
-          crowded by buttons. The buttons go below it, on the dark bar, where
-          the phone's own back and home keys used to steal them. */}
-      <View style={{ backgroundColor: C.surface, borderTopWidth: 1.5, borderTopColor: C.ink,
-                     paddingHorizontal: 14, paddingVertical: 10,
-                     flexDirection: 'row', alignItems: 'baseline', gap: 10 }}>
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={S.footL}>
-            {good.length} ITEM{good.length === 1 ? '' : 'S'}
-            {mode !== 'none' && (calc.cgst + calc.sgst + calc.igst) > 0
-              ? ` · GST ₹${fmt0(calc.cgst + calc.sgst + calc.igst)}` : ''}
-          </Text>
-          <Text style={S.footTot}>₹{fmt0(grand)}</Text>
-        </View>
-      </View>
+      {/* THE FOOT GETS OUT OF THE WAY WHILE HE IS TYPING.
+          With the keyboard down this is a ruled book's foot: the total on
+          paper, big, with nothing crowding it, and the buttons on their own
+          dark bar below.
 
-      <Foot style={{ backgroundColor: C.barInk, borderTopWidth: 0,
-                     paddingHorizontal: 12, gap: 8 }}>
-        <TouchableOpacity onPress={() => save(true)} disabled={busy}
-          style={[S.darkBtn, { flex: 0.8 }, busy && { opacity: 0.5 }]}>
-          <Text style={S.darkBtnText}>Save only</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => save(false)} disabled={busy}
-          style={[S.darkBtn, S.darkBtnOn, { flex: 1.4 }, busy && { opacity: 0.5 }]}>
-          <Text style={S.darkBtnTextOn}>
-            {busy ? 'Saving…' : editId ? 'Save changes' : 'Save & send'}
-          </Text>
-        </TouchableOpacity>
-      </Foot>
+          With the keyboard UP it is one slim dark line — the figure on the
+          left, Save on the right — because at that moment the furniture is
+          not what he needs to see. He needs the LINES. A tall foot and a
+          keyboard together leave room for one item, which is the opposite of
+          what a bill screen is for. So the foot gives its height back to the
+          list for as long as he is typing, and takes it again the moment he
+          is done. */}
+      {keyGap > 0 ? (
+        <Foot style={{ backgroundColor: C.barInk, borderTopWidth: 0,
+                       paddingHorizontal: 12, paddingTop: 8, gap: 10,
+                       alignItems: 'center' }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ fontSize: 10, fontWeight: '700', letterSpacing: 0.7,
+                           color: C.barMuted }}>
+              {good.length} ITEM{good.length === 1 ? '' : 'S'}
+            </Text>
+            <Text style={[S.num, { fontSize: 19, fontWeight: '800', color: '#FFFFFF' }]}>
+              ₹{fmt0(grand)}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => save(false)} disabled={busy}
+            style={[S.darkBtn, S.darkBtnOn, { flex: 0, paddingHorizontal: 20,
+                                              paddingVertical: 11 },
+                    busy && { opacity: 0.5 }]}>
+            <Text style={S.darkBtnTextOn}>
+              {busy ? 'Saving…' : editId ? 'Save' : 'Save & send'}
+            </Text>
+          </TouchableOpacity>
+        </Foot>
+      ) : (
+        <>
+          <View style={{ backgroundColor: C.surface, borderTopWidth: 1.5, borderTopColor: C.ink,
+                         paddingHorizontal: 14, paddingVertical: 10,
+                         flexDirection: 'row', alignItems: 'baseline', gap: 10 }}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={S.footL}>
+                {good.length} ITEM{good.length === 1 ? '' : 'S'}
+                {mode !== 'none' && (calc.cgst + calc.sgst + calc.igst) > 0
+                  ? ` · GST ₹${fmt0(calc.cgst + calc.sgst + calc.igst)}` : ''}
+              </Text>
+              <Text style={S.footTot}>₹{fmt0(grand)}</Text>
+            </View>
+          </View>
+
+          <Foot style={{ backgroundColor: C.barInk, borderTopWidth: 0,
+                         paddingHorizontal: 12, gap: 8 }}>
+            <TouchableOpacity onPress={() => save(true)} disabled={busy}
+              style={[S.darkBtn, { flex: 0.8 }, busy && { opacity: 0.5 }]}>
+              <Text style={S.darkBtnText}>Save only</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => save(false)} disabled={busy}
+              style={[S.darkBtn, S.darkBtnOn, { flex: 1.4 }, busy && { opacity: 0.5 }]}>
+              <Text style={S.darkBtnTextOn}>
+                {busy ? 'Saving…' : editId ? 'Save changes' : 'Save & send'}
+              </Text>
+            </TouchableOpacity>
+          </Foot>
+        </>
+      )}
 
       {/* ---------- customer picker ---------- */}
       <Modal visible={custOpen} animationType="slide" onRequestClose={() => setCustOpen(false)}>
