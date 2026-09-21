@@ -24,37 +24,74 @@ jobs:
 
       - name: Set up the Android tools
         uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
 
-      - name: Install the packages
-        run: npm ci
-
-      - name: Make the android folder
-        run: npx expo prebuild --platform android --no-install --clean
-
-      - name: Build the APK
+      - name: Build it, and say plainly what went wrong if it does
         run: |
+          set -o pipefail
+          LOG=/tmp/apk.log
+          : > "$LOG"
+
+          fail () {
+            {
+              echo "## The APK was not built"
+              echo ""
+              echo "**It stopped at: $1**"
+              echo ""
+              echo '```'
+              tail -n 80 "$LOG"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          echo "=== versions ===" | tee -a "$LOG"
+          node --version 2>&1 | tee -a "$LOG"
+          java -version  2>&1 | tee -a "$LOG"
+
+          echo "" | tee -a "$LOG"
+          echo "=== installing the packages ===" | tee -a "$LOG"
+          npm ci 2>&1 | tail -n 40 | tee -a "$LOG" || fail "npm ci"
+
+          echo "" | tee -a "$LOG"
+          echo "=== making the android folder ===" | tee -a "$LOG"
+          npx expo prebuild --platform android --no-install --clean 2>&1 \
+            | tail -n 60 | tee -a "$LOG" || fail "expo prebuild"
+
+          echo "" | tee -a "$LOG"
+          echo "=== giving gradle enough memory ===" | tee -a "$LOG"
+          {
+            echo ""
+            echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m"
+            echo "org.gradle.parallel=false"
+            echo "org.gradle.daemon=false"
+          } >> android/gradle.properties
+          tail -n 4 android/gradle.properties | tee -a "$LOG"
+
+          echo "" | tee -a "$LOG"
+          echo "=== compiling ===" | tee -a "$LOG"
           cd android
           chmod +x ./gradlew
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 \
+            | tail -n 120 | tee -a "$LOG" || fail "gradle assembleRelease"
+          cd ..
 
-      - name: Find it and name it
-        id: find
-        run: |
           APK=$(find android/app/build/outputs/apk -name '*.apk' | head -n 1)
           if [ -z "$APK" ]; then
-            echo "::error::gradle finished but no .apk was produced"
-            exit 1
+            find android/app/build/outputs -type f 2>&1 | tee -a "$LOG"
+            fail "finding the .apk gradle should have made"
           fi
           VER=$(node -p "require('./app.json').expo.version")
           cp "$APK" "skwik-$VER.apk"
-          echo "name=skwik-$VER.apk" >> "$GITHUB_OUTPUT"
-          ls -lh "skwik-$VER.apk"
+          ls -lh "skwik-$VER.apk" | tee -a "$LOG"
+          echo "APK_NAME=skwik-$VER.apk" >> "$GITHUB_ENV"
 
       - name: Attach it to this run
         uses: actions/upload-artifact@v4
         with:
           name: skwik-apk
-          path: ${{ steps.find.outputs.name }}
+          path: ${{ env.APK_NAME }}
           if-no-files-found: error
 
       - name: Where to find it
