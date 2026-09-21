@@ -1,5 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import { supabase } from '../lib/supabase';
+import { sayPlainly } from '../lib/offline';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '../AppContext';
 import { showGodowns, showTransfer } from '../lib/features';
@@ -18,6 +20,54 @@ export default function MoreScreen({ navigation }) {
   const scheme = !org?.is_gst_registered ? 'Not registered under GST'
     : org?.is_composition ? 'Composition scheme — bills say BILL OF SUPPLY'
     : `Regular GST · HSN ${org?.turnover_above_5cr ? '6' : '4'} digits or more`;
+
+  // CLOSING AN ACCOUNT FOR GOOD.
+  //
+  // There was no way to do this. "Wipe the books" emptied the ledgers and left
+  // the login, the phone number, the shop name, the address and the GST number
+  // exactly where they were — which is not deletion, and the Play Store does
+  // not list an app that has no way to delete an account.
+  //
+  // He is warned about section 36 first, because a shopkeeper who closes his
+  // account has destroyed records the law says he must keep for seventy-two
+  // months from the due date of his annual return, and only he can decide
+  // whether he has them elsewhere. The owner is sent to Import & export to
+  // take a copy before he is allowed to go on.
+  const closeAccount = () => {
+    Alert.alert(
+      'Close your Skwik account?',
+      (isOwner
+        ? 'Your shop, every bill, every customer and every entry in it are '
+          + 'deleted. Nothing is kept anywhere and nobody can get it back — '
+          + 'not you, not us.\n\n'
+        : 'Your login is deleted. The shop and its books stay with the owner.\n\n')
+      + 'The GST law (section 36) says you must keep your records for 72 '
+      + 'months from the due date of your annual return. Take a copy under '
+      + 'Import & export first if you do not have one.',
+      [{ text: 'Keep my account' },
+       { text: isOwner ? 'Take a copy first' : ' ',
+         onPress: isOwner ? () => navigation.navigate('Transfer') : undefined },
+       { text: 'Close it for good', style: 'destructive', onPress: confirmClose }]
+        .filter((b) => b.text.trim()));
+  };
+
+  const confirmClose = () => {
+    Alert.alert('Last check',
+      'This cannot be undone. Tap "Yes, close it" and your account is gone.',
+      [{ text: 'Cancel' },
+       { text: 'Yes, close it', style: 'destructive', onPress: doClose }]);
+  };
+
+  const doClose = async () => {
+    try {
+      const { error } = await supabase.rpc('delete_my_account', { p_confirm: 'DELETE' });
+      if (error) throw error;
+      Alert.alert('Closed', 'Your Skwik account has been deleted.');
+      await signOut();
+    } catch (e) {
+      Alert.alert('Could not close it', sayPlainly(e));
+    }
+  };
 
   const Item = ({ label, onPress }) => (
     <TouchableOpacity onPress={onPress}
@@ -70,7 +120,13 @@ export default function MoreScreen({ navigation }) {
         <Item label="Log out" onPress={() =>
           Alert.alert('Log out?', 'You will need your number and password again.',
             [{ text: 'Cancel' }, { text: 'Log out', onPress: signOut }])} />
+        <Item label="Close my Skwik account" onPress={closeAccount} />
       </View>
+
+      <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 10, lineHeight: 17 }}>
+        Closing your account removes your login from Skwik for good.
+        {isOwner ? ' Your shop and every bill in it go with it.' : ''}
+      </Text>
 
       <View style={{ alignItems: 'center', marginTop: 30, marginBottom: 10 }}>
         <Text style={{ fontSize: 15, fontWeight: '700', color: C.accent, letterSpacing: -0.4 }}>

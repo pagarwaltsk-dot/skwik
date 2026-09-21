@@ -125,6 +125,18 @@ export default function WipeScreen({ navigation }) {
               copy kept anywhere, and I cannot get it back for you afterwards.
             </Warn>
 
+            {/* SECTION 36 OF THE CGST ACT.
+                A shop trying Skwik on made-up figures loses nothing here. A
+                shop that has done a month of real billing and then empties
+                itself has destroyed records the law makes it keep for six
+                years, and nothing on this screen said so. */}
+            <Warn>
+              If any of these are real bills, the GST law says you must keep
+              them for 72 months from the due date of your annual return
+              (section 36 of the CGST Act). Take a copy under Import &amp;
+              export before you empty this, and keep it safe.
+            </Warn>
+
             <Text style={[S.eyebrow, { marginTop: 26 }]}>What about your lists?</Text>
             {[[true,  'Keep my items and my customers',
                       'Their opening stock and opening balances go back to nil, '

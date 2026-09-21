@@ -12,6 +12,7 @@ import { fmt, fmt0, n2, today } from '../lib/money';
 import { buildGstr1 } from '../lib/gstr1';
 import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
+import { sayPlainly } from '../lib/offline';
 
 // WHAT THE BOOKS SAY.
 //
@@ -79,11 +80,46 @@ export default function ReportsScreen({ navigation }) {
   const [vouchers, setVouchers] = useState([]);
   const [lines, setLines] = useState([]);
   const [pnl, setPnl] = useState(null);
+  const [summary, setSummary] = useState(null);
 
+  // THE WHOLE YEAR USED TO COME DOWN THE WIRE.
+  //
+  // This screen asked for every bill and every line in the range and added
+  // them up here. For a shop with 13,200 bills that is 37,000 lines — about
+  // 8.6 MB of rows, well over 20 MB once JSON puts the column names back on
+  // every one of them, across fifty round trips, on a mobile pack, EVERY time
+  // he opens the screen. Then it parsed all of it and walked it three times on
+  // the thread that draws the screen.
+  //
+  // Every figure on this page is a SUM or a GROUP BY. report_summary does them
+  // on the server in about seventy milliseconds and sends back 3.6 KB.
+  //
+  // The old road is kept underneath, because a phone can be updated before the
+  // database is, and a shopkeeper who has not run the new SQL yet must still
+  // get his reports.
   const load = useCallback(async () => {
     setBusy(true);
     try {
       const [from, to] = rangeOf(range);
+      const sum = await supabase.rpc('report_summary',
+        { p_from: from || '2000-04-01', p_to: to || today() });
+      if (!sum.error && sum.data) {
+        setSummary(sum.data);
+        setVouchers([]); setLines([]);
+        const { data: pl } = await supabase.rpc('profit_and_loss',
+          { p_from: from || '2000-04-01', p_to: to || today() });
+        setPnl(pl || null);
+        return;
+      }
+      setSummary(null);
+      await loadTheLongWay(from, to);
+    } catch (e) {
+      Alert.alert('Could not load', sayPlainly(e));
+    } finally { setBusy(false); }
+  }, [range]);
+
+  const loadTheLongWay = async (from, to) => {
+    {
       const vs = await allRows(() => {
         let q = supabase.from('vouchers')
           // a cancelled bill is not a sale, and must not be added into one
@@ -101,10 +137,8 @@ export default function ReportsScreen({ navigation }) {
       const { data: pl } = await supabase.rpc('profit_and_loss',
         { p_from: from || '2000-04-01', p_to: to || today() });
       setPnl(pl || null);
-    } catch (e) {
-      Alert.alert('Could not load', e.message || String(e));
-    } finally { setBusy(false); }
-  }, [range]);
+    }
+  };
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -112,6 +146,56 @@ export default function ReportsScreen({ navigation }) {
 
   const sums = useMemo(() => {
     const blank = () => ({ n: 0, taxable: 0, cgst: 0, sgst: 0, igst: 0, total: 0 });
+
+    // THE SHORT ROAD: the server already grouped everything.
+    if (summary) {
+      const pick = (f) => {
+        const a = blank();
+        for (const h of (summary.heads || [])) {
+          if (!f(h)) continue;
+          a.n += Number(h.n || 0);
+          a.taxable = n2(a.taxable + Number(h.taxable || 0));
+          a.cgst    = n2(a.cgst + Number(h.cgst || 0));
+          a.sgst    = n2(a.sgst + Number(h.sgst || 0));
+          a.igst    = n2(a.igst + Number(h.igst || 0));
+          a.total   = n2(a.total + Number(h.total || 0));
+        }
+        return a;
+      };
+      const sSales  = pick((h) => h.vtype === 'sale');
+      const sPurch  = pick((h) => h.vtype === 'purchase');
+      const sEst    = pick((h) => h.vtype === 'estimate');
+      // section 34(2): a credit note raised after 30 November refunds the
+      // customer and changes nothing about the tax
+      const sInTime = pick((h) => h.vtype === 'sale_return' && h.gst_effective !== false);
+      const sLate   = pick((h) => h.vtype === 'sale_return' && h.gst_effective === false);
+      return {
+        sales: sSales, purchases: sPurch, estimates: sEst,
+        returns: {
+          taxable: n2(sInTime.taxable + sLate.taxable),
+          cgst: n2(sInTime.cgst + sLate.cgst),
+          sgst: n2(sInTime.sgst + sLate.sgst),
+          igst: n2(sInTime.igst + sLate.igst),
+          total: n2(sInTime.total + sLate.total),
+        },
+        lateReturns: sLate,
+        rates: (summary.rates || []).map((r) => ({
+          rate: Number(r.rate || 0), taxable: Number(r.taxable || 0),
+          cgst: Number(r.cgst || 0), sgst: Number(r.sgst || 0), igst: Number(r.igst || 0),
+        })).sort((a, b) => a.rate - b.rate),
+        b2bTaxable: Number(summary.b2b_taxable || 0),
+        b2cTaxable: Number(summary.b2c_taxable || 0),
+        days: (summary.days || []).map((d) => [d.d, Number(d.total || 0)]),
+        items: (summary.items || []).map((i) => ({
+          name: i.name, qty: Number(i.qty || 0), value: Number(i.value || 0), unit: i.unit,
+        })),
+        gstOwed: n2(sSales.cgst + sSales.sgst + sSales.igst
+                  - sInTime.cgst - sInTime.sgst - sInTime.igst),
+        gstLateNotes: n2(sLate.cgst + sLate.sgst + sLate.igst),
+        itc: n2(sPurch.cgst + sPurch.sgst + sPurch.igst),
+      };
+    }
+
     const add = (acc, v) => {
       acc.n += 1;
       acc.taxable = n2(acc.taxable + Number(v.taxable || 0));
@@ -194,7 +278,7 @@ export default function ReportsScreen({ navigation }) {
       gstLateNotes: n2(late.cgst + late.sgst + late.igst),
       itc: n2(purchases.cgst + purchases.sgst + purchases.igst),
     };
-  }, [vouchers, lines]);
+  }, [vouchers, lines, summary]);
 
   const label = rangeOf(range)[2];
 
@@ -252,7 +336,7 @@ export default function ReportsScreen({ navigation }) {
       Alert.alert(`GSTR-1 for ${String(m).padStart(2, '0')}/${y}`, body,
         [{ text: 'Not now' }, { text: 'Send the file', onPress: go }]);
     } catch (e) {
-      Alert.alert('Could not build it', e.message || String(e));
+      Alert.alert('Could not build it', sayPlainly(e));
     } finally { setFiling(false); }
   };
 
@@ -298,7 +382,7 @@ export default function ReportsScreen({ navigation }) {
       }
       await Sharing.shareAsync(f.uri, { mimeType: 'text/csv', dialogTitle: 'Send report' });
     } catch (e) {
-      Alert.alert('Could not send', e.message || String(e));
+      Alert.alert('Could not send', sayPlainly(e));
     }
   };
 

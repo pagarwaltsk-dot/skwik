@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Keyboard, BackHandler,
 } from 'react-native';
@@ -162,10 +162,28 @@ export default function HomeScreen({ navigation }) {
     });
   };
 
-  const look = async (text) => {
+  // FOUR QUESTIONS PER LETTER WAS FOUR TOO MANY.
+  //
+  // This fired the moment a key went down, so typing "ramesh" asked the
+  // server twenty times and threw away the first sixteen answers — on his
+  // data, on a weak line, with the results jumping about as the slower ones
+  // came back out of order. It waits a quarter of a second after he stops
+  // typing now, and a newer keystroke cancels an older search.
+  const lookTimer = useRef(null);
+  const lookSeq = useRef(0);
+
+  const look = (text) => {
     setQ(text);
     const t = text.trim();
-    if (t.length < 2) return setFound(null);
+    if (lookTimer.current) clearTimeout(lookTimer.current);
+    if (t.length < 2) { setFound(null); return; }
+    lookTimer.current = setTimeout(() => { lookNow(t); }, 250);
+  };
+
+  useEffect(() => () => { if (lookTimer.current) clearTimeout(lookTimer.current); }, []);
+
+  const lookNow = async (t) => {
+    const mine = ++lookSeq.current;
     try {
       const [{ data: parties }, { data: items },
              { data: byNo }, { data: byName }] = await Promise.all([
@@ -194,6 +212,7 @@ export default function HomeScreen({ navigation }) {
         .sort((a, b) => String(b.vdate).localeCompare(String(a.vdate)))
         .slice(0, LOOK);
 
+      if (mine !== lookSeq.current) return;      // he has typed since; this is stale
       setFound({
         parties: rank(parties || [], t),
         items: rank(items || [], t),
@@ -202,6 +221,7 @@ export default function HomeScreen({ navigation }) {
            || (byNo || []).length >= LOOK || (byName || []).length >= LOOK,
       });
     } catch (e) {
+      if (mine !== lookSeq.current) return;
       setFound({ parties: [], items: [], bills: [], failed: true });
     }
   };

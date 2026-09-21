@@ -12,14 +12,31 @@
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
-// Letters, digits and single underscores. Anything else a file system or a
-// messaging app might argue about is dropped.
-const tidy = (s, max = 40) => String(s || '')
-  .replace(/[^A-Za-z0-9 ]+/g, ' ')
-  .trim()
-  .replace(/\s+/g, '_')
-  .slice(0, max)
-  .replace(/^_+|_+$/g, '');
+// Letters, digits and single underscores.
+//
+// This used to keep A-Z, a-z and 0-9 and throw away everything else. In Assam
+// that is most of the customers: শ্ৰী গণেশ came out empty, the name fell back
+// to the word "Bill", and every bill the shopkeeper sent was called Bill.pdf —
+// each one overwriting the last in the cache. So the rule is now the other way
+// round: keep the letters and digits of ANY script, and drop only the handful
+// of characters a file system or a messaging app really does argue about.
+//
+// The length limit counts characters, not code units, so a name is never cut
+// through the middle of a letter or an emoji.
+const BAD = /[\u0000-\u001f\u007f/\\:*?"'`<>|$&;%#\u2028\u2029]+/g;
+
+const tidy = (s, max = 40) => {
+  const cleaned = String(s || '')
+    .normalize('NFC')
+    .replace(BAD, ' ')
+    .replace(/[.]+/g, ' ')        // no dots: they look like a second extension
+    .trim()
+    .replace(/\s+/g, '_');
+  return Array.from(cleaned)
+    .slice(0, max)
+    .join('')
+    .replace(/^_+|_+$/g, '');
+};
 
 // Pratik_59, Pratik_INV26-7, Ramesh_ledger, Shop_name_bill.
 export function pdfName({ who, no, what, fallback = 'Bill' } = {}) {

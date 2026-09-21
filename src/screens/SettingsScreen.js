@@ -148,7 +148,7 @@ export default function SettingsScreen({ navigation }) {
       }).eq('id', org.id);
     }
     setBusy(false);
-    if (error) return Alert.alert('Could not change numbering', error.message);
+    if (error) return Alert.alert('Could not change numbering', sayPlainly(error));
     await reloadOrg();
     Alert.alert('Saved', `Your next bill will be ${nextLooksLike()}.`);
   };

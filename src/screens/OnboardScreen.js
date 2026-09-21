@@ -5,6 +5,7 @@ import { useApp } from '../AppContext';
 import { STATES } from '../lib/states';
 import { Box, KeyForm } from '../components/Chrome';
 import { C, S } from '../theme';
+import { sayPlainly } from '../lib/offline';
 
 
 // A SAFETY NET, not the usual way in. Registering happens on RegisterScreen.
@@ -25,7 +26,7 @@ export default function OnboardScreen() {
       const r = await joinShop(code);
       Alert.alert('You are in', `You can now write bills for ${r?.name || 'the shop'}.`);
     } catch (e) {
-      Alert.alert('Could not join', e.message || String(e));
+      Alert.alert('Could not join', sayPlainly(e));
     } finally { setBusy(false); }
   };
   const [phone, setPhone] = useState('');
@@ -50,12 +51,12 @@ export default function OnboardScreen() {
       trial_ends_at: trialEnds.toISOString(),
     }).select().single();
 
-    if (error) { setBusy(false); return Alert.alert('Could not save', error.message); }
+    if (error) { setBusy(false); return Alert.alert('Could not save', sayPlainly(error)); }
 
     const { error: e2 } = await supabase.from('profiles')
       .upsert({ id: user.id, org_id: org.id, phone: phone.trim() });
     setBusy(false);
-    if (e2) return Alert.alert('Could not save', e2.message);
+    if (e2) return Alert.alert('Could not save', sayPlainly(e2));
     await reloadOrg();
   };
 

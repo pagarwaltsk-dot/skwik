@@ -11,6 +11,7 @@ import { Box, Foot, Head, KeyForm, Screen } from '../components/Chrome';
 import { ScanSheet } from '../components/Scan';
 import { showVariants } from '../lib/features';
 import { C, S } from '../theme';
+import { sayPlainly } from '../lib/offline';
 
 const FIELD = {
   name: 'Name', hsn: 'HSN code', unit: 'Unit', sale_price: 'Selling price',
@@ -95,7 +96,7 @@ export default function ItemsScreen({ navigation }) {
       }
       setBulk(false); setDraft({}); load();
     } catch (e) {
-      Alert.alert('Could not save them all', e.message || String(e));
+      Alert.alert('Could not save them all', sayPlainly(e));
     } finally { setSaving(false); }
   };
 
@@ -137,7 +138,7 @@ export default function ItemsScreen({ navigation }) {
          onPress: async () => {
            const { error } = await supabase.from('items')
              .update({ is_active: back }).eq('id', item.id);
-           if (error) return Alert.alert('Could not save', error.message);
+           if (error) return Alert.alert('Could not save', sayPlainly(error));
            setEdit(null); load();
          } }]);
   };
@@ -172,7 +173,7 @@ export default function ItemsScreen({ navigation }) {
       const { error } = edit.id
         ? await supabase.from('items').update(body).eq('id', edit.id)
         : await supabase.from('items').insert(body);
-      if (error) return Alert.alert('Could not save', error.message);
+      if (error) return Alert.alert('Could not save', sayPlainly(error));
       setEdit(null); load();
     };
 

@@ -4,7 +4,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase, allRows } from '../lib/supabase';
-import { sayPlainly } from '../lib/offline';
+import { sayPlainly, withTimeout } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, num, settle, today } from '../lib/money';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
@@ -153,13 +153,28 @@ export default function MoneyScreen({ route, navigation }) {
 
     setBusy(true);
     try {
+      // EVERY CALL ON THIS SCREEN GETS A CLOCK PUT ON IT.
+      //
+      // There was none. On a weak line the button sat on "Saving…" until the
+      // phone itself gave up, which can be a minute, with a customer waiting
+      // and no way to tell whether the money had gone in. Seven seconds, then
+      // a sentence he can act on.
       let p = party;
       if (!p?.id) {
         const hit = parties.find((x) => x.name.toLowerCase() === text.trim().toLowerCase());
-        p = hit || (await supabase.from('parties').insert({
-          org_id: org.id, name: text.trim(), kind: received ? 'customer' : 'supplier',
-          state_code: org.state_code, state_name: org.state_name,
-        }).select().single()).data;
+        if (hit) p = hit;
+        else {
+          const { data, error } = await withTimeout(supabase.from('parties').insert({
+            org_id: org.id, name: text.trim(), kind: received ? 'customer' : 'supplier',
+            state_code: org.state_code, state_name: org.state_name,
+          }).select().single());
+          // This used to read .data straight off the result. When the insert
+          // failed there was no data, and the next line asked an undefined
+          // thing for its id — so a lost signal came out as a programmer's
+          // error message instead of "check your internet".
+          if (error || !data) throw (error || new Error('offline'));
+          p = data;
+        }
       }
 
       const body = {
@@ -170,12 +185,13 @@ export default function MoneyScreen({ route, navigation }) {
       };
 
       if (editing) {
-        const { error } = await supabase.from('payments').update(body).eq('id', editing.id);
+        const { error } = await withTimeout(
+          supabase.from('payments').update(body).eq('id', editing.id));
         if (error) throw error;
         clear(); await load();
         Alert.alert('Changed', `Now ₹${fmt0(num(amount))}.`);
       } else {
-        const { error } = await supabase.from('payments').insert(body);
+        const { error } = await withTimeout(supabase.from('payments').insert(body));
         if (error) throw error;
         // STAY HERE. A man taking money at the counter takes it from four
         // people in a row; throwing him into one customer's account after
@@ -185,7 +201,7 @@ export default function MoneyScreen({ route, navigation }) {
         setTimeout(() => fWho.current?.focus(), 80);
       }
     } catch (e) {
-      Alert.alert('Could not save', e.message || String(e));
+      Alert.alert('Could not save', sayPlainly(e));
     } finally { setBusy(false); }
   };
 
@@ -324,7 +340,7 @@ export default function MoneyScreen({ route, navigation }) {
       [{ text: 'Keep it' },
        { text: 'Remove', style: 'destructive', onPress: async () => {
            const { error } = await supabase.from('payments').delete().eq('id', p.id);
-           if (error) return Alert.alert('Could not remove it', error.message);
+           if (error) return Alert.alert('Could not remove it', sayPlainly(error));
            if (editing?.id === p.id) clear();
            load();
          } }]);
@@ -370,7 +386,13 @@ export default function MoneyScreen({ route, navigation }) {
             value={text} onChangeText={(t) => { setText(t); setParty(null); }} />
 
           {matches.map((p) => (
-            <TouchableOpacity key={p.id} onPress={() => { setParty(p); setText(p.name); }}
+            <TouchableOpacity key={p.id}
+              onPress={() => {
+                setParty(p); setText(p.name);
+                // straight on to the amount — the name is never the last thing
+                // he wants to type
+                setTimeout(() => fAmt.current?.focus(), 80);
+              }}
               style={{ padding: 12, backgroundColor: C.surface, borderWidth: 1,
                        borderColor: C.line, borderRadius: 12, marginTop: 6 }}>
               <Text style={{ fontSize: 15, fontWeight: '700', color: C.ink }}>{p.name}</Text>

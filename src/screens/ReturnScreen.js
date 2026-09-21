@@ -11,7 +11,7 @@ import { computeBill, fmt, fmt0, num, settle, today, supplyOf } from '../lib/mon
 import { uqcShort } from '../lib/uqc';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
-import { uuid } from '../lib/offline';
+import { uuid, sayPlainly } from '../lib/offline';
 import { pdfName, sharePdf } from '../lib/pdf';
 import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
@@ -226,7 +226,7 @@ export default function ReturnScreen({ route, navigation }) {
         party: bill.parties, lines: calc.lines,
       });
     } catch (e) {
-      Alert.alert('Could not save', e.message || String(e));
+      Alert.alert('Could not save', sayPlainly(e));
     } finally { setBusy(false); }
   };
 

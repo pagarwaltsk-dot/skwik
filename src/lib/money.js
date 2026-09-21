@@ -1,6 +1,29 @@
 // All money maths lives here, so there is one place to check it.
 
-export const n2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
+// ROUNDING TO THE PAISA, WITHOUT JAVASCRIPT'S THUMB ON THE SCALE.
+//
+// This was Math.round(x * 100) / 100, which is right nearly always and wrong
+// just often enough to matter. JavaScript has no decimals, only binary
+// fractions, so 1.005 * 100 is not 100.5 — it is 100.49999999999999, and that
+// rounds DOWN. Over twenty thousand test bills it put the CGST of about one
+// bill in a hundred a paisa under what Postgres made it.
+//
+// A paisa is nothing to the customer; the rupee total absorbed every one of
+// them. It is not nothing to the GST portal, which reconciles the tax on a
+// B2B invoice against the buyer's own 2B to the paisa, and raises a mismatch
+// on any difference at all.
+//
+// toPrecision(15) re-rounds away the representation error first — fifteen
+// significant figures is far more than any shop's bill needs and far less
+// than a double can hold — and the sign is taken out and put back so that
+// half a paisa always rounds AWAY from zero, which is what Postgres does and
+// what a credit note needs.
+export const n2 = (x) => {
+  const v = Number(x);
+  if (!v || !Number.isFinite(v)) return 0;
+  const s = v < 0 ? -1 : 1;
+  return (s * Math.round(Number((Math.abs(v) * 100).toPrecision(15)))) / 100;
+};
 
 // TODAY, WHERE HE IS STANDING.
 //

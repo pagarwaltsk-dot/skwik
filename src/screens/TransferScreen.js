@@ -100,7 +100,7 @@ export default function TransferScreen({ navigation }) {
       const data = await allRows(() => supabase.from('items').select('*').order('name').order('id'));
       if (!data?.length) return Alert.alert('Nothing to send', 'There are no items yet.');
       await send('skwik-items.csv', itemsToCsv(data), 'text/csv');
-    } catch (e) { Alert.alert('Could not send', e.message || String(e)); }
+    } catch (e) { Alert.alert('Could not send', sayPlainly(e)); }
     finally { setBusy(''); }
   };
 
@@ -110,7 +110,7 @@ export default function TransferScreen({ navigation }) {
       const data = await allRows(() => supabase.from('parties').select('*').order('name').order('id'));
       if (!data?.length) return Alert.alert('Nothing to send', 'There are no customers yet.');
       await send('skwik-customers.csv', partiesToCsv(data), 'text/csv');
-    } catch (e) { Alert.alert('Could not send', e.message || String(e)); }
+    } catch (e) { Alert.alert('Could not send', sayPlainly(e)); }
     finally { setBusy(''); }
   };
 
@@ -134,7 +134,7 @@ export default function TransferScreen({ navigation }) {
       const vs = await fetchBills();
       if (!vs.length) return Alert.alert('Nothing in that period', 'No bills were found.');
       await send('skwik-bills.csv', billsToCsv(vs), 'text/csv');
-    } catch (e) { Alert.alert('Could not send', e.message || String(e)); }
+    } catch (e) { Alert.alert('Could not send', sayPlainly(e)); }
     finally { setBusy(''); }
   };
 
@@ -157,7 +157,7 @@ export default function TransferScreen({ navigation }) {
         who: byId[l.voucher_id]?.parties?.name || byId[l.voucher_id]?.printed_name || '',
       })).sort((a, b) => String(a.vdate).localeCompare(String(b.vdate)));
       await send('skwik-bill-lines.csv', billLinesToCsv(rows), 'text/csv');
-    } catch (e) { Alert.alert('Could not send', e.message || String(e)); }
+    } catch (e) { Alert.alert('Could not send', sayPlainly(e)); }
     finally { setBusy(''); }
   };
 
@@ -289,7 +289,7 @@ export default function TransferScreen({ navigation }) {
       (ls || []).forEach((l) => { (byV[l.voucher_id] = byV[l.voucher_id] || []).push(l); });
       await send('skwik-tally.xml', tallyVouchersXml({ org, vouchers: vs, linesByVoucher: byV }),
                  'application/xml');
-    } catch (e) { Alert.alert('Could not send', e.message || String(e)); }
+    } catch (e) { Alert.alert('Could not send', sayPlainly(e)); }
     finally { setBusy(''); }
   };
 
@@ -333,7 +333,7 @@ export default function TransferScreen({ navigation }) {
         + 'Keep it somewhere that is not this phone — Drive, or send it to '
         + 'yourself on WhatsApp.');
     } catch (e) {
-      Alert.alert('Could not make the backup', e.message || String(e));
+      Alert.alert('Could not make the backup', sayPlainly(e));
     } finally { setBusy(''); }
   };
 
@@ -360,7 +360,7 @@ export default function TransferScreen({ navigation }) {
         [{ text: 'Not now' },
          { text: 'Put it back', onPress: () => doRestore(b) }]);
     } catch (e) {
-      Alert.alert('Could not read that file', e.message || String(e));
+      Alert.alert('Could not read that file', sayPlainly(e));
     } finally { setBusy(''); }
   };
 
@@ -430,7 +430,7 @@ export default function TransferScreen({ navigation }) {
         + `${b.items.length} items and ${b.parties.length} names checked.`);
     } catch (e) {
       Alert.alert('Stopped part way',
-        `${e.message || String(e)}\n\nWhat went back before the problem is saved. `
+        `${sayPlainly(e)}\n\nWhat went back before the problem is saved. `
         + 'Running the restore again carries on from there without duplicating anything.');
     } finally { setBusy(''); }
   };
@@ -562,7 +562,7 @@ export default function TransferScreen({ navigation }) {
               + `or the tax will be worked out wrong.`
             : ''));
     } catch (e) {
-      Alert.alert('Stopped part way', `${e.message || String(e)}\n\nWhat went in before the `
+      Alert.alert('Stopped part way', `${sayPlainly(e)}\n\nWhat went in before the `
         + `problem is saved. Fix the file and bring it in again — names already `
         + `here are updated, not duplicated.`);
     } finally { setBusy(''); }

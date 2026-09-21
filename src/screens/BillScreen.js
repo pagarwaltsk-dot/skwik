@@ -12,7 +12,6 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase, allRows } from '../lib/supabase';
-import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import {
   computeBill, fmt, fmt0, hsnApplies, num, pct, placeOfSupply, purchaseTaxMode,
@@ -31,7 +30,7 @@ import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
 import {
   uuid, withTimeout, looksOffline, cacheItems, cacheParties,
-  cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue,
+  cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue, sayPlainly,
 } from '../lib/offline';
 import {
   BackButton, Bar, Box, Foot, KeyForm, MoreButton, Screen, useKeyboardGap,
@@ -121,6 +120,20 @@ export default function BillScreen({ route, navigation }) {
 
   useEffect(() => {
     (async () => {
+      // LAST TIME'S COPY GOES UP FIRST.
+      //
+      // This screen is opened fresh for every bill — forty times a day — and
+      // it used to sit blank until eight hundred items and three hundred names
+      // had come down the wire. On a throttled pack that is the best part of a
+      // minute with a customer waiting, before he can type a single thing. The
+      // copy on the phone is on the screen in milliseconds, and the fresh list
+      // replaces it underneath him a moment later without him noticing.
+      try {
+        const [ci, cp] = await Promise.all([cachedItems(), cachedParties()]);
+        if (ci.length) setItems(ci);
+        if (cp.length) setParties(cp);
+      } catch (_) { /* nothing cached yet: the first bill waits, the rest do not */ }
+
       try {
         // EVERY item and EVERY name, not the first thousand of each.
         // PostgREST stops at 1,000 rows without a word, so a shop with 1,200
@@ -140,8 +153,17 @@ export default function BillScreen({ route, navigation }) {
           setGodown(org?.default_godown_id
             || (gs || []).find((g) => g.is_main)?.id || (gs || [])[0]?.id || null);
         }
-        cacheItems(i.data || []);
-        cacheParties(p.data || []);
+        // KEEP A COPY FOR THE DAY THE SIGNAL GOES.
+        //
+        // This read `i.data` and `p.data` for a while. It used to be right:
+        // supabase hands back { data, error }. Then the 1,000-row fix put
+        // allRows() in front of it, which hands back the rows themselves — so
+        // `i.data` became undefined, and every successful load quietly wrote an
+        // EMPTY cache over the real one. Offline billing looked finished and
+        // worked on the day it was written; by the time the signal actually
+        // dropped there was nothing left to bill with.
+        cacheItems(i || []);
+        cacheParties(p || []);
       } catch (e) {
         // no signal, or the server is not answering: use what we copied last time
         const [ci, cp] = await Promise.all([cachedItems(), cachedParties()]);
@@ -163,7 +185,7 @@ export default function BillScreen({ route, navigation }) {
       ]);
       if (!alive) return;
       if (vErr) { setLoadingBill(false);
-                  return Alert.alert('Could not open it', vErr.message || String(vErr)); }
+                  return Alert.alert('Could not open it', sayPlainly(vErr)); }
       if (!v) { setLoadingBill(false);
                 return Alert.alert('Not found', 'That bill is no longer in your books.'); }
 
@@ -247,6 +269,25 @@ export default function BillScreen({ route, navigation }) {
     applyList(Number(p.price_list) === 2 ? 2 : 1);
     setTimeout(() => qRef.current?.focus(), 150);   // known name: straight to products
   };
+  // THE COMMONEST SALE IN THE SHOP: a stranger, cash, no name.
+  //
+  // The picker told him to "type CASH" and then had nothing for him. With no
+  // name typed there were no matches, the "bill him as a new customer" button
+  // was hidden, the enter key did nothing and CLOSE was hidden too — the only
+  // way out was the hardware back button, onto a bill screen with no entry
+  // box on it. He is given the straight road now: one tap, or one press of
+  // enter, and he is on the products.
+  //
+  // No customer row is written for him. A walk-in with no name is not a name
+  // to keep, and a book full of "CASH" is a book nobody can read.
+  const cashWalkIn = isOut && cashInfo.isCash && !cashInfo.name;
+  const startWalkIn = () => {
+    setCust({ name: 'CASH', walkIn: true });
+    setIsCash(true);
+    setCustOpen(false);
+    setTimeout(() => qRef.current?.focus(), 150);
+  };
+
   const newCust = () => {
     // Asked once, here, rather than left for later — a customer with no phone
     // number is a reminder that can never be sent, and one with no state is a
@@ -466,7 +507,7 @@ export default function BillScreen({ route, navigation }) {
         if (error) throw error;
         saved = data;
       } catch (e) {
-        if (!looksOffline(e)) return Alert.alert('Could not save', e.message || String(e));
+        if (!looksOffline(e)) return Alert.alert('Could not save', sayPlainly(e));
         newItems.current = [...newItems.current, body];   // saved when the line comes back
         setOffline(true);
       }
@@ -579,7 +620,9 @@ export default function BillScreen({ route, navigation }) {
 
     setBusy(true);
     try {
-      const pty = cust.id ? cust : await findOrCreateParty(cust.name);
+      const pty = cust.walkIn ? null
+                : cust.id ? cust
+                : await findOrCreateParty(cust.name);
       const m = isBuy ? purchaseTaxMode(org, pty)
         : estimateMode ? 'none' : taxModeFor(org, pty, isCash);
       const c = computeBill(good, m,
@@ -595,7 +638,7 @@ export default function BillScreen({ route, navigation }) {
         vdate: editId ? vdate
              : (isBuy && supDate) ? supDate
              : today(),
-        party_id: pty.id, printed_name: cust.name, is_cash: isCash,
+        party_id: pty?.id || null, printed_name: cust.name, is_cash: isCash,
         supplier_invoice_no: isBuy ? supNo : null,
         supplier_invoice_date: isBuy ? supDate : null,
         // SECTION 10(1)(c): WHERE THE GOODS ARE HANDED OVER.
@@ -669,7 +712,7 @@ export default function BillScreen({ route, navigation }) {
       if (holdOnly) { setSaved(null); navigation.navigate('Home'); }
       else setSaved(rec);
     } catch (e) {
-      Alert.alert('Could not save', e.message || String(e));
+      Alert.alert('Could not save', sayPlainly(e));
     } finally { setBusy(false); }
   };
 
@@ -846,6 +889,24 @@ export default function BillScreen({ route, navigation }) {
             <Text numberOfLines={1} style={S.barSub}>{docName}</Text>
           )}
         </TouchableOpacity>
+        {/* CASH OR UDHAR, SAID OUT LOUD.
+            This was decided only by whether he happened to type "cash" in
+            front of the name. A regular customer who paid at the counter was
+            booked as udhar, his ledger said he owed money he had already
+            handed over, and nothing on the screen ever said so. Now it is on
+            the bar, in two words, and one tap changes it. */}
+        {!!cust && !cust.walkIn && !estimateMode && (
+          <TouchableOpacity onPress={() => setIsCash((v) => !v)}
+            hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+            style={{ paddingHorizontal: 11, paddingVertical: 8, borderRadius: 999,
+                     marginRight: 8,
+                     backgroundColor: isCash ? C.greenL : C.flagSoft }}>
+            <Text style={{ fontSize: 12, fontWeight: '800', letterSpacing: 0.3,
+                           color: isCash ? C.green : C.flagInk }}>
+              {isCash ? 'PAID' : (isBuy ? 'UNPAID' : 'UDHAR')}
+            </Text>
+          </TouchableOpacity>
+        )}
         {!!cust && keyGap === 0 && <ScanButton light onPress={() => setScanOpen(true)} />}
         {keyGap === 0 && (
           <View style={{ alignItems: 'flex-end' }}>
@@ -882,6 +943,7 @@ export default function BillScreen({ route, navigation }) {
               <Text style={S.cellLabel}>Its date</Text>
               <TextInput style={[S.cell, S.num]} value={supDate} onChangeText={setSupDate}
                 placeholder="2026-09-19" placeholderTextColor={C.faint}
+                keyboardType="numbers-and-punctuation"
                 returnKeyType="next" submitBehavior="submit"
                 onSubmitEditing={() => qRef.current?.focus()} />
             </View>
@@ -1396,18 +1458,20 @@ export default function BillScreen({ route, navigation }) {
         <View style={[S.screen, { paddingTop: 50, paddingHorizontal: 16 }]}>
           <View style={S.row}>
             <Text style={S.h1}>{isBuy ? 'Who did you buy from?' : 'Who is it for?'}</Text>
-            {!!cust && (
-              <TouchableOpacity onPress={() => setCustOpen(false)}>
-                <Text style={{ fontWeight: '800', color: C.muted }}>CLOSE</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              onPress={() => { if (cust) setCustOpen(false); else navigation.goBack(); }}>
+              <Text style={{ fontWeight: '800', color: C.muted }}>
+                {cust ? 'CLOSE' : 'BACK'}
+              </Text>
+            </TouchableOpacity>
           </View>
           <TextInput style={[S.input, { marginTop: 14 }]} autoFocus
             placeholder={isOut ? 'Name, phone, or CASH' : 'Supplier name or phone'}
             placeholderTextColor={C.faint}
             returnKeyType="next" submitBehavior="submit"
             onSubmitEditing={() => { if (custHits.length) chooseCust(custHits[0]);
-                                     else if (cashInfo.name) newCust(); }}
+                                     else if (cashInfo.name) newCust();
+                                     else if (cashWalkIn) startWalkIn(); }}
             value={cq} onChangeText={setCq} />
           {isOut && cashInfo.isCash && (
             <Text style={{ marginTop: 8, fontSize: 12.5, fontWeight: '700', color: C.green }}>
@@ -1431,6 +1495,18 @@ export default function BillScreen({ route, navigation }) {
                 </Text>
               </TouchableOpacity>
             ))}
+            {cashWalkIn && (
+              <TouchableOpacity onPress={startWalkIn}
+                style={{ paddingVertical: 17, marginTop: 8, borderRadius: 12,
+                         backgroundColor: C.greenL, alignItems: 'center' }}>
+                <Text style={{ fontWeight: '800', color: C.green, fontSize: 16 }}>
+                  Cash sale — go to the items
+                </Text>
+                <Text style={{ fontSize: 12, color: C.green, marginTop: 3 }}>
+                  No name goes in your customer book
+                </Text>
+              </TouchableOpacity>
+            )}
             {!!cashInfo.name && (
               <TouchableOpacity onPress={newCust}
                 style={{ paddingVertical: 15, marginTop: 8, borderRadius: 12, backgroundColor: C.greenL,
@@ -1485,7 +1561,12 @@ export default function BillScreen({ route, navigation }) {
                 </Text>
 
                 <Text style={[S.label, { marginTop: 14 }]}>ADDRESS</Text>
-                <Box ref={npAddr} next={npGst} style={{ marginTop: 6 }}
+                {/* The GST field below only exists for a registered shop. An
+                    estimate-mode kirana used to reach ADDRESS, press next, and
+                    have the key do nothing — the form stopped halfway with no
+                    sign of why. Skip to the field that IS there. */}
+                <Box ref={npAddr} next={org?.is_gst_registered ? npGst : npOpen}
+                  style={{ marginTop: 6 }}
                   placeholder="Shop and street"
                   value={partySheet.address}
                   onChangeText={(t) => setPartySheet((x) => ({ ...x, address: t }))} />

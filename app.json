@@ -23,8 +23,7 @@
         "backgroundColor": "#FAF9F5"
       },
       "permissions": [
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.CAMERA"
       ]
     },
     "ios": {
@@ -55,7 +54,8 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Skwik uses the camera only to read barcodes while you bill."
+          "cameraPermission": "Skwik uses the camera only to read barcodes while you bill.",
+          "recordAudioAndroidPermission": false
         }
       ]
     ],

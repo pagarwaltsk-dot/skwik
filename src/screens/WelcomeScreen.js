@@ -5,6 +5,7 @@ import {
 import { supabase, phoneToEmail } from '../lib/supabase';
 import { Box, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
+import { sayPlainly } from '../lib/offline';
 
 // THE FIRST SCREEN. A name, a number, a password, and in.
 export default function WelcomeScreen({ navigation }) {
@@ -44,7 +45,7 @@ export default function WelcomeScreen({ navigation }) {
       Alert.alert('Could not log in',
         /invalid/i.test(error.message)
           ? 'That number and password do not match. Check both, or register a new shop.'
-          : error.message);
+          : sayPlainly(error));
     }
   };
 

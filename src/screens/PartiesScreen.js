@@ -10,6 +10,7 @@ import { STATES } from '../lib/states';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
 import { StateField } from '../components/Pickers';
 import { C, S } from '../theme';
+import { sayPlainly } from '../lib/offline';
 
 // CUSTOMERS AND SUPPLIERS.
 //
@@ -121,7 +122,7 @@ export default function PartiesScreen({ navigation }) {
     const { error } = edit.id
       ? await supabase.from('parties').update(body).eq('id', edit.id)
       : await supabase.from('parties').insert(body);
-    if (error) return Alert.alert('Could not save', error.message);
+    if (error) return Alert.alert('Could not save', sayPlainly(error));
     setEdit(null); load();
   };
 
@@ -293,6 +294,7 @@ export default function PartiesScreen({ navigation }) {
 
               <Label top={12}>As on</Label>
               <Box ref={fDate} onSubmit={save} style={[S.num, { marginTop: 6 }]}
+                keyboardType="numbers-and-punctuation"
                 value={edit.opening_date} onChangeText={set('opening_date')}
                 placeholder="2026-04-01" />
             </View>

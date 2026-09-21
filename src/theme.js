@@ -182,9 +182,17 @@ export const S = {
               paddingHorizontal: 7, paddingVertical: 2, borderRadius: 5 },
 
   // something to press, sitting inside a line: outlined, never filled
+  // A PILL IS A BUTTON, AND A THUMB IS 8mm WIDE.
+  //
+  // These were 11px of text in 3px of padding — about 21 points tall, half
+  // the size a finger can reliably hit, and two of them sit six pixels apart
+  // on the bill line. One of them changes the tax on the bill and the other
+  // swaps the product. They are 40 points now, which is what a phone asks
+  // for, and they still read as the quiet secondary things they are.
   tapPill: { borderWidth: 1, borderColor: C.greyB, borderStyle: 'dashed', borderRadius: 20,
-             paddingHorizontal: 10, paddingVertical: 3 },
-  tapPillText: { fontSize: 11, fontWeight: '600', color: C.muted },
+             paddingHorizontal: 12, paddingVertical: 10, minHeight: 40,
+             justifyContent: 'center' },
+  tapPillText: { fontSize: 12, fontWeight: '600', color: C.muted },
 
   // a whole row to press: the same shape, full width
   wideBtn: { borderWidth: 1, borderColor: C.line, borderRadius: 10, paddingVertical: 14,

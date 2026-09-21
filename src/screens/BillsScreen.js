@@ -16,6 +16,7 @@ import { BackButton, Bar, Foot, MoreButton, Screen, Swipe, useTabSwipe } from '.
 import { showPurchase, showReturns } from '../lib/features';
 import { C, S } from '../theme';
 import { pdfName, sharePdf } from '../lib/pdf';
+import { sayPlainly } from '../lib/offline';
 
 // EVERY BILL EVER WRITTEN. Find one, read it, send it again, fix it, remove it.
 //
@@ -65,7 +66,7 @@ export default function BillsScreen({ navigation }) {
       .order('vdate', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(400);
-    if (error) Alert.alert('Could not load your bills', error.message);
+    if (error) Alert.alert('Could not load your bills', sayPlainly(error));
     setRows(data || []);
     setBusy(false);
   }, []);
@@ -121,14 +122,14 @@ export default function BillsScreen({ navigation }) {
         fallback: org?.name || 'Bill',
       }), 'Send again');
     } catch (e) {
-      Alert.alert('Could not send', e.message || String(e));
+      Alert.alert('Could not send', sayPlainly(e));
     } finally { setWorking(false); }
   };
 
   const reprint = async () => {
     if (!lines) return;
     try { await Print.printAsync({ html: html() }); }
-    catch (e) { Alert.alert('Could not print', e.message || String(e)); }
+    catch (e) { Alert.alert('Could not print', sayPlainly(e)); }
   };
 
   const edit = () => {
@@ -155,7 +156,7 @@ export default function BillsScreen({ navigation }) {
             const { error } = await supabase.rpc('delete_voucher',
               { p_id: v.id, p_reason: null });
             setWorking(false);
-            if (error) return Alert.alert('Could not remove it', error.message);
+            if (error) return Alert.alert('Could not remove it', sayPlainly(error));
             setOpen(null); setLines(null); load();
           } },
       ]);

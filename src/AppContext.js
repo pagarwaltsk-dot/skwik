@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { supabase, phoneToEmail } from './lib/supabase';
 import { STATES } from './lib/states';
-import { cacheOrg, cachedOrg, noteServerCounters, queueCount, flushQueue } from './lib/offline';
+import { cacheOrg, cachedOrg, noteServerCounters, queueCount, flushQueue,
+         withTimeout } from './lib/offline';
 
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
@@ -41,7 +42,15 @@ export function AppProvider({ children }) {
 
     let user = null;
     try {
-      const r = await supabase.auth.getUser();
+      // A CLOCK ON THE FRONT DOOR.
+      //
+      // These three calls decide whether the app opens at all, and none of
+      // them had a time limit. On a line that accepts the connection and then
+      // says nothing — a crowded tower, a captive wifi — the spinner turned
+      // for as long as he was willing to watch it, with a perfectly good copy
+      // of his shop sitting on the phone the whole time. Seven seconds, then
+      // it falls back to that copy.
+      const r = await withTimeout(supabase.auth.getUser());
       user = r?.data?.user || null;
       if (r?.error && !user) return fallback('unreachable');     // no signal
     } catch (e) { return fallback('unreachable'); }
@@ -49,7 +58,8 @@ export function AppProvider({ children }) {
 
     let prof, profErr;
     try {
-      const r = await supabase.from('profiles').select('org_id, role').eq('id', user.id).maybeSingle();
+      const r = await withTimeout(
+        supabase.from('profiles').select('org_id, role').eq('id', user.id).maybeSingle());
       prof = r?.data; profErr = r?.error;
     } catch (e) { profErr = e; }
     if (prof?.role) setRole(prof.role);
@@ -64,7 +74,8 @@ export function AppProvider({ children }) {
 
     let o, orgErr;
     try {
-      const r = await supabase.from('orgs').select('*').eq('id', prof.org_id).maybeSingle();
+      const r = await withTimeout(
+        supabase.from('orgs').select('*').eq('id', prof.org_id).maybeSingle());
       o = r?.data; orgErr = r?.error;
     } catch (e) { orgErr = e; }
     if (orgErr || !o) return fallback('unreachable');
@@ -139,10 +150,16 @@ export function AppProvider({ children }) {
 
       if (inErr || !signIn?.session) {
         if (inErr && /confirm/i.test(inErr.message)) {
+          // The shopkeeper cannot act on any of this — it is a setting in an
+          // account he has never seen. He is told what he CAN do, and the
+          // administrator's instruction is left in the code where it belongs.
+          //
+          // (For whoever runs the Skwik project: turn e-mail confirmation off
+          // under Authentication -> Providers -> Email.)
           throw new Error(
-            'Your account was made but cannot be used yet, because e-mail ' +
-            'confirmation is switched on in Supabase. Turn it off under ' +
-            'Authentication, Providers, Email - then register again.'
+            'Your shop was made, but it cannot be opened yet. This is '
+            + 'something at our end, not yours. Please send us a message and '
+            + 'we will switch it on for you — nothing you typed has been lost.'
           );
         }
         if (inErr && /invalid/i.test(inErr.message)) {

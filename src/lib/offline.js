@@ -83,12 +83,50 @@ export function looksOffline(e) {
 // When the phone cannot get out, Android hands up things like
 // "java.net.NoRouteToHostException: Host unreachable". A shopkeeper looking at
 // that has no idea his wifi is the problem, and assumes Skwik is broken.
+// WHAT A SHOPKEEPER IS TOLD WHEN SOMETHING GOES WRONG.
+//
+// A message like "new row violates row-level security policy for table
+// vouchers" is not English, it is not his fault, and it does not tell him what
+// to do next. He is standing at a counter with a customer waiting. Every one
+// of those the database can produce is turned into a sentence that says what
+// happened and what to do about it; anything we wrote ourselves is already
+// plain and goes through untouched.
+const PLAIN = [
+  [/row[- ]level security|rls|jwt|not authenticated|invalid claim|permission denied/i,
+   'Skwik could not save that, because your login was not accepted. '
+   + 'Close Skwik completely, open it again, and try once more. '
+   + 'Nothing you typed has been lost.'],
+  [/duplicate key|already exists|unique constraint/i,
+   'That has been saved once already, so Skwik has not saved it twice. '
+   + 'Look in the list below — it should be there.'],
+  [/violates foreign key|is not present in table/i,
+   'Something this was attached to is no longer there — a customer or an item '
+   + 'may have been removed on another phone. Pull down to refresh and try again.'],
+  [/violates check constraint|not-null constraint|invalid input syntax|out of range|numeric field overflow/i,
+   'Something on this does not look right to Skwik. Check the amounts and the '
+   + 'quantities — one of them is empty, or far too large — and try again.'],
+  [/statement timeout|canceling statement|deadlock/i,
+   'The server took too long to answer. Try once more in a moment; nothing you '
+   + 'typed has been lost.'],
+  [/rate limit|too many requests|429/i,
+   'Skwik is being asked for too much at once. Wait a few seconds and try again.'],
+];
+
 export function sayPlainly(e) {
   if (looksOffline(e)) {
     return 'Skwik could not reach the internet. Check your wifi or mobile data '
          + 'and try once more. Nothing you typed has been lost.';
   }
-  return String(e?.message || e || 'Something went wrong. Try once more.');
+  const raw = String(e?.message || e?.error_description || e || '');
+  for (const [re, say] of PLAIN) if (re.test(raw)) return say;
+  if (!raw.trim()) return 'Something went wrong. Try once more.';
+  // Anything left that still smells of a database rather than a shop.
+  if (/relation |column |pg_|postgres|constraint|policy|function .*\(/i.test(raw)) {
+    return 'Skwik could not finish that. Try once more, and if it keeps '
+         + 'happening take a screenshot of this and send it in.\n\n(' 
+         + raw.slice(0, 120) + ')';
+  }
+  return raw;
 }
 
 /* ---------------- the copy on the phone ---------------- */
