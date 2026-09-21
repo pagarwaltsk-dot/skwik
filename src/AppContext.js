@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
+import { Alert, Linking } from 'react-native';
 import { supabase, phoneToEmail } from './lib/supabase';
 import { STATES } from './lib/states';
 import { cacheOrg, cachedOrg, noteServerCounters, queueCount, flushQueue,
@@ -18,6 +19,15 @@ export function AppProvider({ children }) {
   // moment where there is a session but no firm yet, and the app takes that to
   // mean "this login has no shop" and flashes the set-up screen.
   const [checking, setChecking] = useState(false);
+  // True while the login on this phone came in through a "forgotten password"
+  // link and is good for one thing only: setting a new password.
+  const [recovering, setRecovering] = useState(false);
+
+  // WHICH FIRM THE PHONE IS WORKING FOR, readable from inside a callback
+  // that was made before the firm was known. Used by the outbox: a bill
+  // written offline for one shop must never be sent under another login.
+  const orgIdRef = useRef(null);
+  orgIdRef.current = org?.id || null;
 
   // WHO THIS PHONE BELONGS TO.
   //
@@ -31,9 +41,28 @@ export function AppProvider({ children }) {
   // that genuinely has no firm — is allowed to send anyone to the set-up
   // screen. Note that supabase resolves with an error rather than throwing, so
   // every step is checked, not wrapped in a try and hoped for.
-  const loadOrg = useCallback(async () => {
+  //
+  // `known` is the session the caller already has in its hand. The copy of
+  // the firm kept on this handset is stamped with the login it belongs to, so
+  // that one shop's book can never be handed to another login — and reading
+  // that stamp needs the login id even when the server cannot be reached.
+  // Both callers have it, so it is passed in rather than asked for again:
+  // asking Supabase would be a round trip on a dead line, and a dead line is
+  // exactly the moment this has to work.
+  const loadOrg = useCallback(async (known) => {
+    let localId = known?.user?.id || null;
+    if (!localId) {
+      // Called from a screen rather than from the auth listener — reloadOrg,
+      // after joining a shop or saving Settings. There is signal in that case
+      // by definition, so asking is safe.
+      try {
+        const r = await withTimeout(supabase.auth.getSession());
+        localId = r?.data?.session?.user?.id || null;
+      } catch (e) { /* the stamped copy simply will not be used */ }
+    }
+
     const fallback = async (why) => {
-      const o = await cachedOrg();
+      const o = await cachedOrg(localId);
       if (o) { setOrg(o); return o; }
       if (why === 'no-user') { setOrg(null); return null; }
       setOrg(null);
@@ -66,7 +95,7 @@ export function AppProvider({ children }) {
     if (profErr) return fallback('unreachable');
     if (!prof?.org_id) {
       // the server answered, and this login really has no firm behind it
-      const cached = await cachedOrg();
+      const cached = await cachedOrg(user.id);
       if (cached) { setOrg(cached); return cached; }
       setOrg(null);
       return null;
@@ -80,20 +109,30 @@ export function AppProvider({ children }) {
     } catch (e) { orgErr = e; }
     if (orgErr || !o) return fallback('unreachable');
 
-    cacheOrg(o); noteServerCounters(o);
+    cacheOrg(user.id, o); noteServerCounters(o);
+    // Written here as well as on every render: the outbox is emptied the
+    // moment the firm is known, which is before React has drawn a frame
+    // carrying it, and a flush that does not know the firm would send one
+    // shop's waiting bills under whatever login happens to be open.
+    orgIdRef.current = o.id;
     setOrg(o);
     return o;
   }, []);
 
   // How many bills are sitting on this phone, and a way to push them.
+  //
+  // Both are asked about THIS shop. A bill written offline carries the shop
+  // it was written for, and one written for another login must not be sent
+  // under this one: the database files a bill against whoever is signed in,
+  // so it would land in the wrong books under the wrong number.
   const countPending = useCallback(async () => {
-    const n = await queueCount();
+    const n = await queueCount(orgIdRef.current);
     setPending(n);
     return n;
   }, []);
 
   const sendPending = useCallback(async () => {
-    const r = await flushQueue(supabase);
+    const r = await flushQueue(supabase, orgIdRef.current);
     await countPending();
     return r;
   }, [countPending]);
@@ -103,25 +142,99 @@ export function AppProvider({ children }) {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!alive) return;
       setSession(data.session);
-      if (data.session) await loadOrg();
+      if (data.session) await loadOrg(data.session);
       setLoading(false);
       // bills waiting on this phone go out in the background — nobody should
       // look at a blank screen while a dead connection times out
       if (data.session) sendPending();
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_e, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, s) => {
       setSession(s);
       if (s) {
         setChecking(true);
-        try { await loadOrg(); } finally { setChecking(false); }
+        try { await loadOrg(s); } finally { setChecking(false); }
       } else {
         setOrg(null);
         setRole('owner');
+        // Only a real sign-out, not the empty INITIAL_SESSION the client
+        // announces at start-up — that one can arrive after a reset link has
+        // already been taken, and would drop him back at the login screen
+        // holding a link he has now used.
+        if (event === 'SIGNED_OUT') setRecovering(false);
       }
     });
     return () => { alive = false; sub.subscription.unsubscribe(); };
   }, [loadOrg]);
+
+  // THE LINK IN THE "FORGOTTEN PASSWORD" E-MAIL.
+  //
+  // Supabase sends him back to skwik://reset-password with the login on the
+  // end of it. Nothing in the app was listening, so the link did nothing and
+  // a shopkeeper who had forgotten his password stayed out of his own books
+  // for good. This takes the login off the address, signs him in with it, and
+  // marks the session as a recovery — the app then shows him one screen and
+  // one screen only until the password is actually changed.
+  //
+  // `detectSessionInUrl` is off (this is a phone, not a browser), so the
+  // address is read here. Both shapes Supabase can send are handled: the
+  // tokens on the fragment, and the newer single code.
+  const takeRecoveryLink = useCallback(async (url) => {
+    if (!url || !/reset-password|type=recovery/.test(String(url))) return false;
+    try {
+      const raw = String(url);
+      const after = raw.includes('#') ? raw.slice(raw.indexOf('#') + 1) : '';
+      const query = raw.includes('?')
+        ? raw.slice(raw.indexOf('?') + 1).split('#')[0] : '';
+      const bag = new URLSearchParams(`${query}${query && after ? '&' : ''}${after}`);
+
+      const access = bag.get('access_token');
+      const refresh = bag.get('refresh_token');
+      const code = bag.get('code');
+
+      if (!access && !refresh && !code) {
+        // A link that arrived with nothing on it — usually one already used.
+        return false;
+      }
+
+      // Marked BEFORE the login is taken, not after: signing in fires the
+      // auth listener, and for the moment between the two the app would
+      // otherwise show him his books — which is the one thing a recovery
+      // login must not do.
+      setRecovering(true);
+      try {
+        if (access && refresh) {
+          const { error } = await supabase.auth.setSession({
+            access_token: access, refresh_token: refresh });
+          if (error) throw error;
+        } else {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+        }
+      } catch (e) {
+        setRecovering(false);
+        Alert.alert('That link did not work',
+          'It may have been used already, or it may have run out. Ask for a '
+          + 'new one from "Forgotten your password?" on the login screen.');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    // the app was already open when he tapped the link
+    const sub = Linking.addEventListener('url', ({ url }) => {
+      if (alive) takeRecoveryLink(url);
+    });
+    // the app was closed, and the link is what opened it
+    Linking.getInitialURL().then((url) => { if (alive && url) takeRecoveryLink(url); })
+      .catch(() => {});
+    return () => { alive = false; sub.remove(); };
+  }, [takeRecoveryLink]);
 
   // Everything the register screens collected, turned into a login and a firm.
   //
@@ -180,7 +293,16 @@ export function AppProvider({ children }) {
       if (pe1) throw pe1;
 
       const hasGst = !!d.gstin;
-      const code   = hasGst ? String(d.gstin).slice(0, 2) : '18';
+      // A SHOP THAT DOES NOT SAY WHERE IT IS MUST NOT BE TOLD WHERE IT IS.
+      //
+      // A shop with no GST number is never asked for its State, and this used
+      // to write in 18 — Assam — as a stand-in. It is not a stand-in: it is
+      // printed at the top of every bill the shop issues, as "State Name:
+      // Assam, Code: 18", and a shop in Kerala or Gujarat had a false State
+      // on the face of every document it gave a customer. Left empty, the
+      // line simply does not print, and Settings asks for the State by name
+      // whenever he wants to fill it in.
+      const code   = hasGst ? String(d.gstin).slice(0, 2) : '';
       const trial  = new Date();
       trial.setDate(trial.getDate() + 7);
 
@@ -253,6 +375,7 @@ export function AppProvider({ children }) {
 
   return (
     <Ctx.Provider value={{ session, org, loading, registering, checking, register, role,
+                           recovering, finishRecovery: () => setRecovering(false),
                            // WHO THE OWNER IS, DECIDED THE SAME WAY THE DATABASE
                            // DECIDES IT.
                            //
@@ -264,7 +387,7 @@ export function AppProvider({ children }) {
                                      && org.owner_id === session.user.id)
                                     || (role !== 'staff' && !org?.owner_id),
                            joinShop,
-                           reloadOrg: loadOrg, pending, countPending, sendPending,
+                           reloadOrg: () => loadOrg(), pending, countPending, sendPending,
                            signOut: () => supabase.auth.signOut() }}>
       {children}
     </Ctx.Provider>

@@ -282,6 +282,21 @@ export default function ReportsScreen({ navigation }) {
 
   const label = rangeOf(range)[2];
 
+  // IS THERE ANYTHING IN THIS PERIOD AT ALL?
+  //
+  // This used to be `vouchers.length`, and the fast road above deliberately
+  // empties `vouchers` — report_summary does the adding up on the server and
+  // sends back the totals, not the bills. So on every phone whose database
+  // has the summary function, the whole of this screen was hidden behind a
+  // test that could never be true and the shopkeeper was told "Nothing in
+  // this month" over a month of trade. The question has to be asked of
+  // whichever road was taken.
+  const anything = summary
+    ? !!(sums.sales.n || sums.purchases.n || sums.estimates.n
+         || sums.rates.length || sums.items.length || sums.days.length
+         || sums.returns.total)
+    : vouchers.length > 0;
+
   // THE RETURN ITSELF.
   // Only ever for one whole month — the portal will not take anything else.
   const [filing, setFiling] = useState(false);
@@ -445,14 +460,14 @@ export default function ReportsScreen({ navigation }) {
       ) : (
         <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 40 }}>
 
-          {!vouchers.length && (
+          {!anything && (
             <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center',
                            marginTop: 40, lineHeight: 20 }}>
               Nothing in {label}.
             </Text>
           )}
 
-          {!!vouchers.length && (
+          {!!anything && (
             <>
               <Card title={`Sales — ${label}`}>
                 <Line k={`${sums.sales.n} bill${sums.sales.n === 1 ? '' : 's'}`} v="" />

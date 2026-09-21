@@ -29,14 +29,24 @@ export default function ForgotScreen({ navigation }) {
       return Alert.alert('Check the address', 'Type the email you saved in Settings.');
     }
     setBusy(true);
-    const { error } = await supabase.auth.resetPasswordForEmail(e);
+    // THE LINK HAS TO COME BACK INTO SKWIK.
+    //
+    // Sent without this, Supabase points the link at the project's Site URL —
+    // a web page that knows nothing about this app — so the shopkeeper opened
+    // it, saw a page he could do nothing with, and was still locked out.
+    // `skwik://` is the app's own address (app.json, "scheme"), and the app
+    // opens on the screen that sets a new password.
+    const { error } = await supabase.auth.resetPasswordForEmail(e, {
+      redirectTo: 'skwik://reset-password',
+    });
     setBusy(false);
     if (error) return Alert.alert('Could not send it', sayPlainly(error));
 
     // Supabase never says whether the address was on an account, and that is
     // right: saying so would tell a stranger which addresses exist.
     Alert.alert('If that address is on the account, a link is on its way',
-      'Open it on this phone and it will let you set a new password.\n\n'
+      'Open it ON THIS PHONE. Skwik opens by itself and asks you for a new '
+      + 'password.\n\n'
       + 'Nothing arrives if that email was never saved in Settings. In that '
       + 'case write to us and we will sort it out by hand — your books are safe '
       + 'either way.',

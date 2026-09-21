@@ -179,14 +179,23 @@ export default function ReturnScreen({ route, navigation }) {
     }
 
     if (!isBuy && pastGstDeadline(bill?.vdate, today()) && !lateOk) {
+      // "Raise it anyway" used only to set the flag, so nothing happened and
+      // he was left looking at the same screen with the same button. Saying
+      // yes to a question has to do the thing the question was about.
       return Alert.alert('Too late for the return',
         'This bill is from a year whose 30 November has gone. The note will be '
         + 'raised and the money will move, but it cannot reduce your tax and it '
         + 'will be left out of GSTR-1.',
         [{ text: 'Go back' },
-         { text: 'Raise it anyway', onPress: () => { setLateOk(true); } }]);
+         { text: 'Raise it anyway', onPress: () => { setLateOk(true); write(); } }]);
     }
 
+    return write();
+  };
+
+  // Everything past the questions. Kept apart so a question answered "yes"
+  // can carry straight on into it.
+  const write = async () => {
     setBusy(true);
     try {
       const payload = {

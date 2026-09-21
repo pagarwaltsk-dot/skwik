@@ -129,7 +129,7 @@ export default function BillScreen({ route, navigation }) {
       // copy on the phone is on the screen in milliseconds, and the fresh list
       // replaces it underneath him a moment later without him noticing.
       try {
-        const [ci, cp] = await Promise.all([cachedItems(), cachedParties()]);
+        const [ci, cp] = await Promise.all([cachedItems(org?.id), cachedParties(org?.id)]);
         if (ci.length) setItems(ci);
         if (cp.length) setParties(cp);
       } catch (_) { /* nothing cached yet: the first bill waits, the rest do not */ }
@@ -162,11 +162,11 @@ export default function BillScreen({ route, navigation }) {
         // EMPTY cache over the real one. Offline billing looked finished and
         // worked on the day it was written; by the time the signal actually
         // dropped there was nothing left to bill with.
-        cacheItems(i || []);
-        cacheParties(p || []);
+        cacheItems(org?.id, i || []);
+        cacheParties(org?.id, p || []);
       } catch (e) {
         // no signal, or the server is not answering: use what we copied last time
-        const [ci, cp] = await Promise.all([cachedItems(), cachedParties()]);
+        const [ci, cp] = await Promise.all([cachedItems(org?.id), cachedParties(org?.id)]);
         setItems(ci); setParties(cp);
         setOffline(true);
       }
@@ -207,7 +207,10 @@ export default function BillScreen({ route, navigation }) {
 
       setLoadedType(v.vtype);
       setVdate(v.vdate);
-      setCust(v.parties || { name: v.printed_name || 'CASH' });
+      // A bill with no customer behind it is a walk-in, and it has to come
+      // back as one. Without the flag, saving the change created a customer
+      // actually called CASH and filed every future walk-in under him.
+      setCust(v.parties || { name: v.printed_name || 'CASH', walkIn: !v.party_id });
       setIsCash(!!v.is_cash);
       setRcharge(!!v.reverse_charge);
       setLess(Number(v.discount) ? String(v.discount) : '');
@@ -391,13 +394,33 @@ export default function BillScreen({ route, navigation }) {
     if (cust?.id) lastRate(line.key, h.p.id);
   };
 
+  // WHAT HE CHARGED THIS MAN LAST TIME.
+  //
+  // This used to ask voucher_lines for the line and order it by `vdate` with
+  // foreignTable: 'vouchers'. That orders the rows INSIDE each embedded
+  // voucher — and a line belongs to exactly one voucher, so it ordered
+  // nothing at all. limit(1) then took whichever line the database happened
+  // to hand back first, which is generally the oldest. A rate from two years
+  // ago was being offered as "last time", silently, on a bill going out.
+  //
+  // Asked the other way round — the newest BILL for that man carrying that
+  // item — the ordering is on the table being ordered, and the answer is the
+  // one it says it is. A cancelled bill is no longer a price he was charged.
   const lastRate = async (key, itemId) => {
     const { data } = await supabase
-      .from('voucher_lines')
-      .select('rate, vouchers!inner(party_id, vtype, vdate)')
-      .eq('item_id', itemId).eq('vouchers.party_id', cust.id)
-      .in('vouchers.vtype', isBuy ? ['purchase'] : ['sale', 'estimate'])
-      .order('vdate', { foreignTable: 'vouchers', ascending: false }).limit(1);
+      .from('vouchers')
+      .select('vdate, voucher_lines!inner(rate, item_id)')
+      .eq('party_id', cust.id)
+      .is('cancelled_at', null)
+      .in('vtype', isBuy ? ['purchase'] : ['sale', 'estimate'])
+      .eq('voucher_lines.item_id', itemId)
+      .order('vdate', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .then(({ data: rows }) => ({
+        data: rows?.[0]?.voucher_lines?.length
+          ? [{ rate: rows[0].voucher_lines[0].rate }] : [],
+      }));
     // This comes back seconds later, by which time he may already be typing
     // the rate himself. Whatever he has put in wins — a box that changes under
     // his finger is worse than no help at all.
@@ -607,10 +630,20 @@ export default function BillScreen({ route, navigation }) {
           + 'so there is nothing to work one out from. Put the rate in.');
       }
     }
-    if (isOut && isCash && !cashInfo.name && grand >= 50000) {
+    // RULE 46(e): A CASH BILL OF 50,000 OR MORE HAS TO CARRY A NAME.
+    //
+    // This asked the SEARCH BOX whether a name had been typed, and the search
+    // box is empty on a bill that was opened from the books. So a saved cash
+    // bill of 60,000 to a named customer could not be changed and saved
+    // again, ever: the same refusal came back however many times he tried.
+    // The question is about the bill, so it is asked of the bill.
+    const namedOnBill = !!(cust && !cust.walkIn
+                           && String(cust.name || '').trim().toUpperCase() !== 'CASH');
+    if (isOut && isCash && !namedOnBill && !cashInfo.name && grand >= 50000) {
       return Alert.alert('Name needed',
         'A cash bill of ₹50,000 or more must show the customer name.');
     }
+
     // some ticked and some not: ask once
     if (!nudged && checked > 0 && checked < lines.length) {
       setNudged(true);
@@ -683,7 +716,7 @@ export default function BillScreen({ route, navigation }) {
         if (r.error) throw r.error;
         data = r.data;
         setOffline(false);
-        flushQueue(supabase);            // we have signal; send anything waiting
+        flushQueue(supabase, org.id);    // we have signal; send anything waiting
       } catch (e) {
         if (!looksOffline(e)) throw e;
         if (editId) {
@@ -693,7 +726,7 @@ export default function BillScreen({ route, navigation }) {
         const localNo = await takeLocalNumber(org, vtype);
         payload.voucher_no = localNo;
         await queueAdd({
-          id: payload.id, kind: 'bill', payload,
+          id: payload.id, kind: 'bill', org_id: org.id, payload,
           newParty: newParty.current, newItems: newItems.current,
         });
         data = { voucher_no: localNo };
@@ -701,11 +734,18 @@ export default function BillScreen({ route, navigation }) {
         setOffline(true);
       }
 
+      // A WALK-IN HAS NO PARTY ROW, AND THIS ASKED ONE FOR ITS GST NUMBER.
+      //
+      // `pty` is deliberately null for a cash sale to a stranger — no customer
+      // is written for him — so `pty.gstin` threw, the throw was caught by the
+      // save below, and the shopkeeper was told "Could not save" over a bill
+      // that had in fact just been saved. He then wrote it again. On the
+      // commonest sale in the shop.
       const rec = {
         voucher: { ...payload, voucher_no: data.voucher_no || supNo,
-                   place_of_supply_name: (isCash && !pty.gstin)
-                     ? (org.state_name || pty.state_name)
-                     : (pty.state_name || org.state_name) },
+                   place_of_supply_name: (isCash && !pty?.gstin)
+                     ? (org.state_name || pty?.state_name || '')
+                     : (pty?.state_name || org.state_name || '') },
         party: pty, lines: c.lines, queued,
       };
       newParty.current = null; newItems.current = [];

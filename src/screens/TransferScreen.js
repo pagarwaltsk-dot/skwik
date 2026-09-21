@@ -286,11 +286,21 @@ export default function TransferScreen({ navigation }) {
           'Bills, purchases and the notes against them go to Tally. Estimates are '
           + 'not accounting entries, and a cancelled bill is not an entry at all.');
       }
-      const { data: ls, error } = await supabase.from('voucher_lines')
-        .select('*').in('voucher_id', vs.map((v) => v.id)).order('line_no');
-      if (error) throw error;
+      // EVERY LINE, AND NOT ALL IN ONE BREATH.
+      //
+      // This asked for the lines of every bill in one query: unpaged, so it
+      // stopped at the thousandth line without a word, and with every id in
+      // the URL, which a month of a busy shop is long enough to break. The
+      // accountant's Tally then showed bills with items missing from them.
+      // Two hundred bills at a time, each page read to the end — the same way
+      // the CSV export and the backup already do it.
       const byV = {};
-      (ls || []).forEach((l) => { (byV[l.voucher_id] = byV[l.voucher_id] || []).push(l); });
+      for (let i = 0; i < vs.length; i += 200) {
+        const part = vs.slice(i, i + 200).map((v) => v.id);
+        const ls = await allRows(() => supabase.from('voucher_lines')
+          .select('*').in('voucher_id', part).order('voucher_id').order('line_no'));
+        (ls || []).forEach((l) => { (byV[l.voucher_id] = byV[l.voucher_id] || []).push(l); });
+      }
       await send('skwik-tally.xml', tallyVouchersXml({ org, vouchers: vs, linesByVoucher: byV }),
                  'application/xml');
     } catch (e) { Alert.alert('Could not send', sayPlainly(e)); }

@@ -220,6 +220,15 @@ export function reconcile({ purchases = [], portal = [] }) {
     .map(fromBooks);
   const two = portal.map((p) => (p.src ? p : mkDoc({ ...p, src: '2b' })));
 
+  // NOTHING IS PAIRED UNTIL THIS RUN PAIRS IT.
+  //
+  // `_m` is written onto the documents themselves, and a caller that hands
+  // the same parsed rows back for a second run — a different month, a wider
+  // window — would find every one of them already carrying a partner from
+  // last time. The passes below would then skip them and the whole file
+  // would read as matched. Each run starts from nothing.
+  [...books, ...two].forEach((d) => { delete d._m; });
+
   // Set aside what is not a straight supplier invoice: credit distributed by
   // an input service distributor, imports, and anything on reverse charge —
   // none of those match against a purchase bill.

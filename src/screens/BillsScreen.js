@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList, Modal, Alert, ActivityIndicator,
 } from 'react-native';
@@ -58,11 +58,24 @@ export default function BillsScreen({ navigation }) {
   const [lines, setLines] = useState(null);      // its lines, once fetched
   const [working, setWorking] = useState(false);
 
+  const COLS = '*, parties(id, name, phone, gstin, address, state_name, '
+             + 'state_code, opening_date)';
+
+  // "SEND ME LAST TUESDAY'S BILL AGAIN" IS SOMETIMES A BILL FROM MARCH.
+  //
+  // This screen fetched the 400 most recent bills and searched inside them,
+  // here on the phone. A shop writing 40 bills a day passes 400 in a
+  // fortnight, so everything older than that simply could not be found — the
+  // box came back "Nothing matches that" for a bill that is sitting in the
+  // books, which is the one answer a search must never give.
+  //
+  // The recent list still comes down whole, because that is what the screen
+  // opens on. The moment something is TYPED the question goes to the server,
+  // where all the bills are.
   const load = useCallback(async () => {
     setBusy(true);
     const { data, error } = await supabase
-      .from('vouchers')
-      .select('*, parties(id, name, phone, gstin, address, state_name, state_code, opening_date)')
+      .from('vouchers').select(COLS)
       .order('vdate', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(400);
@@ -73,19 +86,76 @@ export default function BillsScreen({ navigation }) {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  // A % or an _ is a letter in a name and a wildcard in a query. Escaped,
+  // they match themselves, which is what he meant by typing them.
+  const forIlike = (t) => String(t).replace(/[\\%_]/g, (c) => `\\${c}`);
+
+  const [hits, setHits] = useState(null);     // null = not searching
+  const [looking, setLooking] = useState(false);
+  const seek = useRef(null);
+  const seq  = useRef(0);
+
+  useEffect(() => {
+    const t = q.trim();
+    if (seek.current) clearTimeout(seek.current);
+    if (t.length < 2) { setHits(null); setLooking(false); return; }
+    setLooking(true);
+    seek.current = setTimeout(async () => {
+      const mine = ++seq.current;
+      const like = `%${forIlike(t)}%`;
+      // Asked as separate questions rather than one .or() string: the search
+      // text would otherwise go into the middle of a comma-separated filter,
+      // and a name with a comma in it breaks the whole query.
+      const ask = (col) => supabase.from('vouchers').select(COLS)
+        .ilike(col, like)
+        .order('vdate', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(200);
+      try {
+        const [a, b] = await Promise.all([ask('voucher_no'), ask('printed_name')]);
+        if (mine !== seq.current) return;          // he has typed since
+        const seen = new Set();
+        const all = [...(a.data || []), ...(b.data || [])]
+          .filter((v) => (seen.has(v.id) ? false : seen.add(v.id)))
+          .sort((x, y) => String(y.vdate).localeCompare(String(x.vdate)));
+        setHits(all);
+      } catch (e) {
+        if (mine === seq.current) setHits([]);
+      } finally {
+        if (mine === seq.current) setLooking(false);
+      }
+    }, 300);
+    return () => { if (seek.current) clearTimeout(seek.current); };
+  }, [q]);
+
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return rows.filter((v) => {
+    // What came back from the server when he is searching, and what is
+    // already on the phone when he is not. Either way the rows on the phone
+    // are also matched, so a customer NAME — which lives on the party row and
+    // not on the bill — still finds its bills without a second question.
+    const seen = new Set();
+    const pool = s
+      ? [...(hits || []), ...rows]
+          .filter((v) => (seen.has(v.id) ? false : seen.add(v.id)))
+          // the two lists are each in date order but not in one order, and
+          // the day headings below read down a single sorted list
+          .sort((x, y) => String(y.vdate).localeCompare(String(x.vdate))
+                       || String(y.created_at).localeCompare(String(x.created_at)))
+      : rows;
+    return pool.filter((v) => {
       if (kind === 'returns') {
         if (v.vtype !== 'sale_return' && v.vtype !== 'purchase_return') return false;
       } else if (kind !== 'all' && v.vtype !== kind) return false;
       if (!s) return true;
-      const who = v.parties?.name || v.printed_name || '';
-      return who.toLowerCase().includes(s)
+      // Both names: the party may have been renamed since the bill was
+      // printed, and the bill keeps the name it went out under.
+      const names = `${v.parties?.name || ''} ${v.printed_name || ''}`.toLowerCase();
+      return names.includes(s)
           || String(v.voucher_no || '').toLowerCase().includes(s)
           || String(Math.round(Number(v.total) || 0)).includes(s);
     });
-  }, [rows, q, kind]);
+  }, [rows, hits, q, kind]);
 
   const dayTotal = useMemo(
     () => shown.reduce((sum, v) => sum + (v.vtype === 'purchase' ? 0 : Number(v.total) || 0), 0),
@@ -215,7 +285,9 @@ export default function BillsScreen({ navigation }) {
           ListEmptyComponent={
             <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 40,
                            lineHeight: 20 }}>
-              {q || kind !== 'all'
+              {looking
+                ? 'Looking…'
+                : q || kind !== 'all'
                 ? 'Nothing matches that.'
                 : 'No bills yet. Every bill you save will be here, and you can\nsend it again from here any time.'}
             </Text>}

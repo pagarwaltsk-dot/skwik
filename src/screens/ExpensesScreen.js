@@ -37,7 +37,8 @@ export default function ExpensesScreen({ navigation }) {
     const [{ data: xs }, { data: hs }] = await Promise.all([
       supabase.from('expenses').select('*').order('edate', { ascending: false })
         .order('created_at', { ascending: false }).limit(60),
-      supabase.from('expense_heads').select('*').order('used', { ascending: false }).limit(12),
+      supabase.from('expense_heads').select('*')
+        .order('used', { ascending: false }).order('head').limit(12),
     ]);
     setRows(xs || []);
     setHeads((hs || []).map((h) => h.head));
@@ -61,9 +62,16 @@ export default function ExpensesScreen({ navigation }) {
         : await supabase.from('expenses').insert({ ...body, edate: today() });
       if (error) throw error;
 
-      // remember the head, so next time it is one tap
+      // Remember the head, so next time it is one tap.
+      //
+      // This used to upsert `used: 1`, which does not count anything — it
+      // writes 1 back over whatever was there, every single time. The list
+      // below is ordered by that column, so "the ones you use most" was in
+      // no order at all. Nothing is written over an existing head now, and
+      // the order falls back to the name, which at least does not lie.
       await supabase.from('expense_heads')
-        .upsert({ org_id: org.id, head: h, used: 1 }, { onConflict: 'org_id,head' });
+        .upsert({ org_id: org.id, head: h, used: 1 },
+                { onConflict: 'org_id,head', ignoreDuplicates: true });
 
       clear();
       load();

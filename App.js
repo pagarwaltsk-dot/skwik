@@ -12,6 +12,7 @@ import { C } from './src/theme';
 import WelcomeScreen  from './src/screens/WelcomeScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import ForgotScreen   from './src/screens/ForgotScreen';
+import NewPasswordScreen from './src/screens/NewPasswordScreen';
 import OnboardScreen from './src/screens/OnboardScreen';
 import HomeScreen    from './src/screens/HomeScreen';
 import BillScreen    from './src/screens/BillScreen';
@@ -58,7 +59,7 @@ const PATIENCE = 6000;
 const Stack = createNativeStackNavigator();
 
 function Routes() {
-  const { session, org, loading, registering, checking } = useApp();
+  const { session, org, loading, registering, checking, recovering } = useApp();
 
   // The set-up screen is only for a login with genuinely no shop behind it —
   // never for the second it takes to find out.
@@ -93,7 +94,13 @@ function Routes() {
 
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
-      {!session ? (
+      {/* A LOGIN THAT CAME IN THROUGH A RESET LINK IS GOOD FOR ONE THING.
+          It must not drop him into his books with a password he still does
+          not know — the next time he opens Skwik he would be locked out
+          again, holding a link that has already been used. */}
+      {recovering ? (
+        <Stack.Screen name="NewPassword" component={NewPasswordScreen} />
+      ) : !session ? (
         <>
           <Stack.Screen name="Welcome"  component={WelcomeScreen} />
           <Stack.Screen name="Register" component={RegisterScreen} />

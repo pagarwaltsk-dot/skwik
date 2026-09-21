@@ -131,13 +131,52 @@ export function sayPlainly(e) {
 
 /* ---------------- the copy on the phone ---------------- */
 
-export const cacheItems   = (rows) => write(K.items, rows || []);
-export const cacheParties = (rows) => write(K.parties, rows || []);
-export const cacheOrg     = (row)  => write(K.org, row || null);
+// WHOSE COPY IS THIS?
+//
+// A handset gets passed round. The owner logs out at eight and the man on
+// the counter logs into a different shop at nine; on a phone with no signal
+// the app falls back to whatever it copied last, and what it had copied was
+// the OTHER shop — its items, its customers, its name on the printed bill.
+//
+// So every copy is stamped with who it belongs to, and a copy that belongs
+// to somebody else is not a copy at all. A stamp that does not match is the
+// same as nothing cached: the screen waits the extra second for the server
+// rather than showing one shop's book to another.
+//
+// (`for` is the owner: the login id for the firm, the firm id for its items
+// and customers. A blob written by a version before this carries no stamp and
+// is ignored once, after which it is written again with one.)
+const keep = (key, owner, value) =>
+  write(key, { for: String(owner || ''), value });
 
-export const cachedItems   = () => read(K.items, []);
-export const cachedParties = () => read(K.parties, []);
-export const cachedOrg     = () => read(K.org, null);
+const kept = async (key, owner, fallback) => {
+  const box = await read(key, null);
+  if (!box || typeof box !== 'object' || !('for' in box)) return fallback;
+  if (box.for !== String(owner || '')) return fallback;
+  return box.value === undefined || box.value === null ? fallback : box.value;
+};
+
+export const cacheItems   = (orgId, rows) => keep(K.items, orgId, rows || []);
+export const cacheParties = (orgId, rows) => keep(K.parties, orgId, rows || []);
+export const cacheOrg     = (userId, row) => keep(K.org, userId, row || null);
+
+export const cachedItems   = (orgId)  => kept(K.items, orgId, []);
+export const cachedParties = (orgId)  => kept(K.parties, orgId, []);
+export const cachedOrg     = (userId) => kept(K.org, userId, null);
+
+// EVERYTHING THIS PHONE IS HOLDING, LET GO OF.
+//
+// The books can be emptied from inside the app, and the copy on the phone
+// knew nothing about it: items and customers that no longer exist went on
+// being offered on the billing screen, and the bill counter went on counting
+// from where the old books had reached, so the first bill of the new book
+// came out numbered 418. Emptying the books empties the phone with them.
+export async function forgetLocal() {
+  try {
+    await AsyncStorage.multiRemove([K.items, K.parties, K.counters, K.queue]);
+    return true;
+  } catch (e) { return false; }
+}
 
 /* ---------------- bill numbers, while offline ---------------- */
 
@@ -196,10 +235,19 @@ const inTurn = (job) => {
   return run;
 };
 
+// Which shop a waiting bill belongs to. A phone is handed round — the owner
+// logs out, the man at the counter logs into his own shop — and save_voucher
+// files a bill against WHOEVER IS SIGNED IN, not against whoever wrote it. A
+// bill written offline for one shop and sent from another's login lands in
+// the wrong books, with the wrong number, and nobody is told. An entry with
+// no shop on it was written before this and can only belong to this one.
+const belongsHere = (e, orgId) => !e.org_id || !orgId || e.org_id === orgId;
+
 // Each entry is everything needed to finish the job later, on its own:
-//   { id, at, kind: 'bill', payload, newParty, newItems }
+//   { id, at, org_id, kind: 'bill', payload, newParty, newItems }
 export const queueList  = () => read(K.queue, []);
-export const queueCount = async () => (await queueList()).length;
+export const queueCount = async (orgId = null) =>
+  (await queueList()).filter((e) => belongsHere(e, orgId)).length;
 
 export const queueAdd = (entry) => inTurn(async () => {
   const q = await queueList();
@@ -230,19 +278,20 @@ export const queueDrop = (id) => queueRemove(id);
 // Returns { sent, failed, stillOffline }.
 let flushing = false;
 
-export async function flushQueue(supabase) {
+export async function flushQueue(supabase, orgId = null) {
   // Two flushes at once send the same bill twice. The second is harmless —
   // save_voucher knows the bill's own id and refuses to write it again — but
   // there is no reason to make the phone do the work.
   if (flushing) return { sent: 0, failed: 0, stillOffline: false, busy: true };
   flushing = true;
   try {
-    return await flushOnce(supabase);
+    return await flushOnce(supabase, orgId);
   } finally { flushing = false; }
 }
 
-async function flushOnce(supabase) {
-  const q = await queueList();
+async function flushOnce(supabase, orgId) {
+  const all = await queueList();
+  const q = all.filter((e) => belongsHere(e, orgId));
   if (!q.length) return { sent: 0, failed: 0, stillOffline: false };
 
   let sent = 0, failed = 0;
@@ -282,7 +331,11 @@ async function flushOnce(supabase) {
       sent++;
     } catch (e) {
       if (looksOffline(e)) {
-        return { sent, failed, stillOffline: true };   // line is down again; try later
+        // The line is down again — but bills that DID go through on this pass
+        // may have come back under a different number, and the customer is
+        // holding paper with the old one. Dropping that on the floor because
+        // the next bill failed is how a renumbered bill is never noticed.
+        return { sent, failed, stillOffline: true, renumbered };
       }
       await queueMark(entry.id, String(e.message || e));
       failed++;

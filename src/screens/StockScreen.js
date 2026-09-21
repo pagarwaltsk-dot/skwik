@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, FlatList, TextInput } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { num, qty as qtyText } from '../lib/money';
+import { num, qty as qtyText, today } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { showBatch, showExpiry, showGodowns } from '../lib/features';
 import { Head, Screen } from '../components/Chrome';
@@ -69,7 +69,11 @@ export default function StockScreen({ navigation }) {
       .sort((a, b) => String(a.item_name).localeCompare(String(b.item_name)));
   }, [rows, q, where, detailed, org]);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  // toISOString() answers in UTC, which is five and a half hours behind
+  // India: between midnight and half past five a batch expiring today was
+  // still being drawn in red as expired yesterday. today() is the whole
+  // app's answer to this and is what every other date here goes through.
+  const todayStr = today();
 
   return (
     <Screen>
