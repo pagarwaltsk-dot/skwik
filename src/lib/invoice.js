@@ -32,7 +32,16 @@ import {
 } from './money';
 import { uqcShort } from './uqc';
 
-const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+// ALL FIVE, NOT THREE.
+//
+// Nothing the shopkeeper types lands inside an HTML attribute today, so a bare
+// quotation mark in "The \"Best\" Store" is harmless — it prints as a quotation
+// mark, which is right. But it is one rearrangement of this file away from
+// being a way out of an attribute and into the page, and escaping all five
+// costs nothing and changes nothing on the paper.
+const esc = (s) => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 const dmy = (d) => {
   const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -45,6 +54,10 @@ const dmy = (d) => {
 const CSS = `
   * { box-sizing: border-box; }
   @page { size: A4; margin: 8mm; }
+  /* the column headings come again at the top of every sheet, and no row is
+     ever cut in half by a page break */
+  thead { display: table-header-group; }
+  tr, tbody tr { break-inside: avoid; page-break-inside: avoid; }
   body { margin: 0; color: #000; background: #fff;
          font-family: Arial, Helvetica, sans-serif; font-size: 8.6pt; line-height: 1.32; }
   table { width: 100%; border-collapse: collapse; }
@@ -313,13 +326,20 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
       </tr>
     </table>
 
+    <!-- A FORTY-LINE BILL RUNS ONTO A SECOND SHEET, AND THE SECOND SHEET USED
+         TO ARRIVE WITH NO COLUMN HEADINGS ON IT. Four rows of bare numbers and
+         nothing to say which column was the rate and which was the amount.
+         <thead> with table-header-group is what makes the browser repeat the
+         headings on every printed page, and the rows are told not to break
+         across a page boundary. -->
     <table class="items" style="border-left:0;border-right:0">
-      <tr>
+      <thead><tr>
         ${th('Sl<br>No.')}${th('Description of Goods')}
         ${showHsn ? th('HSN/SAC') : ''}
         ${showRate ? th('GST<br>Rate') : ''}
         ${th('Quantity')}${th('Rate')}${th('per')}${th('Amount')}
-      </tr>
+      </tr></thead>
+      <tbody>
       ${itemRows}
       ${lessRow}${extraRow}
       ${taxRows}
@@ -334,6 +354,7 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
         <td></td><td></td>
         <td class="r big">&#8377; ${fmt(voucher.total)}</td>
       </tr>
+      </tbody>
     </table>
 
     <table style="border-top:0">

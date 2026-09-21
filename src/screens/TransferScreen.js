@@ -14,7 +14,7 @@ import { fmt0, today } from '../lib/money';
 import {
   sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml,
   priceLevelsInTally,
-  itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml,
+  itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml, goesToTally,
   paymentsToCsv, expensesToCsv, balancesToCsv, stockToCsv, bookToCsv,
   looksMangled, base64ToBytes, decodeBytes,
   buildBackup, readBackup, backupVoucherPayload,
@@ -277,10 +277,14 @@ export default function TransferScreen({ navigation }) {
   const exportTally = async () => {
     setBusy('tally');
     try {
-      const vs = (await fetchBills()).filter((v) => v.vtype === 'sale' || v.vtype === 'purchase');
+      // sales, purchases AND the credit and debit notes that reverse them.
+      // Estimates are not accounting entries and cancelled bills are not
+      // entries at all.
+      const vs = (await fetchBills()).filter(goesToTally);
       if (!vs.length) {
         return Alert.alert('Nothing in that period',
-          'Only bills and purchases go to Tally. Estimates are not accounting entries.');
+          'Bills, purchases and the notes against them go to Tally. Estimates are '
+          + 'not accounting entries, and a cancelled bill is not an entry at all.');
       }
       const { data: ls, error } = await supabase.from('voucher_lines')
         .select('*').in('voucher_id', vs.map((v) => v.id)).order('line_no');
@@ -389,11 +393,25 @@ export default function TransferScreen({ navigation }) {
       // bring every cancelled bill back to life — the number, the goods, the
       // tax and all. It is saved first, so its number is held, and then
       // cancelled again with the reason it carried.
+      // A CREDIT NOTE CANNOT GO BACK BEFORE THE BILL IT IS AGAINST.
+      //
+      // The bills went back in whatever order the file listed them, and a
+      // credit note carries the id of the bill it reverses. Arrive first and
+      // the database refuses it — "violates foreign key constraint" — and the
+      // restore stopped dead there, leaving the book half rebuilt and the
+      // shopkeeper looking at a sentence in Postgres. On a real month's
+      // backup that was five bills in a hundred and thirty.
+      //
+      // The ones that point at nothing go first. Anything still refused is
+      // kept for the next round, and the rounds stop when a whole pass puts
+      // nothing back — so a note against a note against a bill is fine too,
+      // and a note whose bill is genuinely missing from the file is reported
+      // instead of stopping everything.
       let bills = 0, already = 0, recancelled = 0;
-      for (const v of b.vouchers) {
+      const putBack = async (v) => {
         const { data, error } = await supabase.rpc('save_voucher',
           { p: backupVoucherPayload(v, byVoucher[v.id]) });
-        if (error) throw error;
+        if (error) return error;
         if (data?.already) already++; else bills++;
         if (v.cancelled_at && data?.id && !data?.already) {
           const { error: cErr } = await supabase.rpc('delete_voucher',
@@ -401,6 +419,29 @@ export default function TransferScreen({ navigation }) {
           if (cErr) throw cErr;
           recancelled++;
         }
+        return null;
+      };
+
+      let queue = [...b.vouchers].sort((x, y) =>
+        (x.ref_voucher_id ? 1 : 0) - (y.ref_voucher_id ? 1 : 0));
+      let lastErr = null;
+      while (queue.length) {
+        const again = [];
+        for (const v of queue) {
+          const err = await putBack(v);
+          if (!err) continue;
+          // a missing bill to point at: try again once the rest are in
+          if (/foreign key|not present in table/i.test(err.message || '')) {
+            again.push(v); lastErr = err;
+          } else throw err;
+        }
+        if (again.length === queue.length) {          // a whole pass, no progress
+          throw new Error(
+            `${again.length} credit or debit note${again.length === 1 ? '' : 's'} in this `
+            + 'backup point at a bill that is not in the file, so they could not be put '
+            + 'back. Everything else has been restored.');
+        }
+        queue = again;
       }
 
       // Receipts and payments he entered himself. The ones a cash bill wrote

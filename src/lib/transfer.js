@@ -624,18 +624,42 @@ export const bookToCsv = (title, opening, rows) => {
 
 const esc = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;');
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 const tallyDate = (d) => String(d || '').replace(/-/g, '');   // 2026-09-19 -> 20260919
 const amt = (x) => n2(x).toFixed(2);
 
 // One voucher. In Tally a negative amount is a debit and a positive one is a
 // credit, and every voucher must come to zero.
+//
+// FOUR KINDS OF VOUCHER, NOT TWO.
+//
+// This used to write out sales and purchases and quietly drop the returns. A
+// shopkeeper exported his month, imported it into Tally, and his Tally showed
+// more sales than he had made, party balances that did not match his own
+// ledger, and a GST liability higher than the one he actually owed — with
+// nothing anywhere to say a credit note had gone missing.
+//
+// A sale return is a Credit Note and a purchase return is a Debit Note, and
+// each is the sign-mirror of the thing it reverses.
+const TALLY_KIND = {
+  sale:            { name: 'Sales',       ledger: (o) => o.sales_ledger    || 'Sales',    flip: false },
+  purchase:        { name: 'Purchase',    ledger: (o) => o.purchase_ledger || 'Purchase', flip: true  },
+  sale_return:     { name: 'Credit Note',
+                     ledger: (o) => o.sales_return_ledger || 'Sales Return',     flip: true  },
+  purchase_return: { name: 'Debit Note',
+                     ledger: (o) => o.purchase_return_ledger || 'Purchase Return', flip: false },
+};
+
+export const goesToTally = (v) =>
+  !!TALLY_KIND[v?.vtype] && !v?.cancelled_at;
+
 function voucherXml({ v, lines, org }) {
-  const buy   = v.vtype === 'purchase';
+  const k     = TALLY_KIND[v.vtype] || TALLY_KIND.sale;
+  const buy   = k.flip;
   const party = v.parties?.name || v.printed_name || 'Cash';
-  const kind  = buy ? 'Purchase' : 'Sales';
-  const main  = buy ? (org.purchase_ledger || 'Purchase') : (org.sales_ledger || 'Sales');
+  const kind  = k.name;
+  const main  = k.ledger(org);
   const total = n2(v.total);
 
   // the party side: on a sale he owes us (debit), on a purchase we owe him (credit)
@@ -643,9 +667,15 @@ function voucherXml({ v, lines, org }) {
     ? `<ALLLEDGERENTRIES.LIST><LEDGERNAME>${esc(party)}</LEDGERNAME>`
       + `<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${amt(total)}</AMOUNT></ALLLEDGERENTRIES.LIST>`
     : `<ALLLEDGERENTRIES.LIST><LEDGERNAME>${esc(party)}</LEDGERNAME>`
-      + `<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-${amt(total)}</AMOUNT></ALLLEDGERENTRIES.LIST>`;
+      + `<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>${amt(-total)}</AMOUNT></ALLLEDGERENTRIES.LIST>`;
 
-  const sign = buy ? '-' : '';          // purchase: the expense side is a debit
+  // THE SIGN IS ARITHMETIC, NOT A MINUS GLUED ON THE FRONT.
+  //
+  // This used to build the amount as a '-' followed by the formatted number.
+  // That is right until the number is itself negative — a round-off of -0.06
+  // on a purchase came out as "--0.06". Three per cent of vouchers carried
+  // one, and Tally will not read it. Negating cannot produce that.
+  const flip = (x) => (buy ? -n2(x) : n2(x));
   const pos  = buy ? 'Yes' : 'No';
 
   const inventory = lines.map((l) => `
@@ -655,11 +685,11 @@ function voucherXml({ v, lines, org }) {
         <RATE>${amt(l.rate)}/${esc(l.unit || 'PCS')}</RATE>
         <ACTUALQTY>${Number(l.qty)} ${esc(l.unit || 'PCS')}</ACTUALQTY>
         <BILLEDQTY>${Number(l.qty)} ${esc(l.unit || 'PCS')}</BILLEDQTY>
-        <AMOUNT>${sign}${amt(l.taxable)}</AMOUNT>
+        <AMOUNT>${amt(flip(l.taxable))}</AMOUNT>
         <ACCOUNTINGALLOCATIONS.LIST>
           <LEDGERNAME>${esc(main)}</LEDGERNAME>
           <ISDEEMEDPOSITIVE>${pos}</ISDEEMEDPOSITIVE>
-          <AMOUNT>${sign}${amt(l.taxable)}</AMOUNT>
+          <AMOUNT>${amt(flip(l.taxable))}</AMOUNT>
         </ACCOUNTINGALLOCATIONS.LIST>
       </ALLINVENTORYENTRIES.LIST>`).join('');
 
@@ -667,7 +697,7 @@ function voucherXml({ v, lines, org }) {
       <ALLLEDGERENTRIES.LIST>
         <LEDGERNAME>${esc(name)}</LEDGERNAME>
         <ISDEEMEDPOSITIVE>${pos}</ISDEEMEDPOSITIVE>
-        <AMOUNT>${sign}${amt(value)}</AMOUNT>
+        <AMOUNT>${amt(flip(value))}</AMOUNT>
       </ALLLEDGERENTRIES.LIST>`);
 
   const taxes = v.tax_mode === 'igst'
@@ -694,8 +724,12 @@ function voucherXml({ v, lines, org }) {
 }
 
 export function tallyVouchersXml({ org, vouchers, linesByVoucher }) {
+  // A CANCELLED BILL IS NOT AN ENTRY.
+  //
+  // Nothing filtered these out, so a bill the shopkeeper had cancelled went
+  // into Tally as a live sale — money he never took, tax he never owed.
   const body = vouchers
-    .filter((v) => v.vtype === 'sale' || v.vtype === 'purchase')
+    .filter(goesToTally)
     .map((v) => voucherXml({ v, lines: linesByVoucher[v.id] || [], org }))
     .join('');
 

@@ -300,9 +300,42 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
       else if (kind === 'non_gst') nilBag[key].ngsup_amt = n2(nilBag[key].ngsup_amt + val);
     }
   }
+  // TABLE 8 MUST NOT GO NEGATIVE EITHER.
+  //
+  // The same trap as the HSN table below, and it was missed here. A shop that
+  // takes back more milk in September than it sold in September — the returns
+  // are against August's bills — nets to a negative nil-rated figure, and the
+  // portal refuses the WHOLE return over it, with a message that names no
+  // table. Held back at zero, named in `problems`, so the file uploads and the
+  // filer knows exactly what has to be carried or adjusted by hand.
+  const nilHeld = [];
+  const NIL_WORD = { nil_amt: 'nil-rated', expt_amt: 'exempt', ngsup_amt: 'outside GST' };
+  const NIL_WHERE = {
+    INTRB2B: 'in-state, to registered buyers', INTRB2C: 'in-state, to everyone else',
+    INTERB2B: 'other states, to registered buyers', INTERB2C: 'other states, to everyone else',
+  };
+  for (const [sply_ty, e] of Object.entries(nilBag)) {
+    for (const k of ['nil_amt', 'expt_amt', 'ngsup_amt']) {
+      if (e[k] < 0) {
+        nilHeld.push({ sply_ty, field: k, value: e[k],
+          what: `${NIL_WORD[k]} sales ${NIL_WHERE[sply_ty]}` });
+        e[k] = 0;
+      }
+    }
+  }
+
   const nilRows = Object.entries(nilBag)
     .filter(([, e]) => e.expt_amt || e.nil_amt || e.ngsup_amt)
     .map(([sply_ty, e]) => ({ sply_ty, ...e }));
+
+  if (nilHeld.length) {
+    problems.push(`${nilHeld.length} Table 8 figure${nilHeld.length === 1 ? '' : 's'} came out `
+      + 'negative, because the returns in this month are worth more than the sales of the '
+      + 'same kind. The portal will not take a negative there, so '
+      + `${nilHeld.length === 1 ? 'it has' : 'they have'} been shown as nil and must be `
+      + 'carried into next month or adjusted by hand: '
+      + nilHeld.map((h) => `${h.what} (${h.value})`).join(', ') + '.');
+  }
 
   /* ---------- hsn: what was sold, by code ---------- */
   //
@@ -459,6 +492,7 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
       b2cl: b2cl.reduce((n, c) => n + c.inv.length, 0),
       b2cs: b2csGood.length,
       b2cs_held_back: b2csNegative.length,
+      nil_held_back: nilHeld.length,
       cdnur: cdnur.length,
       // taxable turnover, with nil-rated and exempt value taken out of it
       taxable: n2(sales.reduce((t, v) => t + num(v.taxable), 0)

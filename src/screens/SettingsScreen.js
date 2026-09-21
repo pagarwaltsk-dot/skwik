@@ -126,7 +126,19 @@ export default function SettingsScreen({ navigation }) {
     // characters, and only letters, numbers, a hyphen and a slash. The portal
     // refuses anything else, and it refuses it months later, at filing time,
     // when the bills are already out of the shop.
+    // Measured against the number this series will REACH, not the one it is on
+    // today. A thirteen-character prefix looks fine at bill 1 and is seventeen
+    // characters at bill 10,000 — and the portal only objects at filing time,
+    // by which point those bills are out of the shop and cannot be renumbered.
     const example = nextLooksLike();
+    const room    = example.length - String(f.next_invoice_no || '').length;
+    const worst   = room + 5;                    // up to 99,999 bills in a series
+    if (worst > 16) {
+      return Alert.alert('Too long',
+        `Your bill number starts at ${example}. By bill 99,999 it would be `
+        + `${worst} characters, and GST allows 16. Shorten the prefix by `
+        + `${worst - 16} character${worst - 16 > 1 ? 's' : ''}.`);
+    }
     if (example.length > 16) {
       return Alert.alert('Too long',
         `Your bill number would be ${example} — ${example.length} characters. GST `

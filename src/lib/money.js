@@ -75,9 +75,37 @@ export function settle(x) {
   return String(Math.round(v * 1000) / 1000);
 }
 
-export const fmt  = (x) => (Number(x) || 0).toLocaleString('en-IN',
-  { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-export const fmt0 = (x) => Math.round(Number(x) || 0).toLocaleString('en-IN');
+// LAKHS AND CRORES, WRITTEN BY US AND NOT BY THE PHONE.
+//
+// This was toLocaleString('en-IN'), which is correct on a laptop and a gamble
+// on a phone: React Native runs on Hermes, Hermes hands Intl to whatever ICU
+// the Android build happens to carry, and an Android that does not have the
+// en-IN locale falls back to the American grouping without a word. Then
+// ₹12,34,567 prints as ₹1,234,567 on the customer's bill, and it only ever
+// happens on somebody else's handset, months later, where nobody can see it.
+//
+// Three commas are not worth that risk. The Indian grouping is three digits at
+// the end and two at a time before it, which is the line below.
+const group = (intPart) => {
+  const s = String(intPart);
+  if (s.length <= 3) return s;
+  const last3 = s.slice(-3);
+  const rest  = s.slice(0, -3);
+  return rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' + last3;
+};
+
+// `places` decimals, always exactly that many, with the Indian grouping.
+export const fmtN = (x, places = 2) => {
+  const v = Number(x);
+  const n = (!v || !Number.isFinite(v)) ? 0 : v;
+  const neg = n < 0;
+  const fixed = Math.abs(n).toFixed(places);
+  const [i, d] = fixed.split('.');
+  return (neg ? '-' : '') + group(i) + (d ? '.' + d : '');
+};
+
+export const fmt  = (x) => fmtN(x, 2);
+export const fmt0 = (x) => fmtN(Math.round(Number(x) || 0), 0);
 
 // A QUANTITY OR A RATE, WRITTEN AS HE ENTERED IT.
 //
@@ -88,7 +116,7 @@ export const fmt0 = (x) => Math.round(Number(x) || 0).toLocaleString('en-IN');
 export const qty = (x) => {
   const v = Number(x) || 0;
   const d = Math.abs(v % 1) < 0.0005 ? 0 : (Math.abs((v * 100) % 1) < 0.05 ? 2 : 3);
-  return v.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
+  return fmtN(v, d);
 };
 
 // A tax rate: 18%, 2.5%, 0.25%. Halving 5 gives 2.5, and printing that as 3
