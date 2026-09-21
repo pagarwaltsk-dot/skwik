@@ -85,18 +85,36 @@ export default function ItemsScreen({ navigation }) {
     return d !== undefined && num(d) !== num(r[which] ?? 0);
   });
 
+  // THREE HUNDRED PRICES, ONE ROUND TRIP EACH, AND NO IDEA WHERE IT STOPPED.
+  //
+  // This sent one update per item and threw on the first failure, so a dropped
+  // line at item 40 of 300 left 39 prices raised and 261 not — and the message
+  // said only "Could not save them all", with the drafts still on screen and
+  // no way to tell which was which. Blocks of a hundred, and when something
+  // does go wrong he is told exactly how far it got and what is still showing
+  // the old price.
   const saveBulk = async () => {
     if (!changed.length) { setBulk(false); return; }
     setSaving(true);
+    let done = 0;
     try {
-      for (const r of changed) {
-        const { error } = await supabase.from('items')
-          .update({ [which]: num(draft[r.id]) }).eq('id', r.id);
+      for (let i = 0; i < changed.length; i += 100) {
+        const block = changed.slice(i, i + 100)
+          .map((r) => ({ id: r.id, [which]: num(draft[r.id]) }));
+        const { error } = await supabase.from('items').upsert(block, { onConflict: 'id' });
         if (error) throw error;
+        done += block.length;
       }
       setBulk(false); setDraft({}); load();
     } catch (e) {
-      Alert.alert('Could not save them all', sayPlainly(e));
+      Alert.alert(
+        done ? `${done} of ${changed.length} saved` : 'Nothing was saved',
+        `${sayPlainly(e)}\n\n`
+        + (done
+            ? `The first ${done} are changed and the rest are not. The ones still `
+              + `showing a new price below have not gone in — press save again.`
+            : 'Nothing has been changed. Press save again.'));
+      load();
     } finally { setSaving(false); }
   };
 

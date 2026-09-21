@@ -77,6 +77,11 @@ export default function ReconScreen({ navigation }) {
         .select('id, vtype, vdate, voucher_no, supplier_invoice_no, supplier_invoice_date,'
               + ' taxable, cgst, sgst, igst, total, printed_name, parties(name, gstin)')
         .in('vtype', ['purchase', 'purchase_return'])
+        // A CANCELLED PURCHASE IS NOT A PURCHASE.
+        // These came through with the rest, found nothing to match against,
+        // and were reported under "at risk — your supplier has not filed it",
+        // inflating the figure and putting the supplier in the chase message.
+        .is('cancelled_at', null)
         .gte('vdate', from).lte('vdate', today())
         .order('vdate').order('id'));
 
@@ -225,14 +230,39 @@ export default function ReconScreen({ navigation }) {
               </View>
             )}
 
+            {/* THE DANGEROUS KIND OF BLOCKED CREDIT.
+                A blocked invoice he had not entered was already reported. One
+                he HAD entered matched cleanly, was quietly left out of the safe
+                total for being blocked, and was then named nowhere — so the
+                figure he would have claimed included it and nothing said so. */}
+            {s.blockedInBooks > 0 && (
+              <View style={{ backgroundColor: C.flagSoft, borderWidth: 1, borderColor: C.flagLine,
+                             borderRadius: 12, padding: 12, marginBottom: 12 }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: C.flagInk }}>
+                  ₹{fmt0(s.blockedInBooks)} is in your books but the portal will not allow it
+                </Text>
+                <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 3, lineHeight: 17 }}>
+                  {s.blockedInBooksCount === 1 ? 'This bill matches' : 'These bills match'} your
+                  purchase perfectly, but the 2B marks the credit not available. Do not claim
+                  {s.blockedInBooksCount === 1 ? ' it' : ' them'}.
+                </Text>
+                {res.blockedPairs.slice(0, 5).map((x) => (
+                  <Text key={x.t.docNo} style={{ fontSize: 11.5, color: C.flagInk, marginTop: 4 }}>
+                    • {x.t.party || x.t.gstin} — {x.t.docNo} — ₹{fmt0(x.t.tax)}
+                    {x.blockedReason ? ` (${x.blockedReason})` : ''}
+                  </Text>
+                ))}
+              </View>
+            )}
+
             {s.blocked > 0 && (
               <View style={{ backgroundColor: C.flagSoft, borderWidth: 1, borderColor: C.flagLine,
                              borderRadius: 12, padding: 12, marginBottom: 12 }}>
                 <Text style={{ fontSize: 13, fontWeight: '700', color: C.flagInk }}>
-                  ₹{fmt0(s.blocked)} of this credit is blocked by the portal itself
+                  ₹{fmt0(s.blocked)} more is blocked by the portal itself
                 </Text>
                 <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 3 }}>
-                  The 2B marks it not available, whatever your books say.
+                  The 2B marks it not available, and it is not in your books either.
                 </Text>
               </View>
             )}

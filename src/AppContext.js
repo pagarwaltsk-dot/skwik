@@ -293,16 +293,13 @@ export function AppProvider({ children }) {
       if (pe1) throw pe1;
 
       const hasGst = !!d.gstin;
-      // A SHOP THAT DOES NOT SAY WHERE IT IS MUST NOT BE TOLD WHERE IT IS.
-      //
-      // A shop with no GST number is never asked for its State, and this used
-      // to write in 18 — Assam — as a stand-in. It is not a stand-in: it is
-      // printed at the top of every bill the shop issues, as "State Name:
-      // Assam, Code: 18", and a shop in Kerala or Gujarat had a false State
-      // on the face of every document it gave a customer. Left empty, the
-      // line simply does not print, and Settings asks for the State by name
-      // whenever he wants to fill it in.
-      const code   = hasGst ? String(d.gstin).slice(0, 2) : '';
+      // Assam is the default for a shop that gives no GST number, because
+      // that is where most of these shops are — the same answer OnboardScreen
+      // gives, so the two ways into Skwik agree. It is still a default rather
+      // than a decision: this screen does not yet OFFER the State the way the
+      // set-up screen now does, so a shop elsewhere has to correct it under
+      // Settings, where the picker asks for it by name.
+      const code   = hasGst ? String(d.gstin).slice(0, 2) : '18';
       const trial  = new Date();
       trial.setDate(trial.getDate() + 7);
 

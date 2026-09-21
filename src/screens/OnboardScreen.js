@@ -3,6 +3,8 @@ import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert } from 'reac
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { Box, KeyForm } from '../components/Chrome';
+import { StateField } from '../components/Pickers';
+import { STATES } from '../lib/states';
 import { C, S } from '../theme';
 import { sayPlainly } from '../lib/offline';
 
@@ -13,6 +15,14 @@ import { sayPlainly } from '../lib/offline';
 export default function OnboardScreen() {
   const { reloadOrg, signOut, joinShop } = useApp();
   const [name, setName] = useState('');
+  // THE STATE DECIDES THE TAX, AND IT WAS TYPED IN FOR HIM.
+  //
+  // This screen put state_code '18' — Assam — on every shop it made, with no
+  // field to say otherwise. For a shop anywhere else, every out-of-state bill
+  // afterwards would be charged CGST and SGST instead of IGST and go into the
+  // wrong table of GSTR-1. Assam stays the default, because that is where most
+  // of these shops are; it is now a default and not a decision.
+  const [stateCode, setStateCode] = useState('18');
   const fName = useRef(null), fPhone = useRef(null), fCode = useRef(null);
   const [code, setCode] = useState('');
 
@@ -58,10 +68,8 @@ export default function OnboardScreen() {
         phone: phone.trim(),
         mode: 'estimate',
         is_gst_registered: false,
-        // Not filled in with a guess: a State written here prints on every
-        // bill this shop issues. It is asked for by name under Settings.
-        state_code: '',
-        state_name: '',
+        state_code: stateCode || '18',
+        state_name: STATES[stateCode || '18'] || '',
         plan: 'trial',
         trial_ends_at: trialEnds.toISOString(),
       }).select().single();
@@ -93,6 +101,11 @@ export default function OnboardScreen() {
       <Box ref={fName} next={fPhone} style={{ marginTop: 6, marginBottom: 18, fontSize: 20 }}
         autoFocus placeholder="Your shop name"
         value={name} onChangeText={setName} />
+
+      <Text style={S.label}>Which state?</Text>
+      <View style={{ marginTop: 6, marginBottom: 18 }}>
+        <StateField value={stateCode} homeCode={stateCode} onChange={setStateCode} />
+      </View>
 
       <Text style={S.label}>Phone (optional)</Text>
       <Box ref={fPhone} onSubmit={start} style={{ marginTop: 6, marginBottom: 26 }}

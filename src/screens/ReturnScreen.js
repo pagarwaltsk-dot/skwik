@@ -169,7 +169,7 @@ export default function ReturnScreen({ route, navigation }) {
 
   const tooMuch = rows.find((r) => num(r.back) > r.left);
 
-  const save = async () => {
+  const save = async (lateApproved = false) => {
     if (!coming.length) {
       return Alert.alert('Nothing coming back', 'Type how many of each item are being returned.');
     }
@@ -178,24 +178,20 @@ export default function ReturnScreen({ route, navigation }) {
         `Only ${tooMuch.left} ${uqcShort(tooMuch.unit)} of ${tooMuch.item_name} can still come back.`);
     }
 
-    if (!isBuy && pastGstDeadline(bill?.vdate, today()) && !lateOk) {
-      // "Raise it anyway" used only to set the flag, so nothing happened and
-      // he was left looking at the same screen with the same button. Saying
-      // yes to a question has to do the thing the question was about.
+    if (!isBuy && pastGstDeadline(bill?.vdate, today()) && !lateOk && !lateApproved) {
       return Alert.alert('Too late for the return',
         'This bill is from a year whose 30 November has gone. The note will be '
         + 'raised and the money will move, but it cannot reduce your tax and it '
         + 'will be left out of GSTR-1.',
         [{ text: 'Go back' },
-         { text: 'Raise it anyway', onPress: () => { setLateOk(true); write(); } }]);
+         // SETTING A FLAG IS NOT RAISING THE NOTE.
+         // This set lateOk and stopped. He pressed "Raise it anyway", nothing
+         // happened, and he had to work out for himself that he must press
+         // Save a second time. It carries straight on now.
+         { text: 'Raise it anyway',
+           onPress: () => { setLateOk(true); save(true); } }]);
     }
 
-    return write();
-  };
-
-  // Everything past the questions. Kept apart so a question answered "yes"
-  // can carry straight on into it.
-  const write = async () => {
     setBusy(true);
     try {
       const payload = {

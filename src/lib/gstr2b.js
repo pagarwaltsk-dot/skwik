@@ -210,6 +210,14 @@ export const fromBooks = (v) => mkDoc({
   bookDate: v.vdate,
   taxable: v.taxable, cgst: v.cgst, sgst: v.sgst, igst: v.igst,
   value: v.total,
+  // REVERSE CHARGE, FROM HIS SIDE TOO.
+  //
+  // The portal's copy says rev="Y" and is set aside, because a reverse-charge
+  // supply is not matched against a purchase bill. His own copy was never
+  // asked, so the bill sat there with nothing to pair with and came out under
+  // "credit at risk" — telling him to chase a supplier who had done nothing
+  // wrong, and over-stating the credit he stands to lose.
+  rcm: !!v.reverse_charge,
 });
 
 /* ---------------- the matching ---------------- */
@@ -351,6 +359,15 @@ export function reconcile({ purchases = [], portal = [] }) {
           : 'WEAK';
     // filed in one month and entered in another: the credit belongs to the later
     p.timing = p.periodDiff !== null && p.periodDiff !== 0;
+    // THE PORTAL SAYS THIS CREDIT IS NOT AVAILABLE.
+    //
+    // A blocked invoice he had NOT entered was reported. One he HAD entered
+    // matched cleanly, was called exact, was left out of the safe total for
+    // being blocked — and was then mentioned nowhere at all. So the figure he
+    // would have claimed included it and nothing on the screen said so. It is
+    // named now, with the portal's own reason.
+    p.blocked = p.t.itc === 'N';
+    p.blockedReason = p.blocked ? (p.t.rsn || '') : '';
   });
 
   const booksOnly    = L.filter((b) => !b._m);
@@ -377,6 +394,7 @@ export function reconcile({ purchases = [], portal = [] }) {
 
   return {
     pairs, matched, queried, booksOnly, twoOnly, twoBlocked,
+    blockedPairs: pairs.filter((x) => x.blocked),
     noGstin, other, rcm, dupes,
     summary: {
       bills: L.length,
@@ -391,7 +409,11 @@ export function reconcile({ purchases = [], portal = [] }) {
       atRisk:  sum(booksOnly),
       missing: sum(twoOnly),
       queriedTax: n2(queried.reduce((a, p) => a + Math.abs(p.taxDiff), 0)),
+      // blocked credit he has NOT entered, and the more dangerous kind: blocked
+      // credit that is sitting in his books ready to be claimed
       blocked: sum(twoBlocked),
+      blockedInBooks: sum(pairs.filter((x) => x.blocked).map((x) => x.t)),
+      blockedInBooksCount: pairs.filter((x) => x.blocked).length,
       noGstinTax: sum(noGstin),
       rcmTax: sum(rcm.filter((d) => d.src === 'books')),
     },

@@ -12,7 +12,7 @@ import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, today } from '../lib/money';
 import {
-  sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml,
+  sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml, planImport,
   priceLevelsInTally,
   itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml, goesToTally,
   paymentsToCsv, expensesToCsv, balancesToCsv, stockToCsv, bookToCsv,
@@ -524,6 +524,7 @@ export default function TransferScreen({ navigation }) {
       setReady({ what, rows: read.rows, name: asset.name || 'the file',
                  kind: kind === 'csv' ? 'a spreadsheet' : 'a Tally export',
                  text: kind === 'csv' ? '' : text,
+                 columns: read.columns || null,
                  levels, level: saved, basis: read.basis || null });
     } catch (e) {
       const msg = String(e?.message || e);
@@ -560,43 +561,22 @@ export default function TransferScreen({ navigation }) {
       // item past row 1,000 as a duplicate on every import.
       const have = await pageAll(() => supabase.from(table)
         .select('id, name').order('id'));
-      const byName = Object.fromEntries((have || []).map((r) => [String(r.name || '').trim().toLowerCase(), r.id]));
+      // What the file adds, changes and repeats is worked out by planImport in
+      // lib/transfer.js, where it can be tested without a database. This does
+      // only the writing.
+      const plan = planImport({ rows, have, what, orgId: org.id });
+      const { added, updated, repeated, noState } = plan;
 
-      let added = 0, updated = 0, noState = 0;
-      const toAdd = [];
-
-      for (const r of rows) {
-        const body = what === 'items'
-          ? { org_id: org.id, name: r.name, alias: r.alias || null, hsn: r.hsn || null,
-              unit: r.unit || 'PCS', sale_price: r.sale_price, price2: r.price2,
-              purchase_price: r.purchase_price, gst_rate: r.gst_rate,
-              opening_stock: r.opening_stock }
-          : { org_id: org.id, name: r.name, kind: r.kind || 'customer',
-              gstin: r.gstin || null, is_registered: !!r.gstin, phone: r.phone || null,
-              address: r.address || null,
-              // A CUSTOMER WHOSE STATE WE DO NOT KNOW IS NOT FROM HERE.
-              //
-              // This used to hand every unknown state the shop's own code, so
-              // an imported out-of-state customer became a local one and every
-              // bill to him was charged CGST and SGST instead of IGST, and
-              // went into the wrong table of GSTR-1. Left blank, the bill
-              // screen asks for the state before it will save.
-              state_code: r.state_code || null,
-              state_name: r.state_name || null,
-              opening_balance: r.opening_balance || 0,
-              opening_type: r.opening_type || 'owes_you' };
-
-        if (what !== 'items' && !body.state_code) noState++;
-
-        const id = byName[r.name.trim().toLowerCase()];
-        if (id) {
-          const { error } = await supabase.from(table).update(body).eq('id', id);
-          if (error) throw error;
-          updated++;
-        } else {
-          toAdd.push(body); added++;
-        }
+      // the changes go in blocks too: one round trip per item was 800 round
+      // trips for a shop bringing its Tally list over, which on a weak line is
+      // minutes of a spinner
+      for (let i = 0; i < plan.toUpdate.length; i += 100) {
+        const { error } = await supabase.from(table)
+          .upsert(plan.toUpdate.slice(i, i + 100).map((u) => ({ id: u.id, ...u.body })),
+                  { onConflict: 'id' });
+        if (error) throw error;
       }
+      const toAdd = plan.toAdd;
 
       // new ones go in blocks, so one long list is not one long wait
       for (let i = 0; i < toAdd.length; i += 100) {
@@ -606,6 +586,12 @@ export default function TransferScreen({ navigation }) {
 
       Alert.alert('Done',
         `${added} new, ${updated} updated. Nothing was removed.`
+        + (repeated
+            ? `\n\n${repeated} row${repeated === 1 ? '' : 's'} in that file `
+              + `repeated a name already on it. Skwik kept the last one of each `
+              + `rather than making two items with the same name — check the file `
+              + `if that is not what you meant.`
+            : '')
         + (noState
             ? `\n\n${noState} name${noState === 1 ? ' has' : 's have'} no State on the file. `
               + `Skwik has left ${noState === 1 ? 'it' : 'them'} blank rather than `
@@ -761,6 +747,33 @@ export default function TransferScreen({ navigation }) {
                     </View>
                     <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 16 }}>
                       Check a rate below against Tally before you bring them in.
+                    </Text>
+                  </View>
+                )}
+
+                {/* WHICH COLUMN SKWIK DECIDED WAS WHICH.
+                    Every spreadsheet names its columns differently, so the
+                    importer has to guess. Guessing is fine; guessing silently
+                    is not — a wholesale rate read as the selling price costs
+                    money on every bill afterwards and nothing ever said so. */}
+                {!!ready.columns?.length && (
+                  <View style={{ marginTop: 14, padding: 12, borderWidth: 1,
+                                 borderColor: C.line, borderRadius: 12,
+                                 backgroundColor: C.surface }}>
+                    <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink }}>
+                      How Skwik read your columns
+                    </Text>
+                    {ready.columns.map((c) => (
+                      <View key={c.field} style={[S.row, { marginTop: 5 }]}>
+                        <Text style={{ flex: 1, fontSize: 12.5, color: C.muted }}>{c.says}</Text>
+                        <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink }}>
+                          {c.heading || '—'}
+                        </Text>
+                      </View>
+                    ))}
+                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 7, lineHeight: 16 }}>
+                      If any of those went to the wrong place, rename the heading in
+                      your file and pick it again. Nothing is saved yet.
                     </Text>
                   </View>
                 )}

@@ -51,8 +51,19 @@ export default function LedgerScreen({ route, navigation }) {
   const byNewest = (a, b) => String(b.d || '').localeCompare(String(a.d || ''));
   const left  = rows.filter((r) => r.side === 'left').sort(byNewest);
   const right = rows.filter((r) => r.side === 'right').sort(byNewest);
-  if (open > 0) (data.opening_type === 'you_owe' ? right : left)
-    .push({ d: party?.opening_date || '', label: 'Opening', amt: open });
+  // A NEGATIVE OPENING IS STILL AN OPENING.
+  //
+  // The direction lives in opening_type, and the amount should be a plain
+  // number — but nothing stopped a shopkeeper typing "-500" into the box, and
+  // this line then dropped it out of the ledger altogether while the udhar
+  // list went on counting it. The two screens disagreed about the same
+  // customer. A minus is read as the other direction, which is what he meant.
+  if (open !== 0) {
+    const theyOwe = open < 0 ? data.opening_type === 'you_owe'
+                             : data.opening_type !== 'you_owe';
+    (theyOwe ? left : right)
+      .push({ d: party?.opening_date || '', label: 'Opening', amt: Math.abs(open) });
+  }
 
   const sum = (a) => a.reduce((s, r) => s + Number(r.amt || 0), 0);
   const balance = n2(sum(left) - sum(right));

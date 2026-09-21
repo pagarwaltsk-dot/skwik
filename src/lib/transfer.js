@@ -151,8 +151,19 @@ const SAYS = {
   alias:          ['alias', 'alsocalled', 'localname', 'othername', 'shortname'],
   hsn:            ['hsn', 'hsncode', 'hsnsac', 'sac'],
   unit:           ['unit', 'uom', 'units', 'baseunit', 'baseunits', 'per'],
-  sale_price:     ['saleprice', 'sellingprice', 'rate', 'price', 'mrp', 'sellrate', 'wholesale', 'saleslrate', 'salesrate'],
-  price2:         ['price2', 'retail', 'retailprice', 'secondprice', 'rate2'],
+  // THE PRICE THAT PRINTS ON AN ORDINARY BILL.
+  //
+  // 'wholesale' used to be in this list. A spreadsheet with a retail column
+  // and a wholesale column beside it therefore had the WHOLESALE rate read as
+  // the selling price — silently — and every retail bill afterwards went out
+  // at the lower one. Wholesale is a second list, and that is where it sits
+  // now. A file whose ONLY price column says wholesale still works: see the
+  // fallback under itemsFromCsv.
+  sale_price:     ['saleprice', 'sellingprice', 'sellingrate', 'salerate', 'salesrate',
+                   'saleslrate', 'sellrate', 'rate', 'price', 'mrp',
+                   'retail', 'retailprice', 'retailrate'],
+  price2:         ['price2', 'secondprice', 'rate2', 'wholesale', 'wholesaleprice',
+                   'wholesalerate', 'dealerprice', 'dealerrate'],
   purchase_price: ['purchaseprice', 'costprice', 'cost', 'buyrate', 'purchaserate'],
   gst_rate:       ['gst', 'gstrate', 'taxrate', 'gstpercent', 'rateofgst', 'igstrate'],
   opening_stock:  ['openingstock', 'opening', 'stock', 'qty', 'quantity', 'openingqty'],
@@ -160,7 +171,9 @@ const SAYS = {
   phone:          ['phone', 'mobile', 'contact', 'phoneno', 'mobileno', 'ledgerphone'],
   address:        ['address', 'add', 'addr'],
   state_name:     ['state', 'statename'],
-  opening_balance:['openingbalance', 'balance', 'outstanding', 'due', 'openingbal'],
+  // a column headed simply "Opening" is what most lists actually say
+  opening_balance:['openingbalance', 'balance', 'outstanding', 'due', 'openingbal',
+                   'opening', 'openingamount', 'openingdue', 'oldbalance', 'previousbalance'],
   owed_by:        ['owedby', 'owed', 'direction', 'drcr', 'debitcredit'],
   kind:           ['customerorsupplier', 'kind', 'type', 'partytype', 'category'],
 };
@@ -213,6 +226,31 @@ const money = (x) => {
   return Number.isFinite(v) ? v : 0;
 };
 
+// WHICH COLUMN SKWIK DECIDED WAS WHICH.
+//
+// The importer has to guess, because every spreadsheet names its columns
+// differently. Guessing is fine; guessing silently is not — a wholesale rate
+// read as the selling price costs money on every bill afterwards and nothing
+// on screen ever said so. This hands the reading back in plain words for the
+// confirm screen to show before a single row is written.
+const FIELD_SAYS = {
+  name: 'Item name', alias: 'Also called', hsn: 'HSN', unit: 'Unit',
+  sale_price: 'Selling price', price2: 'Second price', purchase_price: 'Cost price',
+  gst_rate: 'GST rate', opening_stock: 'Opening stock',
+  kind: 'Customer or supplier', gstin: 'GST number', phone: 'Phone',
+  address: 'Address', state_name: 'State', opening_balance: 'Opening balance',
+  owed_by: 'Who owes',
+};
+
+export function namedColumns(header, cols) {
+  const out = [];
+  for (const [field, i] of Object.entries(cols || {})) {
+    if (i === undefined) continue;
+    out.push({ field, says: FIELD_SAYS[field] || field, heading: String(header?.[i] ?? '').trim() });
+  }
+  return out;
+}
+
 export function itemsFromCsv(text) {
   const rows = parseCsv(text);
   if (rows.length < 2) {
@@ -224,6 +262,13 @@ export function itemsFromCsv(text) {
   if (cols.name === undefined) {
     return { rows: [], problem: 'No column looks like the item name. One heading must say Name, Item or Particulars.' };
   }
+  // A LIST WITH ONLY A WHOLESALE COLUMN STILL HAS TO BILL.
+  //
+  // Wholesale is read as the second price. When it is the only price in the
+  // file, leaving the selling price at zero would give him a book of items
+  // that cannot go on a bill, so it fills both.
+  const onlySecond = cols.sale_price === undefined && cols.price2 !== undefined;
+
   const out = [];
   for (let i = 1; i < rows.length; i++) {
     const name = cell(rows[i], cols.name);
@@ -233,14 +278,14 @@ export function itemsFromCsv(text) {
       alias: cell(rows[i], cols.alias),
       hsn: cell(rows[i], cols.hsn).replace(/[^0-9]/g, ''),
       unit: asUqc(cell(rows[i], cols.unit)),
-      sale_price: money(cell(rows[i], cols.sale_price)),
-      price2: money(cell(rows[i], cols.price2)),
+      sale_price: money(cell(rows[i], onlySecond ? cols.price2 : cols.sale_price)),
+      price2: onlySecond ? 0 : money(cell(rows[i], cols.price2)),
       purchase_price: money(cell(rows[i], cols.purchase_price)),
       gst_rate: money(cell(rows[i], cols.gst_rate)),
       opening_stock: money(cell(rows[i], cols.opening_stock)),
     });
   }
-  return { rows: out, problem: null };
+  return { rows: out, problem: null, columns: namedColumns(rows[0], cols) };
 }
 
 export function partiesFromCsv(text) {
@@ -282,7 +327,7 @@ export function partiesFromCsv(text) {
       kind: /suppl|vendor|creditor/i.test(cell(rows[i], cols.kind)) ? 'supplier' : 'customer',
     });
   }
-  return { rows: out, problem: null };
+  return { rows: out, problem: null, columns: namedColumns(rows[0], cols) };
 }
 
 /* ===================== Tally XML, read ===================== */
@@ -877,6 +922,71 @@ export function backupVoucherPayload(v, linesFor) {
       godown_id: l.godown_id || null,
     })),
   };
+}
+
+
+/* ===================== deciding what an import changes ===================== */
+
+// WHAT A FILE ADDS, WHAT IT CHANGES, AND WHAT IT REPEATS.
+//
+// This used to sit inside the import screen, where it could not be tested on
+// its own — and it had a hole in it: the list of names was built from the book
+// and never added to while the file was read, so a file naming one item twice
+// put TWO items of that name into the shop, with different prices, and the
+// biller picked whichever the list happened to show him.
+//
+// It is a plain function over two lists now, so it can be checked without a
+// database, and the screen does nothing but carry out what it decides.
+export function planImport({ rows, have, what, orgId }) {
+  const byName = {};
+  for (const r of (have || [])) byName[String(r.name || '').trim().toLowerCase()] = r.id;
+
+  const toAdd = [], toUpdate = [], addedAt = {};
+  let repeated = 0, noState = 0;
+
+  for (const r of (rows || [])) {
+    const name = String(r.name || '').trim();
+    if (!name) continue;
+
+    const body = what === 'items'
+      ? { org_id: orgId, name, alias: r.alias || null, hsn: r.hsn || null,
+          unit: r.unit || 'PCS', sale_price: r.sale_price, price2: r.price2,
+          purchase_price: r.purchase_price, gst_rate: r.gst_rate,
+          opening_stock: r.opening_stock }
+      : { org_id: orgId, name, kind: r.kind || 'customer',
+          gstin: r.gstin || null, is_registered: !!r.gstin, phone: r.phone || null,
+          address: r.address || null,
+          // A CUSTOMER WHOSE STATE WE DO NOT KNOW IS NOT FROM HERE.
+          //
+          // This used to hand every unknown state the shop's own code, so an
+          // imported out-of-state customer became a local one and every bill
+          // to him was charged CGST and SGST instead of IGST, and went into
+          // the wrong table of GSTR-1. Left blank, the bill screen asks for
+          // the state before it will save.
+          state_code: r.state_code || null,
+          state_name: r.state_name || null,
+          opening_balance: r.opening_balance || 0,
+          opening_type: r.opening_type || 'owes_you' };
+
+    if (what !== 'items' && !body.state_code) noState++;
+
+    const key = name.toLowerCase();
+    const id = byName[key];
+    if (id) {
+      const at = toUpdate.findIndex((u) => u.id === id);
+      if (at >= 0) { toUpdate[at] = { id, body }; repeated++; }   // named twice in the file
+      else toUpdate.push({ id, body });
+    } else if (key in addedAt) {
+      toAdd[addedAt[key]] = body;                                 // the later row wins
+      repeated++;
+    } else {
+      addedAt[key] = toAdd.length;
+      toAdd.push(body);
+    }
+  }
+
+  return { toAdd, toUpdate, added: toAdd.length, updated: toUpdate.length,
+           repeated, noState };
 }
 
 /* ===================== the blank forms ===================== */

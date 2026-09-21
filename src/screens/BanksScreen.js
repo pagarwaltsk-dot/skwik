@@ -57,6 +57,17 @@ export default function BanksScreen({ navigation }) {
       is_default: !!edit.is_default,
       is_active: true,
     };
+    // ONE DEFAULT, NOT THREE.
+    //
+    // Marking an account as the default did not unmark the one before it, so a
+    // shop could end up with two or three "DEFAULT" chips and every screen
+    // that asks for the default account getting whichever came back first.
+    if (body.is_default) {
+      const clear = supabase.from('bank_accounts').update({ is_default: false })
+        .eq('org_id', org.id);
+      const { error: cErr } = await (edit.id ? clear.neq('id', edit.id) : clear);
+      if (cErr) return Alert.alert('Could not save', sayPlainly(cErr));
+    }
     const { error } = edit.id
       ? await supabase.from('bank_accounts').update(body).eq('id', edit.id)
       : await supabase.from('bank_accounts').insert(body);

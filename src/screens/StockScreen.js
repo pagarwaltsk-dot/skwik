@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, FlatList, TextInput } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { supabase } from '../lib/supabase';
+import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { num, qty as qtyText, today } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
@@ -31,12 +31,18 @@ export default function StockScreen({ navigation }) {
     let on = true;
     (async () => {
       if (!detailed) {
-        const { data } = await supabase.from('stock_in_hand').select('*').order('name');
+      // EVERY ROW, NOT THE FIRST THOUSAND.
+      // PostgREST stops at 1,000 and says nothing, so a shop past that simply
+      // had no stock for the rest of its items — shown as nothing in hand, and
+      // refused when it tried to move them.
+        const data = await allRows(() => supabase.from('stock_in_hand')
+          .select('*').order('name').order('item_id'));
         if (on) setRows(data || []);
         return;
       }
-      const [{ data: st }, { data: gs }] = await Promise.all([
-        supabase.from('stock_in_hand_detail').select('*').order('item_name'),
+      const [st, { data: gs }] = await Promise.all([
+        allRows(() => supabase.from('stock_in_hand_detail')
+          .select('*').order('item_name').order('item_id')),
         showGodowns(org) ? supabase.from('godowns').select('*').order('name')
                          : Promise.resolve({ data: [] }),
       ]);
