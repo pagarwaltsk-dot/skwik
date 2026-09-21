@@ -79,16 +79,45 @@ export default function UdharScreen({ navigation }) {
         .catch(() => Alert.alert('No WhatsApp', 'WhatsApp is not installed on this phone.')));
   };
 
+  const [queue, setQueue] = useState(null);
+  const [at, setAt] = useState(0);
+
   const askAll = () => {
     const withPhone = list.filter((r) => String(r.phone || '').replace(/\D/g, '').length >= 10);
     if (!withPhone.length) {
       return Alert.alert('No numbers', 'None of these customers has a phone number saved. '
         + 'Add it under Customers and the reminder can go straight to him.');
     }
+    // IT SAID "ONCE FOR EACH" AND OPENED ONCE.
+    //
+    // This called ask(withPhone[0]) and stopped. He read "Ask 14 of them?",
+    // pressed Start, sent one message and came back to a screen that had
+    // forgotten where it was — believing he had reminded fourteen customers
+    // when he had reminded one. It walks the list now and says where he is.
     Alert.alert(`Ask ${withPhone.length} of them?`,
-      'WhatsApp opens once for each, with the message already written. Send it '
-      + 'and come back for the next one.',
-      [{ text: 'Not now' }, { text: 'Start', onPress: () => ask(withPhone[0]) }]);
+      'WhatsApp opens for the first one, with the message already written. '
+      + 'Send it, come back, and Skwik will offer you the next.',
+      [{ text: 'Not now' },
+       { text: 'Start', onPress: () => { setQueue(withPhone); askFrom(withPhone, 0); } }]);
+  };
+
+  // The queue holds the customers as they were when he pressed Start. Coming
+  // back from WhatsApp reloads the list underneath, which is right — but the
+  // queue must not be thrown away by that reload, or he would be back to
+  // sending exactly one.
+  // One at a time, and after each one he is told how many are left.
+  const askFrom = (arr, i) => {
+    if (i >= arr.length) {
+      setQueue(null);
+      return Alert.alert('That is all of them', `${arr.length} reminder${arr.length === 1 ? '' : 's'} sent.`);
+    }
+    ask(arr[i]);
+    setAt(i);
+  };
+
+  const askNext = () => {
+    if (!queue) return;
+    askFrom(queue, at + 1);
   };
 
   return (
@@ -170,9 +199,25 @@ export default function UdharScreen({ navigation }) {
         }
         ListFooterComponent={
           side === 'owes_you' && list.length > 1 ? (
+            queue ? (
+              <View style={{ margin: 14 }}>
+                <TouchableOpacity style={[S.btn, { backgroundColor: C.wa }]} onPress={askNext}>
+                  <Text style={S.btnText}>
+                    Next reminder ({at + 2} of {queue.length})
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setQueue(null)}
+                  style={{ paddingVertical: 12, alignItems: 'center' }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: C.muted }}>
+                    Stop here — {at + 1} sent
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
             <TouchableOpacity style={[S.btn, { margin: 14, backgroundColor: C.wa }]} onPress={askAll}>
               <Text style={S.btnText}>Ask them all, one by one</Text>
             </TouchableOpacity>
+            )
           ) : null
         }
       />

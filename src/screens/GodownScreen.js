@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
-import { supabase } from '../lib/supabase';
+import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt0, num, qty as qtyText, today } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
@@ -35,10 +35,13 @@ export default function GodownScreen({ navigation }) {
   const seq = useRef(0);
 
   const load = useCallback(async () => {
-    const [{ data: gs }, { data: st }, { data: its }] = await Promise.all([
+    // the stock rows are one per item PER STORE per batch, so a few hundred
+    // items is already past the 1,000 the server hands back without a word
+    const [{ data: gs }, st, its] = await Promise.all([
       supabase.from('godowns').select('*').order('name'),
-      supabase.from('stock_in_hand_detail').select('*'),
-      supabase.from('items').select('id, name, unit').eq('is_active', true).order('name'),
+      allRows(() => supabase.from('stock_in_hand_detail').select('*').order('item_id')),
+      allRows(() => supabase.from('items').select('id, name, unit')
+        .eq('is_active', true).order('name').order('id')),
     ]);
     setList(gs || []);
     setStock(st || []);

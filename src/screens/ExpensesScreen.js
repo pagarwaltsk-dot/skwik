@@ -28,19 +28,42 @@ export default function ExpensesScreen({ navigation }) {
   const [amount, setAmount] = useState('');
   const [note, setNote]   = useState('');
   const [mode, setMode]   = useState('cash');
+  // WHICH BANK THE MONEY LEFT.
+  //
+  // This screen had a Cash/Bank switch and no account behind it, so every
+  // bank expense went in with no account on it — and the bank book filters by
+  // account, so rent and salary paid from the bank appeared in no bank book at
+  // all and the closing balance was overstated by the whole of it. A shop
+  // reconciling against its own statement found it short by its own rent.
+  const [monthSpent, setMonthSpent] = useState(0);
+  const [accounts, setAccounts] = useState([]);
+  const [account, setAccount]   = useState(null);
   const [busy, setBusy]   = useState(false);
   const [editing, setEditing] = useState(null);
 
   const fAmt = useRef(null), fNote = useRef(null);
 
   const load = useCallback(async () => {
-    const [{ data: xs }, { data: hs }] = await Promise.all([
+    const [{ data: xs }, { data: hs }, { data: bs }, { data: ms }] = await Promise.all([
       supabase.from('expenses').select('*').order('edate', { ascending: false })
         .order('created_at', { ascending: false }).limit(60),
       supabase.from('expense_heads').select('*').order('used', { ascending: false }).limit(12),
+      supabase.from('bank_accounts').select('id, name, is_default, active')
+        .order('is_default', { ascending: false }).order('name'),
+      // THIS MONTH'S TOTAL CAME OFF THE LIST, AND THE LIST IS SIXTY ROWS.
+      // A shop entering more than sixty expenses in a month saw a total short
+      // by the overflow, with nothing to say so. It has its own query now,
+      // which asks for the month and nothing else.
+      supabase.from('expenses').select('amount')
+        .gte('edate', today().slice(0, 7) + '-01')
+        .lte('edate', today()),
     ]);
     setRows(xs || []);
     setHeads((hs || []).map((h) => h.head));
+    const live = (bs || []).filter((b) => b.active !== false);
+    setAccounts(live);
+    setAccount((a) => a || live.find((b) => b.is_default)?.id || live[0]?.id || null);
+    setMonthSpent((ms || []).reduce((t, x) => t + Number(x.amount || 0), 0));
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -55,7 +78,13 @@ export default function ExpensesScreen({ navigation }) {
     setBusy(true);
     try {
       const body = { org_id: org.id, head: h, amount: num(amount),
-                     mode, note: note.trim() || null };
+                     mode, note: note.trim() || null,
+                     account_id: mode === 'bank' ? account : null };
+      if (mode === 'bank' && !account) {
+        setBusy(false);
+        return Alert.alert('Which bank?',
+          'Add a bank account under Cash & bank accounts first, or mark this as Cash.');
+      }
       const { error } = editing
         ? await supabase.from('expenses').update(body).eq('id', editing.id)
         : await supabase.from('expenses').insert({ ...body, edate: today() });
@@ -81,8 +110,7 @@ export default function ExpensesScreen({ navigation }) {
          load();
        } }]);
 
-  const month = rows.filter((x) => String(x.edate).slice(0, 7) === today().slice(0, 7))
-                    .reduce((t, x) => t + Number(x.amount || 0), 0);
+  const month = monthSpent;
 
   const suggestions = [...new Set([...heads, ...COMMON])].slice(0, 10);
 
@@ -141,6 +169,26 @@ export default function ExpensesScreen({ navigation }) {
               })}
             </View>
 
+            {mode === 'bank' && accounts.length > 1 && (
+              <View style={{ marginTop: 10 }}>
+                <Text style={S.label}>FROM WHICH ACCOUNT</Text>
+                <View style={[S.row, { gap: 8, marginTop: 6, flexWrap: 'wrap' }]}>
+                  {accounts.map((b) => {
+                    const on = account === b.id;
+                    return (
+                      <TouchableOpacity key={b.id} onPress={() => setAccount(b.id)}
+                        style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 9,
+                                 borderWidth: 1, borderColor: on ? C.accent : C.line,
+                                 backgroundColor: on ? C.accentSoft : C.surface }}>
+                        <Text style={{ fontSize: 13, fontWeight: '700',
+                                       color: on ? C.accent : C.muted }}>{b.name}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+
             <Text style={[S.label, { marginTop: 14 }]}>NOTE (OPTIONAL)</Text>
             <Box ref={fNote} onSubmit={save} style={{ marginTop: 6 }} value={note}
               onChangeText={setNote} placeholder="September, shop rent" />
@@ -162,7 +210,9 @@ export default function ExpensesScreen({ navigation }) {
         renderItem={({ item: x }) => (
           <TouchableOpacity
             onPress={() => { setEditing(x); setHead(x.head); setAmount(String(Number(x.amount)));
-                             setNote(x.note || ''); setMode(x.mode || 'cash'); }}
+                             setNote(x.note || ''); setMode(x.mode || 'cash');
+                             setAccount(x.account_id || accounts.find((b) => b.is_default)?.id
+                                        || accounts[0]?.id || null); }}
             onLongPress={() => remove(x)}
             style={[S.hit, { paddingHorizontal: 16 }]}>
             <View style={{ flex: 1 }}>

@@ -4,7 +4,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
-import { supabase } from '../lib/supabase';
+import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { computeBill, fmt0, num, taxModeFor } from '../lib/money';
 import { planSample } from '../lib/sample';
@@ -71,9 +71,11 @@ export default function SampleScreen({ navigation }) {
   const makePlan = async () => {
     setBusy('planning');
     try {
-      const [{ data: items }, { data: parties }, { data: stock }, recs] = await Promise.all([
-        supabase.from('items').select('*').eq('is_active', true),
-        supabase.from('parties').select('*'),
+      const [items, parties, { data: stock }, recs] = await Promise.all([
+        // unpaged, these stopped at 1,000 — and a shop past that got a NEW
+        // customer invented for one it already had
+        allRows(() => supabase.from('items').select('*').eq('is_active', true).order('id')),
+        allRows(() => supabase.from('parties').select('*').order('id')),
         supabase.rpc('stock_now'),
         lookAtMoney(),
       ]);

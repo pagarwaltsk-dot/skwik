@@ -114,7 +114,10 @@ export default function PartiesScreen({ navigation }) {
       state_code: edit.state_code || org.state_code,
       state_name: edit.state_name || org.state_name,
       price_list: Number(edit.price_list) === 2 ? 2 : 1,
-      opening_balance: num(edit.opening_balance),
+      // the amount is a plain number; which way it runs is opening_type's job.
+      // A minus typed in here used to be stored as a minus, and the ledger and
+      // the udhar list then disagreed about that customer.
+      opening_balance: Math.abs(num(edit.opening_balance)),
       opening_type: edit.opening_type,
       opening_date: edit.opening_date || null,
     };

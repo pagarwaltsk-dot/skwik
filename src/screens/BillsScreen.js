@@ -87,8 +87,21 @@ export default function BillsScreen({ navigation }) {
     });
   }, [rows, q, kind]);
 
+  // WHAT "SALES SHOWN" ACTUALLY MEANT.
+  //
+  // This added up everything on screen except purchases — so a 5,000 credit
+  // note ADDED 5,000 to the day's sales, and a bill he had cancelled, drawn
+  // struck through two inches below, still counted in full. The heading said
+  // SALES SHOWN. It does now: cancelled bills are out, and a return comes off
+  // instead of going on.
   const dayTotal = useMemo(
-    () => shown.reduce((sum, v) => sum + (v.vtype === 'purchase' ? 0 : Number(v.total) || 0), 0),
+    () => shown.reduce((sum, v) => {
+      if (v.cancelled_at) return sum;
+      const amt = Number(v.total) || 0;
+      if (v.vtype === 'purchase' || v.vtype === 'purchase_return') return sum;
+      if (v.vtype === 'sale_return') return sum - amt;
+      return sum + amt;
+    }, 0),
     [shown]);
 
   /* ---------------- one bill ---------------- */
