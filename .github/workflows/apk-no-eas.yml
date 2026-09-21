@@ -25,6 +25,12 @@ jobs:
       - name: Set up the Android tools
         uses: android-actions/setup-android@v3
         with:
+          # The default here is "tools platform-tools". Google removed the
+          # package named tools from the SDK repository, so sdkmanager goes
+          # looking for something that no longer exists and the whole step
+          # dies with "Failed to find package 'tools'". Everything else the
+          # build needs is already on the runner, and Gradle fetches the exact
+          # platform and build-tools it wants by itself.
           packages: platform-tools
           accept-android-sdk-licenses: true
 
@@ -40,9 +46,9 @@ jobs:
               echo ""
               echo "**It stopped at: $1**"
               echo ""
-              echo '```'
+              echo "<pre>"
               tail -n 80 "$LOG"
-              echo '```'
+              echo "</pre>"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
@@ -56,4 +62,56 @@ jobs:
           npm ci 2>&1 | tail -n 40 | tee -a "$LOG" || fail "npm ci"
 
           echo "" | tee -a "$LOG"
-          echo "=== making the android folder ===" |
+          echo "=== making the android folder ===" | tee -a "$LOG"
+          npx expo prebuild --platform android --no-install --clean 2>&1 \
+            | tail -n 60 | tee -a "$LOG" || fail "expo prebuild"
+
+          # A React Native build needs more memory than the template asks for,
+          # and a GitHub runner has two cores. Without this it dies part way
+          # through with an out-of-memory that names no file.
+          echo "" | tee -a "$LOG"
+          echo "=== giving gradle enough memory ===" | tee -a "$LOG"
+          {
+            echo ""
+            echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m"
+            echo "org.gradle.parallel=false"
+            echo "org.gradle.daemon=false"
+          } >> android/gradle.properties
+          tail -n 4 android/gradle.properties | tee -a "$LOG"
+
+          echo "" | tee -a "$LOG"
+          echo "=== compiling ===" | tee -a "$LOG"
+          cd android
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 \
+            | tail -n 120 | tee -a "$LOG" || fail "gradle assembleRelease"
+          cd ..
+
+          APK=$(find android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          if [ -z "$APK" ]; then
+            find android/app/build/outputs -type f 2>&1 | tee -a "$LOG"
+            fail "finding the .apk gradle should have made"
+          fi
+          VER=$(node -p "require('./app.json').expo.version")
+          cp "$APK" "skwik-$VER.apk"
+          ls -lh "skwik-$VER.apk" | tee -a "$LOG"
+          echo "APK_NAME=skwik-$VER.apk" >> "$GITHUB_ENV"
+
+      - name: Attach it to this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: skwik-apk
+          path: ${{ env.APK_NAME }}
+          if-no-files-found: error
+
+      - name: Where to find it
+        run: |
+          {
+            echo "## The APK is ready"
+            echo ""
+            echo "Scroll to the bottom of this page, under **Artifacts**, and"
+            echo "download **skwik-apk**. It comes as a zip; the .apk is inside."
+            echo ""
+            echo "Signed with the debug key: fine for testing, not for the Play"
+            echo "Store, and it will not install on top of an EAS build."
+          } >> "$GITHUB_STEP_SUMMARY"
