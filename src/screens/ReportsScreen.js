@@ -81,6 +81,7 @@ export default function ReportsScreen({ navigation }) {
   const [lines, setLines] = useState([]);
   const [pnl, setPnl] = useState(null);
   const [summary, setSummary] = useState(null);
+  const [rcm, setRcm] = useState(null);         // the reverse-charge figures
 
   // THE WHOLE YEAR USED TO COME DOWN THE WIRE.
   //
@@ -101,6 +102,15 @@ export default function ReportsScreen({ navigation }) {
     setBusy(true);
     try {
       const [from, to] = rangeOf(range);
+
+      // REVERSE CHARGE. Asked for on its own so that a phone running ahead of
+      // the database — he has updated the app but not run the SQL yet — still
+      // gets the rest of his reports instead of an error.
+      supabase.rpc('rcm_summary',
+        { p_from: from || '2000-04-01', p_to: to || today() })
+        .then((r) => setRcm(r.error ? null : r.data))
+        .catch(() => setRcm(null));
+
       const sum = await supabase.rpc('report_summary',
         { p_from: from || '2000-04-01', p_to: to || today() });
       if (!sum.error && sum.data) {
@@ -512,6 +522,46 @@ export default function ReportsScreen({ navigation }) {
                   <Text style={S.hint}>
                     A rough figure from your own bills, to check against the portal.
                     It is not your return, and your accountant has the last word.
+                  </Text>
+                </Card>
+              )}
+
+              {/* WHAT HE OWES BECAUSE NOBODY CHARGED HIM.
+                *
+                * Freight, mostly. The transporter charges no GST and the shop
+                * owes it, and until now Skwik neither worked it out nor said
+                * so — the GST figure above was short by every rupee of it.
+                *
+                * The two box numbers are the ones a GSTR-3B asks for, so his
+                * accountant types them in rather than working them out.
+                */}
+              {!!rcm && Number(rcm.entries) > 0 && (
+                <Card title="GST you owe on freight and the like">
+                  <Line k="Value of those supplies"
+                        v={fmt(rcm.table_3_1_d?.taxable_value)} />
+                  {Number(rcm.table_3_1_d?.central_tax) > 0 && (
+                    <Line k="Central tax" v={fmt(rcm.table_3_1_d?.central_tax)} />
+                  )}
+                  {Number(rcm.table_3_1_d?.state_tax) > 0 && (
+                    <Line k="State tax" v={fmt(rcm.table_3_1_d?.state_tax)} />
+                  )}
+                  {Number(rcm.table_3_1_d?.integrated_tax) > 0 && (
+                    <Line k="Integrated tax" v={fmt(rcm.table_3_1_d?.integrated_tax)} />
+                  )}
+                  <Line k="To pay in cash" v={fmt(rcm.pay_in_cash)} strong />
+                  {rcm.table_4_a_3?.can_claim
+                    ? <Line k="You may claim back" v={fmt(rcm.table_4_a_3?.total_tax)} />
+                    : <Line k="What it costs you" v={fmt(rcm.net_cost)} />}
+                  <Text style={S.hint}>
+                    {rcm.note}
+                  </Text>
+                  <Text style={[S.hint, { marginTop: 6 }]}>
+                    For your accountant: this is GSTR-3B box 3.1(d)
+                    {rcm.table_4_a_3?.can_claim ? ', and the same tax again in 4(A)(3).' : '.'}
+                    {' '}From {Number(rcm.purchase_bills)} purchase bill
+                    {Number(rcm.purchase_bills) === 1 ? '' : 's'} and{' '}
+                    {Number(rcm.money_out)} Money out entr
+                    {Number(rcm.money_out) === 1 ? 'y' : 'ies'}.
                   </Text>
                 </Card>
               )}

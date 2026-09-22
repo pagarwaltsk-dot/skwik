@@ -189,10 +189,18 @@ export const S = {
   // on the bill line. One of them changes the tax on the bill and the other
   // swaps the product. They are 40 points now, which is what a phone asks
   // for, and they still read as the quiet secondary things they are.
-  tapPill: { borderWidth: 1, borderColor: C.greyB, borderStyle: 'dashed', borderRadius: 20,
-             paddingHorizontal: 12, paddingVertical: 10, minHeight: 40,
+  // SMALLER TO LOOK AT, NOT SMALLER TO HIT.
+  //
+  // He asked for the Change and note buttons to be smaller — they crowd the
+  // line and the eye goes to them before it goes to the figures. But a 55
+  // year old thumb still has to land on them, so the box shrinks and every
+  // one of them carries hitSlop to keep the touch area where it was.
+  tapPill: { borderWidth: 1, borderColor: C.greyB, borderStyle: 'dashed', borderRadius: 16,
+             paddingHorizontal: 9, paddingVertical: 5, minHeight: 28,
              justifyContent: 'center' },
-  tapPillText: { fontSize: 12, fontWeight: '600', color: C.muted },
+  tapPillText: { fontSize: 11, fontWeight: '600', color: C.muted },
+  // the slop that gives those small pills a full-sized touch area
+  pillSlop: { top: 10, bottom: 10, left: 8, right: 8 },
 
   // a whole row to press: the same shape, full width
   wideBtn: { borderWidth: 1, borderColor: C.line, borderRadius: 10, paddingVertical: 14,

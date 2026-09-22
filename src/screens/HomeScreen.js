@@ -57,6 +57,7 @@ export default function HomeScreen({ navigation }) {
   // they are still on their way is what flashed "0" on the way back from a
   // search — and a zero is an answer a shopkeeper reads and believes.
   const [book, setBook] = useState(null);
+  const [bookFailed, setBookFailed] = useState(false);
   const [fyTotal, setFyTotal] = useState(0);
   const [q, setQ] = useState('');
   const [found, setFound] = useState(null);
@@ -86,6 +87,7 @@ export default function HomeScreen({ navigation }) {
         ]);
         if (!on) return;
 
+        setBookFailed(false);
         const rows = [
           ...(vs || []).map((v) => ({
             id: 'v' + v.id, at: v.created_at,
@@ -132,6 +134,12 @@ export default function HomeScreen({ navigation }) {
       } catch (e) {
         // A figure that could not be worked out is left standing rather than
         // drawn as nil, which reads as a day with no trade in it.
+        //
+        // THE DAY BOOK ITSELF IS DIFFERENT. If it could not be read, leaving
+        // it empty meant the footer said "Reading the day book…" for as long
+        // as the app stayed open — so a shop with no signal was told, quietly
+        // and for ever, that its books were still loading. Say what happened.
+        if (on) setBookFailed(true);
       }
     })();
     return () => { on = false; };
@@ -540,7 +548,9 @@ export default function HomeScreen({ navigation }) {
       <Foot style={{ borderTopWidth: 1, borderTopColor: C.line, gap: 8 }}>
         <Text style={{ flex: 1, fontSize: 11.5, color: C.muted }}>
           {book ? `${book.rows.length} entr${book.rows.length === 1 ? 'y' : 'ies'} on `
-            + `${day === today() ? 'today' : dmy(day)}` : 'Reading the day book…'}
+            + `${day === today() ? 'today' : dmy(day)}`
+            : bookFailed ? 'No signal — today\u2019s entries could not be read'
+            : 'Reading the day book…'}
           {book?.bills ? ` · ${book.bills} bill${book.bills === 1 ? '' : 's'}` : ''}
         </Text>
         <View style={{ width: 7, height: 7, borderRadius: 4,

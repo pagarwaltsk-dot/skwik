@@ -813,9 +813,19 @@ export function tallyVouchersXml({ org, vouchers, linesByVoucher }) {
 // half way, or on top of a book that is partly rebuilt, without making
 // duplicates.
 
-export const BACKUP_VERSION = 1;
+// 2: money out is in the file. A backup taken by an older Skwik is still
+//    read — it simply has no expenses in it.
+export const BACKUP_VERSION = 2;
 
-export function buildBackup({ org, items, parties, vouchers, lines, payments }) {
+// WHAT "TAKE A COPY FIRST" HAS TO MEAN.
+//
+// Two screens send him here before something destroys his books — emptying
+// the firm, and closing the account. The file they pointed him at held his
+// bills and his customers but not a rupee of what he SPENT: rent, salary,
+// transport, the lot. A shop that restored from it would have every sale it
+// ever made and no costs at all, and would believe it had earned far more
+// than it did.
+export function buildBackup({ org, items, parties, vouchers, lines, payments, expenses }) {
   return JSON.stringify({
     skwik_backup: BACKUP_VERSION,
     taken_at: new Date().toISOString(),
@@ -826,6 +836,7 @@ export function buildBackup({ org, items, parties, vouchers, lines, payments }) 
       vouchers: (vouchers || []).length,
       lines: (lines || []).length,
       payments: (payments || []).length,
+      expenses: (expenses || []).length,
     },
     org: org || null,
     items: items || [],
@@ -833,6 +844,7 @@ export function buildBackup({ org, items, parties, vouchers, lines, payments }) 
     vouchers: vouchers || [],
     lines: lines || [],
     payments: payments || [],
+    expenses: expenses || [],
   }, null, 1);
 }
 
@@ -859,6 +871,8 @@ export function readBackup(text) {
     vouchers: d.vouchers || [],
     lines: d.lines || [],
     payments: d.payments || [],
+    // absent from a version-1 file, which is still perfectly good
+    expenses: d.expenses || [],
   };
 }
 

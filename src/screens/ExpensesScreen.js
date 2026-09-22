@@ -4,7 +4,8 @@ import { useFocusEffect } from '@react-navigation/native';
 
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { fmt0, num, settle, today } from '../lib/money';
+import { fmt0, n2, num, settle, today } from '../lib/money';
+import { showRcmIn } from '../lib/features';
 import { sayPlainly } from '../lib/offline';
 import { Box, Head, Screen, Foot } from '../components/Chrome';
 import { C, S } from '../theme';
@@ -28,6 +29,14 @@ export default function ExpensesScreen({ navigation }) {
   const [amount, setAmount] = useState('');
   const [note, setNote]   = useState('');
   const [mode, setMode]   = useState('cash');
+  // FREIGHT, AND THE TAX ON IT THAT IS HIS TO PAY.
+  //
+  // A goods transport agency charges no GST; under section 9(3) the shop owes
+  // it. Money out had nowhere to put that, so every rupee of freight tax was
+  // missing from what Skwik said the shop owed. `amount` stays what he handed
+  // the transporter — the tax goes to the government, not to him.
+  const [rcm, setRcm]     = useState(false);
+  const [rcmRate, setRcmRate] = useState('5');
   // WHICH BANK THE MONEY LEFT.
   //
   // This screen had a Cash/Bank switch and no account behind it, so every
@@ -68,7 +77,10 @@ export default function ExpensesScreen({ navigation }) {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const clear = () => { setEditing(null); setHead(''); setAmount(''); setNote(''); setMode('cash'); };
+  // Reverse charge is cleared with everything else. Left ticked, the next
+  // entry — rent, tea — would quietly carry freight tax on it.
+  const clear = () => { setEditing(null); setHead(''); setAmount(''); setNote('');
+                        setMode('cash'); setRcm(false); setRcmRate('5'); };
 
   const save = async () => {
     const h = head.trim();
@@ -77,9 +89,17 @@ export default function ExpensesScreen({ navigation }) {
 
     setBusy(true);
     try {
+      // The tax is worked out ON TOP of what he paid, and split the way a
+      // local supply is split — a small shop's transporter is almost always
+      // in its own state. Skwik never guesses an out-of-state transporter.
+      const rate = rcm ? num(rcmRate) : 0;
+      const tax  = rcm ? n2((num(amount) * rate) / 100) : 0;
+      const half = n2(tax / 2);
       const body = { org_id: org.id, head: h, amount: num(amount),
                      mode, note: note.trim() || null,
-                     account_id: mode === 'bank' ? account : null };
+                     account_id: mode === 'bank' ? account : null,
+                     reverse_charge: !!rcm, gst_rate: rate,
+                     cgst: half, sgst: n2(tax - half), igst: 0 };
       if (mode === 'bank' && !account) {
         setBusy(false);
         return Alert.alert('Which bank?',
@@ -169,6 +189,55 @@ export default function ExpensesScreen({ navigation }) {
               })}
             </View>
 
+            {showRcmIn(org) && (
+              <TouchableOpacity onPress={() => setRcm(!rcm)}
+                style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 14 }}>
+                <View style={{ width: 20, height: 20, borderRadius: 6, borderWidth: 1.5,
+                               alignItems: 'center', justifyContent: 'center', marginTop: 1,
+                               borderColor: rcm ? C.accent : C.greyB,
+                               backgroundColor: rcm ? C.accent : 'transparent' }}>
+                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                    {rcm ? '\u2713' : ''}
+                  </Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 13.5, color: C.ink }}>
+                    He charged no GST \u2014 the GST on this is mine to pay
+                  </Text>
+                  <Text style={{ fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 17 }}>
+                    {rcm
+                      ? `${rcmRate}% of \u20B9${fmt0(num(amount))} is `
+                        + `\u20B9${fmt0(n2((num(amount) * num(rcmRate)) / 100))}, which you `
+                        + 'hand to the government, not to him.'
+                      : 'Freight from a transporter is the usual one.'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
+
+            {rcm && (
+              <View style={{ marginTop: 10 }}>
+                <Text style={S.label}>AT WHAT RATE</Text>
+                <View style={[S.row, { gap: 8, marginTop: 6, flexWrap: 'wrap' }]}>
+                  {['5', '12', '18'].map((r) => {
+                    const on = rcmRate === r;
+                    return (
+                      <TouchableOpacity key={r} onPress={() => setRcmRate(r)}
+                        style={{ paddingHorizontal: 16, paddingVertical: 11, borderRadius: 9,
+                                 borderWidth: 1, borderColor: on ? C.accent : C.line,
+                                 backgroundColor: on ? C.accentSoft : C.surface }}>
+                        <Text style={{ fontSize: 14, fontWeight: '700',
+                                       color: on ? C.accent : C.muted }}>{r}%</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <Text style={[S.hint, { marginTop: 6 }]}>
+                  Goods transport is 5%. Ask your accountant for anything else.
+                </Text>
+              </View>
+            )}
+
             {mode === 'bank' && accounts.length > 1 && (
               <View style={{ marginTop: 10 }}>
                 <Text style={S.label}>FROM WHICH ACCOUNT</Text>
@@ -210,6 +279,8 @@ export default function ExpensesScreen({ navigation }) {
         renderItem={({ item: x }) => (
           <TouchableOpacity
             onPress={() => { setEditing(x); setHead(x.head); setAmount(String(Number(x.amount)));
+                             setRcm(!!x.reverse_charge);
+                             setRcmRate(String(Number(x.gst_rate) || 5));
                              setNote(x.note || ''); setMode(x.mode || 'cash');
                              setAccount(x.account_id || accounts.find((b) => b.is_default)?.id
                                         || accounts[0]?.id || null); }}

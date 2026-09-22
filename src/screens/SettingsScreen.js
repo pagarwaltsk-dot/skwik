@@ -4,8 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import {
-  showBatch, showExpenses, showExpiry, showGodowns, showPurchase, showRecon,
-  showReturns, showReports, showTransfer, showStock, showVariants,
+  showBatch, showExpenses, showExpiry, showGodowns, showPurchase, showRcmIn, showRcmOut, showRecon, showReports, showReturns, showStock, showTransfer, showVariants,
 } from '../lib/features';
 import { useApp } from '../AppContext';
 import { STATES } from './OnboardScreen';
@@ -256,6 +255,18 @@ export default function SettingsScreen({ navigation }) {
                 note="Bringing items and parties in from Tally or Excel, and taking your books out."
                 value={showTransfer(org)}
                 onValueChange={(v) => saveOrg({ show_transfer: v })} />
+        {!!org?.is_gst_registered && (
+          <Toggle label="GST I owe on freight and the like" disabled={busy}
+                  note="When a transporter charges you no GST, the GST is yours to pay. Skwik works it out on a purchase bill or on a Money out entry, puts it in GST owed, and gives your accountant the figure for GSTR-3B."
+                  value={showRcmIn(org)}
+                  onValueChange={(v) => saveOrg({ rcm_purchase_enabled: v })} />
+        )}
+        {!!org?.is_gst_registered && !org?.is_composition && (
+          <Toggle label="Sales where the buyer pays the GST" disabled={busy}
+                  note="Rare. Only for the few supplies the law names, and almost never for goods sold over a counter. Left off, the tick stays off your bill screen so it cannot be ticked by mistake."
+                  value={showRcmOut(org)}
+                  onValueChange={(v) => saveOrg({ rcm_sales_enabled: v })} />
+        )}
       </Section>
 
       {org?.mode === 'estimate' && (
