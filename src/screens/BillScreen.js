@@ -264,6 +264,7 @@ export default function BillScreen({ route, navigation }) {
           qty: String(Number(l.qty)), rate: String(Number(l.rate)),
           disc: Number(l.disc) || 0,
           batch: l.batch || '', expiry: l.expiry || '',
+          expiryText: showDate(l.expiry || ''),
           // empty means this line followed the bill, which is how it was saved
           godown_id: l.godown_id || null,
           rateEdited: true, flag: !!l.flag, checked: !!l.checked, note: l.note || '',
@@ -570,6 +571,7 @@ export default function BillScreen({ route, navigation }) {
     setLine(l.key, {
       batch: b.batch || '',
       expiry: b.expiry ? String(b.expiry).slice(0, 10) : '',
+      expiryText: b.expiry ? showDate(String(b.expiry).slice(0, 10)) : '',
     });
     setPickFor(null);
   };
@@ -1454,7 +1456,7 @@ export default function BillScreen({ route, navigation }) {
               )}
 
               {(wantBatch || wantExpiry) && (
-                <View style={[S.row, { marginTop: 10, gap: 8 }]}>
+                <View style={[S.row, { marginTop: 10, gap: 8, alignItems: 'flex-start' }]}>
                   {wantBatch && (
                     <View style={{ flex: 1 }}>
                       <Text style={S.cellLabel}>Batch</Text>
@@ -1463,35 +1465,46 @@ export default function BillScreen({ route, navigation }) {
                         autoCapitalize="characters"
                         returnKeyType="next" submitBehavior="submit"
                         onChangeText={(t) => setLine(l.key, { batch: t })} />
-                      {/* Typing stays: a shop may hold stock Skwik was never
-                          told about, and a sale must never wait on a list. */}
-                      {isOut && (
-                        <TouchableOpacity hitSlop={S.pillSlop}
-                          style={[S.tapPill, { marginTop: 7, alignSelf: 'flex-start' }]}
-                          onPress={() => {
-                            const open = pickFor === l.key;
-                            setPickFor(open ? null : l.key);
-                            if (!open) loadBatches(l.item_id, lineGodown(l));
-                          }}>
-                          <Text style={S.tapPillText}>
-                            {pickFor === l.key ? 'close' : 'pick from stock'}
-                          </Text>
-                        </TouchableOpacity>
-                      )}
                     </View>
                   )}
                   {wantExpiry && (
                     <View style={{ flex: 1 }}>
                       <Text style={S.cellLabel}>Expiry</Text>
-                      <TextInput style={[S.cell, S.num]} value={l.expiry || ''}
-                        placeholder="2027-03-31" placeholderTextColor={C.faint}
+                      {/* Same trap as the supplier's bill date: he writes
+                          31/03/2027 and the database wanted the other way
+                          round. Read his way, kept the only way it stores. */}
+                      <TextInput style={[S.cell, S.num]} value={l.expiryText ?? (l.expiry || '')}
+                        placeholder="31-03-2027" placeholderTextColor={C.faint}
                         keyboardType="numbers-and-punctuation"
                         returnKeyType="next" submitBehavior="submit"
                         onSubmitEditing={() => qRef.current?.focus()}
-                        onChangeText={(t) => setLine(l.key, { expiry: t })} />
+                        onBlur={() => { const d = parseDate(l.expiryText ?? l.expiry);
+                                        setLine(l.key, d ? { expiry: d, expiryText: showDate(d) }
+                                                         : { expiry: '' }); }}
+                        onChangeText={(t) => setLine(l.key, { expiryText: t })} />
                     </View>
                   )}
                 </View>
+              )}
+
+              {/* AND THE PILL SITS ON ITS OWN LINE.
+                  Inside the batch column it made that column taller than the
+                  expiry one beside it, and the row centres what it holds — so
+                  the two labels and the two boxes stopped lining up. Typing
+                  stays possible either way: a shop may hold stock Skwik was
+                  never told about, and a sale must never wait on a list. */}
+              {isOut && wantBatch && (
+                <TouchableOpacity hitSlop={S.pillSlop}
+                  style={[S.tapPill, { marginTop: 8, alignSelf: 'flex-start' }]}
+                  onPress={() => {
+                    const open = pickFor === l.key;
+                    setPickFor(open ? null : l.key);
+                    if (!open) loadBatches(l.item_id, lineGodown(l));
+                  }}>
+                  <Text style={S.tapPillText}>
+                    {pickFor === l.key ? 'close' : 'pick a batch from stock'}
+                  </Text>
+                </TouchableOpacity>
               )}
 
               {/* WHAT IS LEFT, EARLIEST EXPIRY FIRST — the order a chemist

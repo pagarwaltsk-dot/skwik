@@ -301,10 +301,15 @@ export default function ReportsScreen({ navigation }) {
   // test that could never be true and the shopkeeper was told "Nothing in
   // this month" over a month of trade. The question has to be asked of
   // whichever road was taken.
+  //
+  // The last two terms are main's answer to the same fault, kept alongside:
+  // they ask the server's reply directly, so a month holding only heads this
+  // screen draws no card for still counts as a month with something in it.
   const anything = summary
     ? !!(sums.sales.n || sums.purchases.n || sums.estimates.n
          || sums.rates.length || sums.items.length || sums.days.length
-         || sums.returns.total)
+         || sums.returns.total
+         || (summary.heads || []).length || (summary.days || []).length)
     : vouchers.length > 0;
 
   // THE RETURN ITSELF.
@@ -470,6 +475,17 @@ export default function ReportsScreen({ navigation }) {
       ) : (
         <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 40 }}>
 
+          {/* THIS WHOLE PAGE WAS BLANK FOR EVERY SHOP THAT HAD RUN THE SQL.
+              *
+              * Making reports fast in 1.9.4 moved the figures onto the server:
+              * report_summary does the sums and the screen empties `vouchers`
+              * because it no longer needs the rows. But both halves of this
+              * page were still gated on `vouchers.length`, so the moment the
+              * fast road worked, the page said "Nothing in this month" and hid
+              * everything — the totals, the rate-wise split, the profit, AND
+              * the button that makes the GSTR-1 file. A shop could have four
+              * hundred bills in the month and be told it had none.
+              */}
           {!anything && (
             <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center',
                            marginTop: 40, lineHeight: 20 }}>
@@ -477,7 +493,7 @@ export default function ReportsScreen({ navigation }) {
             </Text>
           )}
 
-          {!!anything && (
+          {anything && (
             <>
               <Card title={`Sales — ${label}`}>
                 <Line k={`${sums.sales.n} bill${sums.sales.n === 1 ? '' : 's'}`} v="" />
