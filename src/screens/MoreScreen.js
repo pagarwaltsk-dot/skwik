@@ -44,18 +44,31 @@ export default function MoreScreen({ navigation }) {
       + 'The GST law (section 36) says you must keep your records for 72 '
       + 'months from the due date of your annual return. Take a copy under '
       + 'Import & export first if you do not have one.',
+      // THE DESTROY BUTTON DOES NOT SIT NEXT TO A HARMLESS ONE.
+      //
+      // Three buttons in a row on a small phone, with the copy-my-books one in
+      // the middle and the delete-everything one beside it, is a thumb-width
+      // away from a shop that no longer exists. Offer the copy on its own
+      // first; going on is a separate, deliberate answer.
       [{ text: 'Keep my account' },
        { text: isOwner ? 'Take a copy first' : ' ',
          onPress: isOwner ? () => navigation.navigate('Transfer') : undefined },
-       { text: 'Close it for good', style: 'destructive', onPress: confirmClose }]
+       { text: 'Go on', style: 'destructive', onPress: confirmClose }]
         .filter((b) => b.text.trim()));
   };
 
+  // The last thing he reads before his books stop existing names the shop, so
+  // it cannot be answered out of habit. Emptying the firm already asks for a
+  // password and a typed word; closing the account destroys strictly more and
+  // asked for neither.
   const confirmClose = () => {
     Alert.alert('Last check',
-      'This cannot be undone. Tap "Yes, close it" and your account is gone.',
+      (isOwner && org?.name
+        ? `${org.name} and everything in it will be deleted.\n\n`
+        : 'Your login will be deleted.\n\n')
+      + 'This cannot be undone by anyone. Nobody can get it back.',
       [{ text: 'Cancel' },
-       { text: 'Yes, close it', style: 'destructive', onPress: doClose }]);
+       { text: 'Delete it all', style: 'destructive', onPress: doClose }]);
   };
 
   const doClose = async () => {

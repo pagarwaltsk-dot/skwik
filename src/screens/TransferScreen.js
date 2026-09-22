@@ -333,17 +333,18 @@ export default function TransferScreen({ navigation }) {
         return out;
       };
 
-      const [items, parties, vouchers, lines, payments] = await Promise.all([
+      const [items, parties, vouchers, lines, payments, expenses] = await Promise.all([
         grab('items'), grab('parties'), grab('vouchers'),
-        grab('voucher_lines'), grab('payments'),
+        grab('voucher_lines'), grab('payments'), grab('expenses'),
       ]);
 
-      const text = buildBackup({ org, items, parties, vouchers, lines, payments });
+      const text = buildBackup({ org, items, parties, vouchers, lines, payments, expenses });
       const day = today();
       await send(`skwik-backup-${day}.json`, text, 'application/json');
 
       Alert.alert('Backup made',
-        `${vouchers.length} bills, ${items.length} items, ${parties.length} names.\n\n`
+        `${vouchers.length} bills, ${items.length} items, ${parties.length} names, `
+        + `${expenses.length} money-out entries.\n\n`
         + 'Keep it somewhere that is not this phone — Drive, or send it to '
         + 'yourself on WhatsApp.');
     } catch (e) {
@@ -473,6 +474,13 @@ export default function TransferScreen({ navigation }) {
       for (let i = 0; i < manual.length; i += 100) {
         const { error } = await supabase.from('payments')
           .upsert(manual.slice(i, i + 100).map(mine), { onConflict: 'id' });
+        if (error) throw error;
+      }
+
+      // Money out. Empty on a backup taken by an older Skwik.
+      for (let i = 0; i < (b.expenses || []).length; i += 100) {
+        const { error } = await supabase.from('expenses')
+          .upsert(b.expenses.slice(i, i + 100).map(mine), { onConflict: 'id' });
         if (error) throw error;
       }
 

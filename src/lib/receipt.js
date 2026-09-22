@@ -47,12 +47,22 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   const p = PAPER[String(width)] || PAPER['80'];
   const rcm = !!voucher.reverse_charge;
   // Under reverse charge the shop collects nothing, so no tax lines print.
-  const gst = voucher.tax_mode && voucher.tax_mode !== 'none' && !rcm;
+  const est0 = voucher.vtype === 'estimate' || org?.mode === 'estimate';
+  // AN ESTIMATE CARRIES NO TAX, WHATEVER THE BILL WAS SAVED WITH.
+  //
+  // A shop that starts on estimates and later switches GST on reopens an old
+  // estimate, and the bill keeps its vtype while the tax mode is worked out
+  // fresh. The slip then printed CGST and SGST under a heading that says it is
+  // not a tax invoice — two statements on one piece of paper that cannot both
+  // be true.
+  const gst = voucher.tax_mode && voucher.tax_mode !== 'none' && !rcm && !est0;
   // A roll is the only document some shops ever issue, so what is on it has to
   // stand on its own: HSN and the rate per line, not just a total.
-  const showHsn = hsnApplies(org) && voucher.vtype !== 'estimate';
+  // The same test the A4 page uses, so the two documents cannot disagree
+  // about whether HSN belongs on this bill.
+  const showHsn = hsnApplies(org) && !est0;
   const igst = voucher.tax_mode === 'igst';
-  const est = voucher.vtype === 'estimate' || org?.mode === 'estimate';
+  const est = est0;                       // worked out above, before the tax flag
 
   const title = voucher.vtype === 'sale_return' ? 'CREDIT NOTE'
     : voucher.vtype === 'purchase_return' ? 'DEBIT NOTE'
@@ -162,7 +172,7 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   <div class="tr"><span>Items</span><span>${fmt(items)}</span></div>
   ${less}
   ${extra}
-  <div class="tr"><span>Taxable</span><span>${fmt(voucher.taxable)}</span></div>
+  ${gst ? `<div class="tr"><span>Taxable</span><span>${fmt(voucher.taxable)}</span></div>` : ''}
   ${taxRows}${round}
   <div class="tot"><span>TOTAL</span><span>&#8377; ${fmt0(voucher.total)}</span></div>
   <div class="words muted">${esc(amountInWords(voucher.total))}</div>

@@ -24,12 +24,20 @@ function Sheet({ visible, title, hint, children, onClose }) {
   const gap = useKeyboardGap();
   const { height } = useWindowDimensions();
   const room = Math.max(260, Math.round((height - gap) * 0.9));
+  // AND THE SEARCH BOX HAS TO STAY WHERE HE PUT HIS THUMB.
+  //
+  // The sheet is anchored to the bottom of the screen, so its height was the
+  // height of whatever was in it: thirty-six states and the box sat near the
+  // top of the phone, two matches and the whole sheet collapsed down to sit on
+  // the keyboard, taking the box with it. Typing a letter moved the box he was
+  // typing into. Holding a floor under the sheet keeps it still.
+  const floor = Math.min(room, 440);
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end',
                      paddingBottom: gap }}>
         <View style={{ backgroundColor: C.bg, borderTopLeftRadius: 26, borderTopRightRadius: 26,
-                       padding: 18, maxHeight: room, flexShrink: 1 }}>
+                       padding: 18, maxHeight: room, minHeight: floor, flexShrink: 1 }}>
           <View style={[S.row, { marginBottom: 10 }]}>
             <Text style={{ flex: 1, fontSize: 20, fontWeight: '800', color: C.ink }}>{title}</Text>
             <TouchableOpacity onPress={onClose} style={{ padding: 6 }}>

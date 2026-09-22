@@ -129,6 +129,13 @@ export default function PartiesScreen({ navigation }) {
     setEdit(null); load();
   };
 
+  // ALL is not a kind anyone can be, so a name added from the All tab is
+  // added as a customer — that is what nearly every new name is.
+  const newKind = side === 'all' ? 'customer' : side;
+  // The + NEW button and the "add what he typed" row must open the very same
+  // form, or the two would drift apart the first time either is touched.
+  const startNew = (name = '') => setEdit({ ...empty, kind: newKind, name });
+
   const startEdit = (p) => setEdit({
     ...empty, ...p,
     phone: p.phone || '', gstin: p.gstin || '',
@@ -165,7 +172,7 @@ export default function PartiesScreen({ navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title="Customers & suppliers">
-        <TouchableOpacity onPress={() => setEdit({ ...empty, kind: side === 'all' ? 'customer' : side })}
+        <TouchableOpacity onPress={() => startNew()}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
           <Text style={{ fontSize: 15, fontWeight: '800', color: C.accent }}>+ NEW</Text>
         </TouchableOpacity>
@@ -197,12 +204,31 @@ export default function PartiesScreen({ navigation }) {
         keyExtractor={(i) => i.id}
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 30 }}
         ListEmptyComponent={
-          <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 30,
-                         lineHeight: 20 }}>
-            No {side === 'supplier' ? 'suppliers' : side === 'all' ? 'names' : 'customers'} yet.
-            Names save themselves when you make a bill, or add one here with the
-            details filled in.
-          </Text>}
+          // A SEARCH THAT FINDS NOTHING IS THE MOMENT TO ADD THE NAME.
+          //
+          // He searched for a customer who was not in the book yet, got an
+          // empty list, then went up to + NEW and typed the same name a
+          // second time. The name is already in his hand here, so the row
+          // carries it straight into the form.
+          q.trim() ? (
+            <TouchableOpacity onPress={() => startNew(q.trim())}
+              style={{ paddingVertical: 18, marginTop: 14, borderBottomWidth: 1,
+                       borderBottomColor: C.line }}>
+              <Text style={{ fontSize: 16.5, fontWeight: '800', color: C.accent }}>
+                + Add {q.trim()} as a new {newKind}
+              </Text>
+              <Text style={{ fontSize: 12, fontWeight: '600', color: C.muted, marginTop: 3 }}>
+                Nobody by that name in the book yet.
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 30,
+                           lineHeight: 20 }}>
+              No {side === 'supplier' ? 'suppliers' : side === 'all' ? 'names' : 'customers'} yet.
+              Names save themselves when you make a bill, or add one here with the
+              details filled in.
+            </Text>
+          )}
         renderItem={({ item }) => (
           <View style={[S.row, { borderBottomWidth: 1, borderBottomColor: C.line }]}>
             <TouchableOpacity
@@ -274,10 +300,21 @@ export default function PartiesScreen({ navigation }) {
               value={edit.address} onChangeText={set('address')}
               placeholder="Shop and street" />
 
-            <Label>Which price list</Label>
-            <Pick value={Number(edit.price_list)} onChange={set('price_list')}
-              options={[{ v: 1, label: org?.price1_name || 'Wholesale' },
-                        { v: 2, label: org?.price2_name || 'Retail' }]} />
+            {/* A price list is what you CHARGE somebody, so it is a question
+                about a customer only. Asking it about a supplier — who sets
+                his own rates — is a question with no answer, and he was
+                answering it anyway and wondering what it did. Somebody who
+                is both is still asked, because he is still sold to.
+                The list keeps saving either way, so a supplier turned back
+                into a customer keeps the one he had. */}
+            {edit.kind !== 'supplier' && (
+              <>
+                <Label>Which price list</Label>
+                <Pick value={Number(edit.price_list)} onChange={set('price_list')}
+                  options={[{ v: 1, label: org?.price1_name || 'Wholesale' },
+                            { v: 2, label: org?.price2_name || 'Retail' }]} />
+              </>
+            )}
 
             <View style={{ marginTop: 24, padding: 14, backgroundColor: C.surface,
                            borderWidth: 1, borderColor: C.line, borderRadius: 12 }}>

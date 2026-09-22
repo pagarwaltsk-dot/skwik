@@ -120,13 +120,26 @@ export function sayPlainly(e) {
   const raw = String(e?.message || e?.error_description || e || '');
   for (const [re, say] of PLAIN) if (re.test(raw)) return say;
   if (!raw.trim()) return 'Something went wrong. Try once more.';
-  // Anything left that still smells of a database rather than a shop.
-  if (/relation |column |pg_|postgres|constraint|policy|function .*\(/i.test(raw)) {
-    return 'Skwik could not finish that. Try once more, and if it keeps '
-         + 'happening take a screenshot of this and send it in.\n\n(' 
-         + raw.slice(0, 120) + ')';
-  }
-  return raw;
+
+  // WHAT IS LEFT IS EITHER A SENTENCE OR IT IS NOT.
+  //
+  // Skwik's own rules — the ones the database raises — are written for the
+  // shopkeeper and read like it: "Bill number 26-27/41 is already used in your
+  // books." Those should reach him word for word. Everything else that got
+  // this far is the machinery talking: "Cannot read property 'gstin' of null",
+  // "value too long for type character varying(15)", "JSON Parse error:
+  // Unexpected character: <". He was being shown those, under a heading that
+  // said his work had not been saved, and there is nothing he can do with one.
+  //
+  // The test is whether it looks like a sentence somebody wrote for a person.
+  const machine = /cannot read|undefined|is not a function|typeerror|referenceerror|syntaxerror|\bnull\b|\bNaN\b|json |non-2xx|character varying|\bpg_|postgres|relation |column |constraint|violates|\)\s*$|::|_id\b/i;
+  const sentence = /^[A-Z₹0-9].{15,}[.!]$/s;
+  if (sentence.test(raw.trim()) && !machine.test(raw)) return raw.trim();
+
+  return 'Skwik hit a problem it did not expect. Nothing you typed has been '
+       + 'lost — check under Past bills before writing it again, and if it '
+       + 'keeps happening take a screenshot of this.\n\n('
+       + raw.slice(0, 120) + ')';
 }
 
 /* ---------------- the copy on the phone ---------------- */
@@ -182,12 +195,23 @@ export async function forgetLocal() {
 
 // The phone keeps its own copy of the next number. Every time the server
 // tells us where it has got to, the copy moves forward to match.
+// THE COUNT BELONGS TO A FINANCIAL YEAR, NOT TO THE PHONE.
+//
+// A shop that restarts its numbering each April was carrying March's count into
+// the new year: the server went back to 1 and the phone, which only ever
+// moved its number forward, printed 252 on the first offline bill of the new
+// year. Numbers 1 to 251 then never existed, and a GST series with a
+// two-hundred-number hole in it takes some explaining. Keeping the count
+// under the year it belongs to makes the new year start at 1 by itself.
 export async function noteServerCounters(org) {
   if (!org) return;
   const c = await read(K.counters, {});
+  const fy = fyLabel();
+  const mine = c.fy === fy ? c : { fy };
   const next = {
-    invoice:  Math.max(Number(c.invoice  || 0), Number(org.next_invoice_no  || 1)),
-    estimate: Math.max(Number(c.estimate || 0), Number(org.next_estimate_no || 1)),
+    fy,
+    invoice:  Math.max(Number(mine.invoice  || 0), Number(org.next_invoice_no  || 1)),
+    estimate: Math.max(Number(mine.estimate || 0), Number(org.next_estimate_no || 1)),
   };
   await write(K.counters, next);
 }
@@ -206,12 +230,14 @@ const fyLabel = (d = new Date()) => {
 // started a second series nobody asked for, and the shopkeeper finds out at
 // filing time.
 export async function takeLocalNumber(org, vtype) {
-  const c = await read(K.counters, {});
+  const raw = await read(K.counters, {});
+  const fy  = fyLabel();
+  const c   = raw.fy === fy ? raw : { fy };      // a new year counts from itself
   const key = vtype === 'estimate' ? 'estimate' : 'invoice';
   const n = Math.max(
     Number(c[key] || 0),
     Number((vtype === 'estimate' ? org?.next_estimate_no : org?.next_invoice_no) || 1));
-  await write(K.counters, { ...c, [key]: n + 1 });
+  await write(K.counters, { ...c, fy, [key]: n + 1 });
 
   let prefix = (vtype === 'estimate' ? org?.estimate_prefix : org?.invoice_prefix) || '';
   if (org?.restart_each_year && org?.year_in_prefix !== false) prefix += `${fyLabel()}/`;
@@ -313,8 +339,28 @@ async function flushOnce(supabase, orgId) {
         if (error && !/duplicate|already exists/i.test(error.message)) throw error;
       }
 
-      const { data, error } = await withTimeout(
+      let { data, error } = await withTimeout(
         supabase.rpc('save_voucher', { p: entry.payload }));
+
+      // THE NUMBER ON THE PAPER IS ALREADY TAKEN.
+      //
+      // He billed with no signal, so the phone printed 26-27/41 from its own
+      // count. Signal came back, he billed again, and the server — which never
+      // heard about the first one — handed out 26-27/41 as well. When the
+      // queue finally goes up, the server refuses the older bill because the
+      // number is in use, and it used to sit in the queue for ever, unseen and
+      // unsendable, while the goods had already left the shop.
+      //
+      // A bill in the books under a different number is recoverable. A bill
+      // that is not in the books at all is not. So send it again with the
+      // number stripped off, let the server give it a fresh one, and tell him
+      // the number changed.
+      if (error && /already used in your books/i.test(String(error.message || ''))) {
+        const second = { ...entry.payload };
+        delete second.voucher_no;
+        const r2 = await withTimeout(supabase.rpc('save_voucher', { p: second }));
+        if (!r2.error) { data = r2.data; error = null; }
+      }
       if (error) throw error;
 
       // The bill may already be in the books: the phone gave up waiting on a

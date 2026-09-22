@@ -76,16 +76,15 @@ begin;
 
 -- WITH THE FLAG IT WAS DECLARED WITH.
 --
--- `security_invoker` is not decoration: it is what makes this view read the
--- tables as the SHOPKEEPER rather than as its own owner, so row-level
--- security applies and a shop sees its own stock and nobody else's. Without
--- it the view runs as its owner, which in Supabase is a role RLS does not
--- constrain, and every shop can read every other shop's stock.
+-- Leaving this clause off is what 1.9.9 had to go and put right: CREATE OR
+-- REPLACE VIEW REPLACES a view's options rather than carrying them over, so
+-- a replace with no WITH clause silently strips security_invoker and the view
+-- starts reading its tables as its owner, with row security bypassed.
 --
--- CREATE OR REPLACE VIEW does not carry the old options over — it REPLACES
--- them, so leaving the clause off silently strips the flag. Verified on
--- PostgreSQL 16: after a replace with no WITH clause, pg_class.reloptions
--- for the view is null, and a second shop's rows come back.
+-- 1.9.9 repairs a database where that has already happened. This restates it
+-- here as well, so that re-running THIS file on its own — to put the view
+-- back after some later change — cannot quietly open the same hole a second
+-- time, with no 1.9.9 following it.
 create or replace view public.stock_in_hand_detail
   with (security_invoker = 'on') as
 with main as (

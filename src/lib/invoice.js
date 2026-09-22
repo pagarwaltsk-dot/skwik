@@ -102,14 +102,17 @@ const CSS = `
 export function invoiceHtml({ org, voucher, party, lines, copy }) {
   const rcm     = !!voucher.reverse_charge;
   // Under reverse charge the shop collects no tax, so no tax columns print.
-  const gst     = voucher.tax_mode !== 'none' && !rcm;
   const igst    = voucher.tax_mode === 'igst';
   const comp    = !!org.is_composition;
   const est     = voucher.vtype === 'estimate' || org.mode === 'estimate';
+  // An estimate carries no tax, whatever tax mode the bill was saved with —
+  // see the note in receipt.js. The declaration at the foot of this page says
+  // so in writing, so the columns above it must agree.
+  const gst     = voucher.tax_mode !== 'none' && !rcm && !est;
   const showHsn = hsnApplies(org) && !est;
   // the rate column still prints under reverse charge, because the rate is
   // what the recipient has to pay tax at
-  const showRate = voucher.tax_mode !== 'none';
+  const showRate = voucher.tax_mode !== 'none' && !est;
 
   // A credit note is a credit note whatever style of billing the shop uses.
   // The estimate test came first, so a shop billing on estimates printed its

@@ -40,3 +40,23 @@ export const showGodowns  = (org) => !!org?.godowns_enabled;
 
 // One item in several sizes, found as one name.
 export const showVariants = (org) => !!org?.variants_enabled;
+
+/* ---------------- reverse charge, which has two quite different sides ----- */
+
+// ON A SALE it means the BUYER pays the tax to the government instead of
+// paying it to the shop. Section 9(3) lists the supplies it applies to and
+// they are almost all services — transport, advocates, sponsorship. A shop
+// selling goods across a counter will never issue one.
+//
+// It was on every sale bill, immediately above the Total, reading "Tax on
+// this bill is payable by the buyer (reverse charge)". "Reverse charge" reads
+// like undoing a charge, so a shopkeeper correcting a mis-tap can tick it to
+// reverse the last thing and quietly send out a bill with no GST on a sale he
+// is required to collect on. Off until a shop says it needs it.
+export const showRcmOut = (org) => !!org?.rcm_sales_enabled;
+
+// ON A PURCHASE it is the ordinary case. Freight is the common one: a goods
+// transport agency charges no GST and the shop owes it. Most weeks, for most
+// shops. On for any registered shop unless he turns it off.
+export const showRcmIn = (org) =>
+  !!org?.is_gst_registered && on(org?.rcm_purchase_enabled);

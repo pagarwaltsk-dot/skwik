@@ -36,6 +36,66 @@ export const today = (d = new Date()) => {
   return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
 };
 
+// A DATE, THE WAY HE WRITES IT.
+//
+// The supplier's bill date was a plain text box with 2026-09-19 as its hint,
+// handed to the database untouched. He writes 19/09/2026, like everybody in
+// India, and Postgres answered "date/time field value out of range" — which
+// Skwik then turned into "check the amounts and the quantities, one of them is
+// far too large". Nothing to do with amounts. A purchase is the only screen
+// with a date box, so only purchases would not save.
+//
+// Worse than the refusal: 9/19/2026 was ACCEPTED, read the American way round
+// as 19 September. So 9/12/2026, meaning the ninth of December, went into the
+// books as the twelfth of September, silently, on a purchase bill.
+//
+// Day first, always. That is how it is written here and there is no case in
+// this app where it means anything else.
+const MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+
+export function parseDate(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+
+  const iso = (y, m, d) => {
+    if (!(m >= 1 && m <= 12)) return '';
+    const last = new Date(y, m, 0).getDate();      // 30, 31, or February's own
+    if (!(d >= 1 && d <= last)) return '';
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  };
+  // Two digits is this century. A bill from 1998 is not being entered here.
+  const yr = (v) => { const n = Number(v); return n < 100 ? 2000 + n : n; };
+
+  let m;
+  // already the way the database wants it
+  m = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (m) return iso(Number(m[1]), Number(m[2]), Number(m[3]));
+
+  // 19/09/2026, 19-9-26, 19.09.2026 — day first
+  m = raw.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
+  if (m) return iso(yr(m[3]), Number(m[2]), Number(m[1]));
+
+  // 19 Sep 2026, 19 September 26, 19-sep-2026
+  m = raw.match(/^(\d{1,2})[\s-]*([A-Za-z]{3,})[\s-]*(\d{2,4})$/);
+  if (m) {
+    const mo = MONTHS.indexOf(m[2].slice(0, 3).toLowerCase()) + 1;
+    if (mo) return iso(yr(m[3]), mo, Number(m[1]));
+  }
+
+  // 19/09 — this year, for a bill from a month or two back
+  m = raw.match(/^(\d{1,2})[-/.](\d{1,2})$/);
+  if (m) return iso(new Date().getFullYear(), Number(m[2]), Number(m[1]));
+
+  return '';
+}
+
+// How a date is shown back to him once Skwik has understood it.
+export const showDate = (ymd) => {
+  const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return String(ymd || '');
+  return `${m[3]}-${m[2]}-${m[1]}`;
+};
+
 // Lets him type sums the way he would on paper: 10x5, 12*2, 5+3+2, 144/12.
 // "x" is how a shopkeeper writes times, so x, X and the proper sign are all
 // read as multiply. Only digits and + - * / ( ) . are ever evaluated,
@@ -260,6 +320,24 @@ export function purchaseTaxMode(org, party) {
   return there === here ? 'cgst_sgst' : 'igst';
 }
 
+// WHICH TAX HE OWES ON A REVERSE-CHARGE PURCHASE.
+//
+// purchaseTaxMode answers 'none' when the supplier has no GST number, which
+// is right for an ordinary purchase — a man with no registration charged no
+// tax, so there is nothing to claim. Reverse charge is the case where that
+// same bill still carries tax, only it is the SHOP's to pay. So the split is
+// decided the way it always is, by where the supplier is: his own state means
+// central and state tax, anywhere else means integrated.
+//
+// A transporter with no state on file is treated as local, which is what a
+// small shop's transporter almost always is.
+export function rcmTaxMode(org, party) {
+  const here  = String(org?.state_code || '').trim();
+  const there = String(party?.state_code || '').trim() || here;
+  if (!here) return 'cgst_sgst';
+  return there === here ? 'cgst_sgst' : 'igst';
+}
+
 // Does the tax on a purchase go into the cost of the goods?
 export const taxIsCost = (org) =>
   !org?.is_gst_registered || !!org?.is_composition;
@@ -331,10 +409,20 @@ export function computeBill(lines, mode, extra = {}) {
   let taxable = 0, cgst = 0, sgst = 0, igst = 0;
   let nilRated = 0, exempt = 0, nonGst = 0;
 
-  const rcm = !!extra.reverseCharge;
+  // THE TWO SIDES OF REVERSE CHARGE ARE OPPOSITES.
+  //
+  // On a SALE (`reverseCharge`) the shop collects nothing: the buyer pays the
+  // tax to the government himself, so no tax is worked out at all.
+  //
+  // On a PURCHASE (`selfTax`) the shop owes the tax. The transporter charged
+  // nothing, so the tax is NOT part of what the shop hands him — but it is
+  // very much the shop's to work out and hand over under section 9(3). So the
+  // tax is computed and recorded, and kept out of the total payable.
+  const rcm  = !!extra.reverseCharge;
+  const self = !!extra.selfTax;
 
   const split = (t, rate) => {
-    if (rcm) return { c: 0, s: 0, i: 0 };
+    if (rcm && !self) return { c: 0, s: 0, i: 0 };
     const tax = n2((n2(t) * num(rate)) / 100);
     if (mode === 'cgst_sgst') { const c = n2(tax / 2); return { c, s: c, i: 0 }; }
     if (mode === 'igst') return { c: 0, s: 0, i: tax };
@@ -393,14 +481,15 @@ export function computeBill(lines, mode, extra = {}) {
     cgst = n2(cgst + c); sgst = n2(sgst + s); igst = n2(igst + i);
   }
 
-  const exact = n2(taxable + cgst + sgst + igst);
+  // The tax he owes himself is not money the supplier gets.
+  const exact = n2(taxable + (self ? 0 : cgst + sgst + igst));
   const total = Math.round(exact);
   return {
     lines: out, taxable, cgst, sgst, igst,
     discount: n2(out.reduce((a, l) => a + num(l.disc), 0)),
     gross: n2(grosses.reduce((a, g) => a + g, 0)),
     extra_amount: extraAmt, extra_gst_rate: extraRate,
-    reverse_charge: rcm,
+    reverse_charge: rcm || self,
     // GSTR-1 Table 8 wants these three apart from one another
     nil_rated: nilRated, exempt, non_gst: nonGst,
     round_off: n2(total - exact), total,
