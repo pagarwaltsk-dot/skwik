@@ -154,6 +154,10 @@ export default function ReportsScreen({ navigation }) {
 
   /* ---------------- the sums ---------------- */
 
+  // Is there anything in this range at all? Either road can answer it.
+  const anything = vouchers.length > 0
+    || (!!summary && (((summary.heads || []).length > 0) || ((summary.days || []).length > 0)));
+
   const sums = useMemo(() => {
     const blank = () => ({ n: 0, taxable: 0, cgst: 0, sgst: 0, igst: 0, total: 0 });
 
@@ -455,14 +459,25 @@ export default function ReportsScreen({ navigation }) {
       ) : (
         <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 40 }}>
 
-          {!vouchers.length && (
+          {/* THIS WHOLE PAGE WAS BLANK FOR EVERY SHOP THAT HAD RUN THE SQL.
+              *
+              * Making reports fast in 1.9.4 moved the figures onto the server:
+              * report_summary does the sums and the screen empties `vouchers`
+              * because it no longer needs the rows. But both halves of this
+              * page were still gated on `vouchers.length`, so the moment the
+              * fast road worked, the page said "Nothing in this month" and hid
+              * everything — the totals, the rate-wise split, the profit, AND
+              * the button that makes the GSTR-1 file. A shop could have four
+              * hundred bills in the month and be told it had none.
+              */}
+          {!anything && (
             <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center',
                            marginTop: 40, lineHeight: 20 }}>
               Nothing in {label}.
             </Text>
           )}
 
-          {!!vouchers.length && (
+          {anything && (
             <>
               <Card title={`Sales — ${label}`}>
                 <Line k={`${sums.sales.n} bill${sums.sales.n === 1 ? '' : 's'}`} v="" />

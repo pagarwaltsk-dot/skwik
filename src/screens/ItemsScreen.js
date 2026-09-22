@@ -462,7 +462,15 @@ export default function ItemsScreen({ navigation }) {
             <Text style={[S.label, { marginTop: 14 }]}>
               {(org?.price1_name || 'Wholesale').toUpperCase()} PRICE
             </Text>
-            <Box ref={fSale} next={more ? fAlias : null} onSubmit={save}
+            {/* HE TABS THROUGH THE WHOLE FORM — it is how he fills one in.
+                Folding the rest away ended the chain after two fields and the
+                keyboard offered a tick instead of the next arrow, which is a
+                dead end for anyone who works that way. The arrow stays, and
+                taking it opens the rest and carries on into it. */}
+            <Box ref={fSale} next={fAlias} onSubmit={save}
+              onSubmitEditing={() => {
+                if (!more) { setMore(true); setTimeout(() => fAlias.current?.focus(), 60); }
+              }}
               style={{ marginTop: 6 }} keyboardType="numeric"
               value={edit.sale_price} onChangeText={set('sale_price')} />
 
