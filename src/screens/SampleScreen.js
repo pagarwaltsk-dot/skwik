@@ -104,7 +104,7 @@ export default function SampleScreen({ navigation }) {
     if (!plan?.bills?.length) return;
     setBusy('writing');
     const madeVouchers = [], madeParties = [], tiedPayments = [];
-    let done = 0, failed = 0, firstError = '';
+    let done = 0, failed = 0, untied = 0, firstError = '';
 
     try {
       for (const b of plan.bills) {
@@ -114,7 +114,10 @@ export default function SampleScreen({ navigation }) {
             .insert({ org_id: org.id, name: party.name, kind: 'customer',
                       state_code: org.state_code, state_name: org.state_name })
             .select().single();
-          if (data) { party = data; madeParties.push(data.id); }
+          // and remember it ON THE PLAN, because a receipt that became
+          // several bills shares one customer between them — without this
+          // the same walk-in name was created once per part
+          if (data) { party = data; b.party = data; madeParties.push(data.id); }
         }
 
         // his own rules decide the tax: none if he is unregistered or on
@@ -160,7 +163,15 @@ export default function SampleScreen({ navigation }) {
         if (b.receipt?.id) {
           const { error: le } = await supabase.from('payments')
             .update({ ref_voucher_id: data.id }).eq('id', b.receipt.id);
-          if (!le) tiedPayments.push(b.receipt.id);
+          if (le) {
+            // THIS USED TO BE SWALLOWED, AND IT IS THE WORST KIND OF FAILURE.
+            // The bill is in his books, but the money he already took is
+            // still sitting there unexplained — so the customer's ledger
+            // shows the bill AND the receipt, and it looks as though Fill
+            // ignored the money altogether. He has to be told.
+            untied++;
+            if (!firstError) firstError = le.message || 'the receipt could not be linked';
+          } else tiedPayments.push(b.receipt.id);
         }
       }
 
@@ -179,6 +190,9 @@ export default function SampleScreen({ navigation }) {
         `${done} bills are in your books.`
         + (tiedPayments.length ? `\n${tiedPayments.length} of them are settled against `
             + 'money you had already received.' : '')
+        + (untied ? `\n\n${untied} bills were written, but the money already received `
+            + `could NOT be linked to them — ${firstError}.\nThat money will still show as `
+            + 'unbilled. Tell me if you see this.' : '')
         + (failed ? `\n\n${failed} could not be written — ${firstError}` : '')
         + '\n\nLook at Past bills, Reports, Udhar and Stock. This is your own month.');
     } catch (e) {
@@ -201,6 +215,10 @@ export default function SampleScreen({ navigation }) {
 
   const s = plan?.summary;
   const moneyTotal = (money || []).reduce((a, x) => a + num(x.amount), 0);
+  // Money through the bank has to be explained by a bill; cash is the part
+  // that bends. Shown apart so he can see the bank side is covered.
+  const moneyBank = (money || []).filter((x) => String(x.mode || '').toLowerCase() !== 'cash')
+    .reduce((a, x) => a + Number(x.amount || 0), 0);
 
   const Line = ({ k, v, strong }) => (
     <View style={[S.tline, { paddingVertical: 6 }]}>
@@ -249,8 +267,11 @@ export default function SampleScreen({ navigation }) {
           <Text style={{ fontSize: 12.5, color: money.length ? C.accent : C.muted,
                          marginTop: 8, lineHeight: 18 }}>
             {money.length
-              ? `${money.length} receipts, ₹${fmt0(moneyTotal)}, with no bill against them. `
-                + 'Bills will be built to match each one.'
+              ? `${money.length} receipts, ₹${fmt0(moneyTotal)}, with no bill against them.`
+                + (moneyBank > 0
+                    ? `\n₹${fmt0(moneyBank)} of it came through the bank, and that is `
+                      + 'settled first — cash is only touched after.'
+                    : '\nBills will be built to match each one.')
               : 'Nothing received in that period is waiting for a bill. The amounts '
                 + 'below will be made up instead.'}
           </Text>
@@ -321,6 +342,41 @@ export default function SampleScreen({ navigation }) {
               </View>
             )}
 
+            {/* WHERE HIS FIGURE IS COMING FROM.
+                Money in the bank is money somebody can see, so he needs to
+                know it is all accounted for before he looks at anything
+                else. If any of it could not be reached, that is the first
+                thing said, not the last. */}
+            {(s.bankValue > 0 || s.bankLeftOver > 0) && (
+              <View style={{ backgroundColor: s.bankLeftOver > 0 ? C.flagSoft : C.soft,
+                             borderWidth: 1,
+                             borderColor: s.bankLeftOver > 0 ? C.flagLine : C.line,
+                             borderRadius: 10, padding: 10, marginTop: 10 }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '700',
+                               color: s.bankLeftOver > 0 ? C.flagInk : C.ink }}>
+                  {s.bankLeftOver > 0
+                    ? `₹${fmt0(s.bankLeftOver)} of bank money has no bill against it`
+                    : `All ₹${fmt0(s.bankValue)} that came through the bank is covered`}
+                </Text>
+                <Text style={{ fontSize: 12, marginTop: 3, lineHeight: 17,
+                               color: s.bankLeftOver > 0 ? C.flagInk : C.muted }}>
+                  {s.bankLeftOver > 0
+                    ? (s.missed > 0
+                        ? `${s.missed} receipts could not have a bill raised for them. `
+                          + 'A bill cannot sell what the shop does not have, so this is '
+                          + 'nearly always the shelf running short — enter the purchases '
+                          + 'for that month and run it again.'
+                        : 'Ask for more bills, and run it again — bank entries are taken '
+                          + 'first, so the rest will follow.')
+                    : `The big ones are written as several bills on different days, `
+                      + `the way they were bought, and the receipt settles the lot.\n`
+                      + `Then ₹${fmt0(s.cashValue)} of cash receipts`
+                      + (s.overAndAbove > 0
+                          ? `, and ₹${fmt0(s.overAndAbove)} of counter cash on top.` : '.')}
+                </Text>
+              </View>
+            )}
+
             <Text style={[S.eyebrow, { marginTop: 14 }]}>The first few</Text>
             {plan.bills.slice(0, 5).map((b, i) => (
               <Text key={i} numberOfLines={1}
@@ -329,7 +385,8 @@ export default function SampleScreen({ navigation }) {
                 <Text style={{ color: C.muted }}>
                   {'  '}{b.lines.length} item{b.lines.length === 1 ? '' : 's'} · ₹
                   {fmt0(b.total)}
-                  {b.receipt ? ' · against money received' : ''}
+                  {b.receipt ? ' · against money received'
+                  : (b.partOf ? ' · part of money received' : '')}
                 </Text>
               </Text>
             ))}

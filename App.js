@@ -12,7 +12,7 @@ import { C } from './src/theme';
 import WelcomeScreen  from './src/screens/WelcomeScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import ForgotScreen   from './src/screens/ForgotScreen';
-import NewPasswordScreen from './src/screens/NewPasswordScreen';
+import ResetScreen    from './src/screens/ResetScreen';
 import OnboardScreen from './src/screens/OnboardScreen';
 import HomeScreen    from './src/screens/HomeScreen';
 import BillScreen    from './src/screens/BillScreen';
@@ -99,7 +99,7 @@ function Routes() {
           not know — the next time he opens Skwik he would be locked out
           again, holding a link that has already been used. */}
       {recovering ? (
-        <Stack.Screen name="NewPassword" component={NewPasswordScreen} />
+        <Stack.Screen name="Reset" component={ResetScreen} />
       ) : !session ? (
         <>
           <Stack.Screen name="Welcome"  component={WelcomeScreen} />

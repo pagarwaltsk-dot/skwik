@@ -58,6 +58,7 @@ export default function HomeScreen({ navigation }) {
   // search — and a zero is an answer a shopkeeper reads and believes.
   const [book, setBook] = useState(null);
   const [bookFailed, setBookFailed] = useState(false);
+  const [sub, setSub] = useState(null);         // where the subscription stands
   const [fyTotal, setFyTotal] = useState(0);
   const [q, setQ] = useState('');
   const [found, setFound] = useState(null);
@@ -74,6 +75,12 @@ export default function HomeScreen({ navigation }) {
     let on = true;
     (async () => {
       countPending?.();
+      // Asked on its own so a phone that is ahead of the database still
+      // gets its day book instead of an error.
+      supabase.rpc('subscription_state')
+        .then((r) => { if (on) setSub(r.error ? null : r.data); })
+        .catch(() => {});
+
       try {
         const d = day;
         setBook(null);          // never show one day's entries under another's date
@@ -307,8 +314,16 @@ export default function HomeScreen({ navigation }) {
       go: () => navigation.navigate('Recon') },
   ].filter(Boolean);
 
-  const trialLeft = org?.trial_ends_at && org?.plan === 'trial'
-    ? Math.ceil((new Date(org.trial_ends_at) - new Date()) / 86400000) : null;
+  // WHERE THE SUBSCRIPTION STANDS, ASKED OF THE SERVER.
+  //
+  // The old banner counted down from a date on the firm row and then said
+  // "your free trial has ended" while the app carried on working for ever.
+  // There was no paid state at all, so a shop that HAD paid could not be
+  // told apart from one that never would. The server answers now, and the
+  // same answer is what stops a bill being written.
+  const trialLeft = sub && sub.state === 'trial' ? Number(sub.days_left) : null;
+  const paidLeft  = sub && sub.state === 'paid'  ? Number(sub.days_left) : null;
+  const lapsed    = !!sub && sub.state === 'over';
 
   const banners = useMemo(() => [
     pending > 0 && { key: 'pending', tone: 'flag',
@@ -316,14 +331,21 @@ export default function HomeScreen({ navigation }) {
       body: sending ? 'Sending…' : 'Written with no internet. Tap to send them now.',
       go: pushNow },
     trialLeft !== null && { key: 'trial', tone: trialLeft > 2 ? 'calm' : 'flag',
-      title: trialLeft > 0
-        ? `Free trial — ${trialLeft} day${trialLeft === 1 ? '' : 's'} left`
-        : 'Your free trial has ended' },
+      title: `Free trial — ${trialLeft} day${trialLeft === 1 ? '' : 's'} left`,
+      body: trialLeft <= 3 ? 'After that you can still read everything, but not write new bills.' : null },
+    // Only worth saying when it is close enough to act on.
+    paidLeft !== null && paidLeft <= 30 && { key: 'renew', tone: paidLeft > 7 ? 'calm' : 'flag',
+      title: `Your Skwik year ends in ${paidLeft} day${paidLeft === 1 ? '' : 's'}`,
+      body: 'Renew before then and nothing stops.' },
+    lapsed && { key: 'lapsed', tone: 'flag',
+      title: 'Your Skwik year has ended',
+      body: 'Everything you have written is still here and you can take a copy of it. '
+          + 'New bills start again when you renew.' },
     org?.is_composition && fyTotal >= 12000000 && {
       key: 'comp', tone: fyTotal >= 15000000 ? 'bad' : 'flag',
       title: `This year's sale is ₹${fmt0(fyTotal)}. The composition limit is ₹1.5 crore.`,
       body: 'Speak to your accountant. Your billing carries on as normal.' },
-  ].filter(Boolean), [pending, sending, trialLeft, fyTotal, org?.is_composition]);
+  ].filter(Boolean), [pending, sending, trialLeft, paidLeft, lapsed, fyTotal, org?.is_composition]);
 
   // Bills written with no signal. Tapping tries them again there and then.
   async function pushNow() {

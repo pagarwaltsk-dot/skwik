@@ -180,7 +180,7 @@ export function AppProvider({ children }) {
   // address is read here. Both shapes Supabase can send are handled: the
   // tokens on the fragment, and the newer single code.
   const takeRecoveryLink = useCallback(async (url) => {
-    if (!url || !/reset-password|type=recovery/.test(String(url))) return false;
+    if (!url || !/[/#?]reset|type=recovery/.test(String(url))) return false;
     try {
       const raw = String(url);
       const after = raw.includes('#') ? raw.slice(raw.indexOf('#') + 1) : '';

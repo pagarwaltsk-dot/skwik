@@ -82,6 +82,7 @@ export default function ReportsScreen({ navigation }) {
   const [pnl, setPnl] = useState(null);
   const [summary, setSummary] = useState(null);
   const [rcm, setRcm] = useState(null);         // the reverse-charge figures
+  const [b3, setB3] = useState(null);           // the GSTR-3B boxes
 
   // THE WHOLE YEAR USED TO COME DOWN THE WIRE.
   //
@@ -110,6 +111,12 @@ export default function ReportsScreen({ navigation }) {
         { p_from: from || '2000-04-01', p_to: to || today() })
         .then((r) => setRcm(r.error ? null : r.data))
         .catch(() => setRcm(null));
+
+      // And the 3B boxes, asked for the same way and just as forgivingly.
+      supabase.rpc('gstr3b_summary',
+        { p_from: from || '2000-04-01', p_to: to || today() })
+        .then((r) => setB3(r.error ? null : r.data))
+        .catch(() => setB3(null));
 
       const sum = await supabase.rpc('report_summary',
         { p_from: from || '2000-04-01', p_to: to || today() });
@@ -594,6 +601,62 @@ export default function ReportsScreen({ navigation }) {
                     {Number(rcm.money_out)} Money out entr
                     {Number(rcm.money_out) === 1 ? 'y' : 'ies'}.
                   </Text>
+                </Card>
+              )}
+
+              {/* THE 3B BOXES, FOR HIM TO READ OUT TO HIS ACCOUNTANT.
+                *
+                * Only the boxes a billing book can honestly answer. The two
+                * it cannot — credit reversed, and tax paid — are named rather
+                * than filled with a zero, because a zero in those reads like
+                * a fact and is not one.
+                */}
+              {!!b3 && b3.applies && range === 'month' && (
+                <Card title="GSTR-3B — the figures">
+                  <Text style={[S.hint, { marginTop: 0, marginBottom: 8 }]}>
+                    For your accountant to type in. Not a filed return.
+                  </Text>
+                  <Line k="3.1(a) taxable sales"
+                        v={fmt(b3.table_3_1?.a_outward_taxable?.taxable_value)} strong />
+                  {['integrated_tax', 'central_tax', 'state_tax'].map((t) =>
+                    Number(b3.table_3_1?.a_outward_taxable?.[t]) > 0 ? (
+                      <Line key={t}
+                        k={'   ' + (t === 'integrated_tax' ? 'IGST' : t === 'central_tax' ? 'CGST' : 'SGST')}
+                        v={fmt(b3.table_3_1?.a_outward_taxable?.[t])} />
+                    ) : null)}
+                  {Number(b3.table_3_1?.c_nil_and_exempt?.taxable_value) > 0 && (
+                    <Line k="3.1(c) nil-rated and exempt"
+                          v={fmt(b3.table_3_1?.c_nil_and_exempt?.taxable_value)} />
+                  )}
+                  {Number(b3.table_3_1?.d_inward_reverse_charge?.taxable_value) > 0 && (
+                    <Line k="3.1(d) on reverse charge"
+                          v={fmt(b3.table_3_1?.d_inward_reverse_charge?.taxable_value)
+                             + '  +  ' + fmt(b3.table_3_1?.d_inward_reverse_charge?.total_tax)} />
+                  )}
+                  {Number(b3.table_3_1?.e_non_gst?.taxable_value) > 0 && (
+                    <Line k="3.1(e) outside GST"
+                          v={fmt(b3.table_3_1?.e_non_gst?.taxable_value)} />
+                  )}
+                  {(b3.table_3_2_interstate_unregistered || []).map((r) => (
+                    <Line key={r.state} k={`3.2 to ${r.state}, unregistered`}
+                          v={fmt(r.taxable_value) + '  +  ' + fmt(r.integrated_tax)} />
+                  ))}
+                  <Line k="4(A)(5) credit on purchases"
+                        v={fmt(b3.table_4?.a5_all_other_itc?.total)} strong />
+                  {Number(b3.table_4?.a3_reverse_charge?.total_tax) > 0 && (
+                    <Line k="4(A)(3) credit on reverse charge"
+                          v={fmt(b3.table_4?.a3_reverse_charge?.total_tax)} />
+                  )}
+                  {Number(b3.table_5_inward_nil_exempt?.value) > 0 && (
+                    <Line k="5 inward, nil and exempt"
+                          v={fmt(b3.table_5_inward_nil_exempt?.value)} />
+                  )}
+                  <Text style={[S.hint, { marginTop: 10 }]}>
+                    Your accountant still fills in:
+                  </Text>
+                  {(b3.your_accountant_fills || []).map((t, i) => (
+                    <Text key={i} style={[S.hint, { marginTop: 4 }]}>{'\u00B7 ' + t}</Text>
+                  ))}
                 </Card>
               )}
 

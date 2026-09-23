@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, Alert, ScrollView } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
+import { hasSupport, supportLine } from '../lib/contact';
 import { Box, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
@@ -29,15 +30,14 @@ export default function ForgotScreen({ navigation }) {
       return Alert.alert('Check the address', 'Type the email you saved in Settings.');
     }
     setBusy(true);
-    // THE LINK HAS TO COME BACK INTO SKWIK.
-    //
-    // Sent without this, Supabase points the link at the project's Site URL —
-    // a web page that knows nothing about this app — so the shopkeeper opened
-    // it, saw a page he could do nothing with, and was still locked out.
-    // `skwik://` is the app's own address (app.json, "scheme"), and the app
-    // opens on the screen that sets a new password.
+    // WITHOUT A PLACE TO SEND HIM, THE LINK WENT NOWHERE.
+    // This was called bare, so Supabase used the project's own Site URL —
+    // which for an app with no website is a page that does not exist. The
+    // link is now aimed at Skwik itself; `skwik://` is the app's own address
+    // (app.json, "scheme") and AppContext catches the link, takes the
+    // recovery login off it and opens the screen that sets a new password.
     const { error } = await supabase.auth.resetPasswordForEmail(e, {
-      redirectTo: 'skwik://reset-password',
+      redirectTo: 'skwik://reset',
     });
     setBusy(false);
     if (error) return Alert.alert('Could not send it', sayPlainly(error));
@@ -47,9 +47,11 @@ export default function ForgotScreen({ navigation }) {
     Alert.alert('If that address is on the account, a link is on its way',
       'Open it ON THIS PHONE. Skwik opens by itself and asks you for a new '
       + 'password.\n\n'
-      + 'Nothing arrives if that email was never saved in Settings. In that '
-      + 'case write to us and we will sort it out by hand — your books are safe '
-      + 'either way.',
+      + 'Nothing arrives if that email was never saved in Settings.'
+      + (hasSupport()
+          ? `\n\nIn that case get in touch — ${supportLine()} — and we will sort it `
+            + 'out by hand. Your books are safe either way.'
+          : '\n\nYour books are safe either way.'),
       [{ text: 'All right', onPress: () => navigation.goBack() }]);
   };
 
