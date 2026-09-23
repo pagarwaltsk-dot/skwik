@@ -77,19 +77,47 @@ export function splitTotal(total, n, r) {
   return out;
 }
 
+// NO BILL GOES ABOVE 35,000. NOT ONE.
+//
+// This is a rule about EVERY bill Skwik writes in a month, not only the ones
+// raised against money already received. A shop of this size does not write
+// single bills of a lakh; it writes a lot of ordinary ones. A month that
+// comes out as thirty bills averaging 40,000 does not look like his trade,
+// and it is the first thing anybody notices.
+//
+// So the ceiling is the rule and the bill COUNT is the wish. If the figure he
+// asked for cannot be reached in the number of bills he asked for without
+// going over, Skwik writes more bills and says so on the plan.
+export const MAX_BILL = 35000;
+// aimed a little under the ceiling, so ordinary unevenness still fits below it
+const PART_SIZE = 28000;
+
+// PUSH ANYTHING OVER THE CEILING DOWN ONTO THE SMALLEST PARTS.
+// The total never changes — rupees only move between bills.
+function underCeiling(out, ceiling) {
+  if (!(ceiling > 0)) return out;
+  for (let pass = 0; pass < 400; pass++) {
+    let hi = 0, lo = 0;
+    for (let i = 1; i < out.length; i++) {
+      if (out[i] > out[hi]) hi = i;
+      if (out[i] < out[lo]) lo = i;
+    }
+    if (out[hi] <= ceiling || hi === lo) break;
+    const move = Math.min(out[hi] - ceiling,
+                          Math.max(1, Math.ceil((out[hi] - out[lo]) / 2)));
+    out[hi] -= move;
+    out[lo] += move;
+  }
+  return out;
+}
+
 // HOW A RECEIPT TOO BIG FOR ONE BILL IS CUT UP.
 //
-// Under 35,000 a single bill is what a shop would have written anyway. Above
-// it, the receipt becomes one bill per roughly 32,000 — so 1,10,000 comes out
-// as four, and 50,000 as two — and never more than five, because a customer
-// who bought eleven times is a different story from one who bought four.
-const SPLIT_ABOVE = 35000;
-const PART_SIZE   = 32000;
-
 // Uneven, but not wildly so: 20,000 + 30,000 + 25,000 + 35,000 is a month of
 // buying. splitTotal is deliberately lumpier than this and is right for the
-// made-up bills; a real customer's month is steadier.
-export function evenParts(total, n, r) {
+// made-up bills; a real customer's month is steadier. Nothing comes out above
+// the ceiling.
+export function evenParts(total, n, r, ceiling = MAX_BILL) {
   if (n < 1 || total <= 0) return [];
   if (n === 1) return [Math.round(total)];
   const avg = total / n;
@@ -100,8 +128,12 @@ export function evenParts(total, n, r) {
   const drift = Math.round(total) - out.reduce((a, b) => a + b, 0);
   const big = out.indexOf(Math.max(...out));
   out[big] = Math.max(1, out[big] + drift);
-  return out;
+  return underCeiling(out, ceiling);
 }
+
+// How many bills a figure has to become to stay under the ceiling.
+export const partsFor = (amount, ceiling = MAX_BILL) =>
+  (amount <= ceiling ? 1 : Math.max(2, Math.ceil(amount / PART_SIZE)));
 
 /* ---------------- what is on the shelf ---------------- */
 
@@ -349,6 +381,7 @@ export function planSample({
 
   const bills = [];
   const used = [];                    // receipts actually taken
+  let shortDays = false;              // a receipt needed more days than the period has
   const roof = poolValue(pool);       // what the shelf is worth
 
   // 1. Bills against money he has already taken. These come first: they are
@@ -379,9 +412,12 @@ export function planSample({
     if (q) q.used = Math.max(0, (q.used || 0) - 1);
   });
 
+  // The number of bills he asked for is a wish; the 35,000 ceiling is a rule,
+  // and money already received has to be covered whatever the count says. The
+  // only hard stop is the same 500 the screen allows.
+  const HARD_STOP = 500;
   for (const rec of ordered) {
-    const room = count - bills.length;
-    if (room <= 0) break;
+    if (bills.length >= HARD_STOP) break;
     const amt = num(rec.amount);
     if (amt <= 0) continue;
     const party = rec.party_id
@@ -410,9 +446,17 @@ export function planSample({
     // a day — never two bills to the same customer on the same date, which is
     // the thing that makes a made-up month look made up.
     const onDate = (rec.pdate && rec.pdate >= from && rec.pdate <= to) ? rec.pdate : null;
-    const before = onDate ? days.filter((d) => d <= onDate) : days;
+    // EITHER SIDE OF THE DAY THE MONEY CAME, WITHIN A MONTH OF IT.
+    // Bills used to be forced on or before the payment date. That is wrong:
+    // a customer pays in advance as often as he pays after, and both are
+    // ordinary. So any working day within thirty days either way will do,
+    // as long as it is inside the period asked for.
+    const near = onDate
+      ? days.filter((d) => Math.abs(Date.parse(d) - Date.parse(onDate))
+                           <= 30 * 24 * 3600 * 1000)
+      : days;
     const chooseDays = (n) => {
-      const from2 = (before.length >= n ? before : days).slice();
+      const from2 = (near.length >= n ? near : days).slice();
       const out = [];
       while (out.length < n && from2.length) {
         out.push(from2.splice(Math.floor(r() * from2.length), 1)[0]);
@@ -427,14 +471,20 @@ export function planSample({
     // of uneven size on different days, all to the same customer, and the
     // receipt settles the lot. Small receipts stay one bill, because that is
     // what they were.
-    const wantParts = Math.max(1, Math.min(5, Math.min(room,
-      amt < SPLIT_ABOVE ? 1 : Math.ceil(amt / PART_SIZE))));
+    // NEVER FEWER THAN THIS, WHATEVER GOES WRONG.
+    // Falling back to fewer, fatter bills would put one over the ceiling,
+    // which is the thing he asked me to stop. If it cannot be done in this
+    // many, the receipt is left alone and the plan says why.
+    const minParts = partsFor(amt);
 
+    // Try the natural number of parts first. If one of them cannot be built
+    // out of what is on the shelf, try MORE parts — smaller bills are easier
+    // to land — never fewer, which would push one over the ceiling.
     let made = null;
-    for (let n = wantParts; n >= 1 && !made; n--) {
+    for (let n = minParts; n <= minParts + 3 && !made; n++) {
       const cut = n === 1 ? [Math.round(amt)] : evenParts(Math.round(amt), n, r);
       const dates = n === 1 ? [onDate || pick(r, days)] : chooseDays(n);
-      if (dates.length < n) continue;                   // not enough separate days
+      if (dates.length < n) { shortDays = true; continue; }   // too few separate days
       const out = [];
       let broke = false;
       for (let k = 0; k < n; k++) {
@@ -470,8 +520,13 @@ export function planSample({
   // 2. The rest, up to the count and the total he asked for.
   const totalOf = (b) => billTotal(b.lines, taxOf(b.party));
   const paidFor = n2(bills.reduce((a, b) => a + totalOf(b), 0));
-  const restCount = Math.max(0, count - bills.length);
   let restTotal = Math.max(0, n2(total - paidFor));
+  // THE CEILING BEATS THE COUNT.
+  // He asks for a number of bills; if his figure cannot be reached in that
+  // many without one going over 35,000, more are written and the plan says so.
+  const askedRest = Math.max(0, count - bills.length);
+  const needRest  = restTotal > 0 ? Math.ceil(restTotal / PART_SIZE) : 0;
+  const restCount = Math.max(askedRest, needRest);
 
   // never promise more than the shelf can carry
   const roofLeft = poolValue(pool);
@@ -479,11 +534,21 @@ export function planSample({
   if (stock && restTotal > roofLeft) { restTotal = roofLeft; capped = true; }
 
   if (restCount > 0 && restTotal > 0) {
-    const amounts = splitTotal(restTotal, restCount, r);
+    const amounts = underCeiling(splitTotal(restTotal, restCount, r), MAX_BILL);
     for (const amt of amounts) {
       const party = customers.length ? pick(r, customers) : { name: 'CASH' };
       const mode = taxOf(party);
-      const lines = buildLines(amt, pool, r, { exact: false, mode, avgRate: usualRate });
+      // An ordinary bill is not fitted to a figure, so it can land a little
+      // over what it aimed at. Anything that lands over the ceiling is put
+      // back and aimed lower, rather than written.
+      let lines = null;
+      for (let go = 0; go < 4 && !lines; go++) {
+        const t = buildLines(amt * (1 - go * 0.06), pool, r,
+                             { exact: false, mode, avgRate: usualRate });
+        if (!t) break;
+        if (billTotal(t, mode) <= MAX_BILL) { lines = t; break; }
+        putBack(t);
+      }
       if (!lines) break;
       bills.push({
         vdate: pick(r, days),
@@ -517,6 +582,10 @@ export function planSample({
       n: bills.length,
       value,
       askedFor: n2(total),
+      // so the plan can say "you asked for 50, the ceiling needs 62"
+      askedBills: count,
+      // the period does not hold enough separate days for what is owed
+      shortDays,
       fromReceipts: used.length,
       receiptValue: n2(used.reduce((a, x) => a + num(x.amount), 0)),
       // told apart, because he needs to see the bank side is fully covered

@@ -291,8 +291,9 @@ export default function SampleScreen({ navigation }) {
         </View>
         {num(count) > 0 && num(total) > 0 && (
           <Text style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
-            About ₹{fmt0(num(total) / num(count))} a bill. Some much bigger, many
-            smaller — the way a real month goes.
+            About ₹{fmt0(num(total) / num(count))} a bill — bigger and smaller,
+            the way a real month goes. Nothing over ₹35,000; if your figure
+            needs more bills than that, it writes more.
           </Text>
         )}
 
@@ -306,6 +307,26 @@ export default function SampleScreen({ navigation }) {
           <View style={[S.card, { marginTop: 20 }]}>
             <Text style={S.eyebrow}>About to write</Text>
             <Line k="Bills" v={s.n} />
+            {/* HE ASKED FOR A NUMBER; THE CEILING DECIDED A DIFFERENT ONE.
+                No bill Skwik writes goes over ₹35,000, because a shop this
+                size does not write single bills of a lakh. If his figure
+                cannot be reached in the number he asked for without one going
+                over, more are written — and he is told, not surprised. */}
+            {s.n > (s.askedBills || 0) && (
+              <Text style={{ fontSize: 12, color: C.muted, marginTop: -2,
+                             marginBottom: 6, lineHeight: 17 }}>
+                You asked for {s.askedBills}. No bill goes over ₹35,000, so
+                ₹{fmt0(s.value)} needs {s.n}.
+              </Text>
+            )}
+            {!!s.shortDays && (
+              <Text style={{ fontSize: 12, color: C.flagInk, marginTop: -2,
+                             marginBottom: 6, lineHeight: 17 }}>
+                Some money could not be billed because the dates you gave do not
+                hold enough separate days — a big receipt becomes several bills,
+                one to a day. Widen the dates and run it again.
+              </Text>
+            )}
             <Line k="Adding up to" v={`₹${fmt0(s.value)}`} strong />
             <Line k="Across" v={`${s.days} days`} />
             <Line k="Different items" v={s.items} />
