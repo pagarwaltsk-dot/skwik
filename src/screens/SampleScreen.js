@@ -104,7 +104,7 @@ export default function SampleScreen({ navigation }) {
     if (!plan?.bills?.length) return;
     setBusy('writing');
     const madeVouchers = [], madeParties = [], tiedPayments = [];
-    let done = 0, failed = 0, firstError = '';
+    let done = 0, failed = 0, untied = 0, firstError = '';
 
     try {
       for (const b of plan.bills) {
@@ -114,7 +114,10 @@ export default function SampleScreen({ navigation }) {
             .insert({ org_id: org.id, name: party.name, kind: 'customer',
                       state_code: org.state_code, state_name: org.state_name })
             .select().single();
-          if (data) { party = data; madeParties.push(data.id); }
+          // and remember it ON THE PLAN, because a receipt that became
+          // several bills shares one customer between them — without this
+          // the same walk-in name was created once per part
+          if (data) { party = data; b.party = data; madeParties.push(data.id); }
         }
 
         // his own rules decide the tax: none if he is unregistered or on
@@ -160,7 +163,15 @@ export default function SampleScreen({ navigation }) {
         if (b.receipt?.id) {
           const { error: le } = await supabase.from('payments')
             .update({ ref_voucher_id: data.id }).eq('id', b.receipt.id);
-          if (!le) tiedPayments.push(b.receipt.id);
+          if (le) {
+            // THIS USED TO BE SWALLOWED, AND IT IS THE WORST KIND OF FAILURE.
+            // The bill is in his books, but the money he already took is
+            // still sitting there unexplained — so the customer's ledger
+            // shows the bill AND the receipt, and it looks as though Fill
+            // ignored the money altogether. He has to be told.
+            untied++;
+            if (!firstError) firstError = le.message || 'the receipt could not be linked';
+          } else tiedPayments.push(b.receipt.id);
         }
       }
 
@@ -179,6 +190,9 @@ export default function SampleScreen({ navigation }) {
         `${done} bills are in your books.`
         + (tiedPayments.length ? `\n${tiedPayments.length} of them are settled against `
             + 'money you had already received.' : '')
+        + (untied ? `\n\n${untied} bills were written, but the money already received `
+            + `could NOT be linked to them — ${firstError}.\nThat money will still show as `
+            + 'unbilled. Tell me if you see this.' : '')
         + (failed ? `\n\n${failed} could not be written — ${firstError}` : '')
         + '\n\nLook at Past bills, Reports, Udhar and Stock. This is your own month.');
     } catch (e) {
@@ -347,9 +361,16 @@ export default function SampleScreen({ navigation }) {
                 <Text style={{ fontSize: 12, marginTop: 3, lineHeight: 17,
                                color: s.bankLeftOver > 0 ? C.flagInk : C.muted }}>
                   {s.bankLeftOver > 0
-                    ? 'Ask for more bills, or more money, and run it again — bank '
-                      + 'entries are taken first, so the rest will follow.'
-                    : `Then ₹${fmt0(s.cashValue)} of cash receipts`
+                    ? (s.missed > 0
+                        ? `${s.missed} receipts could not have a bill raised for them. `
+                          + 'A bill cannot sell what the shop does not have, so this is '
+                          + 'nearly always the shelf running short — enter the purchases '
+                          + 'for that month and run it again.'
+                        : 'Ask for more bills, and run it again — bank entries are taken '
+                          + 'first, so the rest will follow.')
+                    : `The big ones are written as several bills on different days, `
+                      + `the way they were bought, and the receipt settles the lot.\n`
+                      + `Then ₹${fmt0(s.cashValue)} of cash receipts`
                       + (s.overAndAbove > 0
                           ? `, and ₹${fmt0(s.overAndAbove)} of counter cash on top.` : '.')}
                 </Text>
@@ -364,7 +385,8 @@ export default function SampleScreen({ navigation }) {
                 <Text style={{ color: C.muted }}>
                   {'  '}{b.lines.length} item{b.lines.length === 1 ? '' : 's'} · ₹
                   {fmt0(b.total)}
-                  {b.receipt ? ' · against money received' : ''}
+                  {b.receipt ? ' · against money received'
+                  : (b.partOf ? ' · part of money received' : '')}
                 </Text>
               </Text>
             ))}

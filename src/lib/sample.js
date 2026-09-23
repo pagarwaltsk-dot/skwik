@@ -77,6 +77,32 @@ export function splitTotal(total, n, r) {
   return out;
 }
 
+// HOW A RECEIPT TOO BIG FOR ONE BILL IS CUT UP.
+//
+// Under 35,000 a single bill is what a shop would have written anyway. Above
+// it, the receipt becomes one bill per roughly 32,000 — so 1,10,000 comes out
+// as four, and 50,000 as two — and never more than five, because a customer
+// who bought eleven times is a different story from one who bought four.
+const SPLIT_ABOVE = 35000;
+const PART_SIZE   = 32000;
+
+// Uneven, but not wildly so: 20,000 + 30,000 + 25,000 + 35,000 is a month of
+// buying. splitTotal is deliberately lumpier than this and is right for the
+// made-up bills; a real customer's month is steadier.
+export function evenParts(total, n, r) {
+  if (n < 1 || total <= 0) return [];
+  if (n === 1) return [Math.round(total)];
+  const avg = total / n;
+  let raw = [];
+  for (let i = 0; i < n; i++) raw.push(avg * (0.65 + r() * 0.7));
+  const sum = raw.reduce((a, b) => a + b, 0);
+  const out = raw.map((x) => Math.max(1, Math.round((x * total) / sum)));
+  const drift = Math.round(total) - out.reduce((a, b) => a + b, 0);
+  const big = out.indexOf(Math.max(...out));
+  out[big] = Math.max(1, out[big] + drift);
+  return out;
+}
+
 /* ---------------- what is on the shelf ---------------- */
 
 const WEIGHED = ['KGS', 'GMS', 'LTR', 'MLT', 'MTR', 'QTL', 'TON', 'SQM', 'SQF'];
@@ -207,7 +233,25 @@ export function buildLines(target, pool, r, { exact = false, maxLines = 0, mode 
 
   let left = target;
 
-  for (let i = 0; i < want && left > 0.5; i++) {
+  // A BILL RAISED AGAINST MONEY ALREADY TAKEN MUST REACH THAT FIGURE.
+  //
+  // The band above says how many lines a bill of this size usually carries,
+  // and the loop used to stop dead at that many — even with most of the
+  // figure still unspent. The bill then landed SHORT, and the only thing that
+  // moves a printed total afterwards is the bill's own discount, which can
+  // only come down. So a short bill could never be made to fit and the
+  // receipt was quietly passed over.
+  //
+  // That fell hardest on the biggest receipts, which are usually the bank
+  // ones: a receipt of 95,000 needs far more on it than the band allows, so
+  // it failed nearly every time while the small cash receipts sailed through.
+  // Bank money was being left unexplained by the very step meant to explain
+  // it first.
+  //
+  // An exact bill may now keep reaching until the figure is actually covered.
+  // It still cannot sell what is not on the shelf.
+  const stopAt = exact ? want * 3 : want;
+  for (let i = 0; i < stopAt && left > 0.5; i++) {
     // Reaching for something already on this bill wastes a line: the two
     // merge and the bill comes out shorter than it should. Try again for
     // something else before giving in and adding to what is there.
@@ -227,7 +271,7 @@ export function buildLines(target, pool, r, { exact = false, maxLines = 0, mode 
     // of eighteen: the first two lines ate it and the rest came out at one
     // piece each. Each line now takes roughly its fair portion of what is
     // left, give or take a half, and the last one takes the remainder.
-    const rest  = want - i;
+    const rest  = Math.max(1, want - i);
     const share = rest <= 1 ? left : left * (1 / rest) * (0.55 + r() * 0.9);
 
     let q = share / p.rate;
@@ -328,8 +372,16 @@ export function planSample({
     return String(a.pdate || '').localeCompare(String(b.pdate || ''));
   });
 
+  // PUT BACK WHAT AN ATTEMPT TOOK OFF THE SHELF.
+  const putBack = (ls) => (ls || []).forEach((l) => {
+    const q = pool.find((x) => x.it.id === l.item.id);
+    if (q && q.left !== Infinity) q.left = n2(q.left + l.qty);
+    if (q) q.used = Math.max(0, (q.used || 0) - 1);
+  });
+
   for (const rec of ordered) {
-    if (bills.length >= count) break;
+    const room = count - bills.length;
+    if (room <= 0) break;
     const amt = num(rec.amount);
     if (amt <= 0) continue;
     const party = rec.party_id
@@ -338,34 +390,80 @@ export function planSample({
       : (customers.length ? pick(r, customers) : { name: 'CASH' });
     const mode = taxOf(party);
 
-    // The bill has to PRINT his figure, tax included, or the ledger will not
-    // settle. Worth three goes: a different mix of goods often lands where the
-    // first could not, usually because the shelf ran short of what it reached
-    // for first.
-    let lines = null;
-    for (let go = 0; go < 3 && !lines; go++) {
-      const tryLines = buildLines(amt, pool, r, { exact: true, mode, avgRate: usualRate });
-      if (!tryLines) break;
-      if (fitToTotal(tryLines, Math.round(amt), mode)) { lines = tryLines; break; }
-      // put back what that attempt took off the shelf
-      tryLines.forEach((l) => {
-        const q = pool.find((x) => x.it.id === l.item.id);
-        if (q && q.left !== Infinity) q.left = n2(q.left + l.qty);
-        if (q) q.used = Math.max(0, (q.used || 0) - 1);
-      });
+    // ONE BILL FOR THE FIGURE, TO THE RUPEE.
+    // The bill has to PRINT it, tax included, or the ledger will not settle.
+    // Worth several goes: a different mix of goods often lands where the first
+    // could not, usually because the shelf ran short of what it reached for.
+    const oneBill = (figure) => {
+      for (let go = 0; go < 6; go++) {
+        const t = buildLines(figure, pool, r, { exact: true, mode, avgRate: usualRate });
+        if (!t) return null;
+        if (fitToTotal(t, Math.round(figure), mode)) return t;
+        putBack(t);
+      }
+      return null;
+    };
+
+    // WHICH DAYS THE PARTS FALL ON.
+    // A receipt is money that arrived on one day for goods that went out over
+    // several, so the parts are dated on or before the day it came in, one to
+    // a day — never two bills to the same customer on the same date, which is
+    // the thing that makes a made-up month look made up.
+    const onDate = (rec.pdate && rec.pdate >= from && rec.pdate <= to) ? rec.pdate : null;
+    const before = onDate ? days.filter((d) => d <= onDate) : days;
+    const chooseDays = (n) => {
+      const from2 = (before.length >= n ? before : days).slice();
+      const out = [];
+      while (out.length < n && from2.length) {
+        out.push(from2.splice(Math.floor(r() * from2.length), 1)[0]);
+      }
+      return out.sort();
+    };
+
+    // A BIG RECEIPT IS NOT ONE BIG BILL.
+    //
+    // Nobody hands over a lakh for a single sale. The money is a month of
+    // buying, so it is written the way it happened: three, four or five bills
+    // of uneven size on different days, all to the same customer, and the
+    // receipt settles the lot. Small receipts stay one bill, because that is
+    // what they were.
+    const wantParts = Math.max(1, Math.min(5, Math.min(room,
+      amt < SPLIT_ABOVE ? 1 : Math.ceil(amt / PART_SIZE))));
+
+    let made = null;
+    for (let n = wantParts; n >= 1 && !made; n--) {
+      const cut = n === 1 ? [Math.round(amt)] : evenParts(Math.round(amt), n, r);
+      const dates = n === 1 ? [onDate || pick(r, days)] : chooseDays(n);
+      if (dates.length < n) continue;                   // not enough separate days
+      const out = [];
+      let broke = false;
+      for (let k = 0; k < n; k++) {
+        const ls = oneBill(cut[k]);
+        if (!ls) { broke = true; break; }
+        out.push({ vdate: dates[k], lines: ls, target: cut[k] });
+      }
+      if (broke) { out.forEach((o) => putBack(o.lines)); continue; }
+      made = out;
     }
-    if (!lines) continue;                               // leave that receipt alone
-    bills.push({
-      vdate: rec.pdate && rec.pdate >= from && rec.pdate <= to ? rec.pdate : pick(r, days),
-      party, lines,
+    if (!made) continue;                                // leave that receipt alone
+
+    made.forEach((m, k) => bills.push({
+      vdate: m.vdate, party, lines: m.lines,
       // The money is already in his books as a receipt. Marking this a cash
       // sale would have Skwik write a SECOND receipt for the same rupees, so
       // it goes in as an ordinary bill and the receipt he already has is tied
       // to it — which is what settles the customer's ledger to nothing.
+      //
+      // Where a receipt became several bills, only the last one carries it.
+      // The earlier parts sit on the customer's account until that day, which
+      // is exactly what happened: he bought through the month and paid once.
+      // The account still comes to nothing, because the bills add up to the
+      // receipt to the rupee.
       is_cash: false,
-      receipt: rec,
-      target: amt,
-    });
+      receipt: k === made.length - 1 ? rec : null,
+      partOf: made.length > 1 ? rec.id : null,
+      target: m.target,
+    }));
     used.push(rec);
   }
 
@@ -431,6 +529,10 @@ export function planSample({
       // and what is left over once every receipt has been settled
       overAndAbove: n2(Math.max(0, value - used.reduce((a, x) => a + num(x.amount), 0))),
       // bank money in the period that this run could NOT reach
+      // receipts this run could not raise a bill for, whatever the mode:
+      // almost always because the shelf cannot carry that much
+      missed: receipts.filter((x) => num(x.amount) > 0
+                          && !used.some((u) => u.id === x.id)).length,
       bankLeftOver: n2(receipts.filter((x) => inBank(x.mode)
                           && !used.some((u) => u.id === x.id))
                         .reduce((a, x) => a + num(x.amount), 0)),
