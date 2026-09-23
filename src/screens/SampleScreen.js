@@ -201,6 +201,10 @@ export default function SampleScreen({ navigation }) {
 
   const s = plan?.summary;
   const moneyTotal = (money || []).reduce((a, x) => a + num(x.amount), 0);
+  // Money through the bank has to be explained by a bill; cash is the part
+  // that bends. Shown apart so he can see the bank side is covered.
+  const moneyBank = (money || []).filter((x) => String(x.mode || '').toLowerCase() !== 'cash')
+    .reduce((a, x) => a + Number(x.amount || 0), 0);
 
   const Line = ({ k, v, strong }) => (
     <View style={[S.tline, { paddingVertical: 6 }]}>
@@ -249,8 +253,11 @@ export default function SampleScreen({ navigation }) {
           <Text style={{ fontSize: 12.5, color: money.length ? C.accent : C.muted,
                          marginTop: 8, lineHeight: 18 }}>
             {money.length
-              ? `${money.length} receipts, ₹${fmt0(moneyTotal)}, with no bill against them. `
-                + 'Bills will be built to match each one.'
+              ? `${money.length} receipts, ₹${fmt0(moneyTotal)}, with no bill against them.`
+                + (moneyBank > 0
+                    ? `\n₹${fmt0(moneyBank)} of it came through the bank, and that is `
+                      + 'settled first — cash is only touched after.'
+                    : '\nBills will be built to match each one.')
               : 'Nothing received in that period is waiting for a bill. The amounts '
                 + 'below will be made up instead.'}
           </Text>
@@ -317,6 +324,34 @@ export default function SampleScreen({ navigation }) {
                 <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 3, lineHeight: 17 }}>
                   So it stops at ₹{fmt0(s.value)} rather than send an item negative.
                   Enter more purchases and run it again for the rest.
+                </Text>
+              </View>
+            )}
+
+            {/* WHERE HIS FIGURE IS COMING FROM.
+                Money in the bank is money somebody can see, so he needs to
+                know it is all accounted for before he looks at anything
+                else. If any of it could not be reached, that is the first
+                thing said, not the last. */}
+            {(s.bankValue > 0 || s.bankLeftOver > 0) && (
+              <View style={{ backgroundColor: s.bankLeftOver > 0 ? C.flagSoft : C.soft,
+                             borderWidth: 1,
+                             borderColor: s.bankLeftOver > 0 ? C.flagLine : C.line,
+                             borderRadius: 10, padding: 10, marginTop: 10 }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '700',
+                               color: s.bankLeftOver > 0 ? C.flagInk : C.ink }}>
+                  {s.bankLeftOver > 0
+                    ? `₹${fmt0(s.bankLeftOver)} of bank money has no bill against it`
+                    : `All ₹${fmt0(s.bankValue)} that came through the bank is covered`}
+                </Text>
+                <Text style={{ fontSize: 12, marginTop: 3, lineHeight: 17,
+                               color: s.bankLeftOver > 0 ? C.flagInk : C.muted }}>
+                  {s.bankLeftOver > 0
+                    ? 'Ask for more bills, or more money, and run it again — bank '
+                      + 'entries are taken first, so the rest will follow.'
+                    : `Then ₹${fmt0(s.cashValue)} of cash receipts`
+                      + (s.overAndAbove > 0
+                          ? `, and ₹${fmt0(s.overAndAbove)} of counter cash on top.` : '.')}
                 </Text>
               </View>
             )}

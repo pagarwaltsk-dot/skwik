@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, Alert, ScrollView } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
+import { hasSupport, supportLine } from '../lib/contact';
 import { Box, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
@@ -29,7 +30,13 @@ export default function ForgotScreen({ navigation }) {
       return Alert.alert('Check the address', 'Type the email you saved in Settings.');
     }
     setBusy(true);
-    const { error } = await supabase.auth.resetPasswordForEmail(e);
+    // WITHOUT A PLACE TO SEND HIM, THE LINK WENT NOWHERE.
+    // This was called bare, so Supabase used the project's own Site URL —
+    // which for an app with no website is a page that does not exist. The
+    // link is now aimed at Skwik itself, and App.js catches it.
+    const { error } = await supabase.auth.resetPasswordForEmail(e, {
+      redirectTo: 'skwik://reset',
+    });
     setBusy(false);
     if (error) return Alert.alert('Could not send it', sayPlainly(error));
 
@@ -37,9 +44,11 @@ export default function ForgotScreen({ navigation }) {
     // right: saying so would tell a stranger which addresses exist.
     Alert.alert('If that address is on the account, a link is on its way',
       'Open it on this phone and it will let you set a new password.\n\n'
-      + 'Nothing arrives if that email was never saved in Settings. In that '
-      + 'case write to us and we will sort it out by hand — your books are safe '
-      + 'either way.',
+      + 'Nothing arrives if that email was never saved in Settings.'
+      + (hasSupport()
+          ? `\n\nIn that case get in touch — ${supportLine()} — and we will sort it `
+            + 'out by hand. Your books are safe either way.'
+          : '\n\nYour books are safe either way.'),
       [{ text: 'All right', onPress: () => navigation.goBack() }]);
   };
 

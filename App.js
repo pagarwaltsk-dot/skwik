@@ -12,6 +12,7 @@ import { C } from './src/theme';
 import WelcomeScreen  from './src/screens/WelcomeScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import ForgotScreen   from './src/screens/ForgotScreen';
+import ResetScreen    from './src/screens/ResetScreen';
 import OnboardScreen from './src/screens/OnboardScreen';
 import HomeScreen    from './src/screens/HomeScreen';
 import BillScreen    from './src/screens/BillScreen';

@@ -309,7 +309,26 @@ export function planSample({
 
   // 1. Bills against money he has already taken. These come first: they are
   //    the real ones, and they have to match to the rupee.
-  for (const rec of receipts) {
+  //
+  //    MONEY THAT CAME THROUGH THE BANK IS SETTLED BEFORE ANY CASH IS TOUCHED.
+  //
+  //    Receipts arrived in date order, cash and bank mixed together, and were
+  //    taken in that order. So a run that ran out of bills, or out of goods on
+  //    the shelf, could leave bank receipts unmatched while it had happily
+  //    spent the room on cash ones.
+  //
+  //    That is the wrong way round. Money in the bank is money somebody can
+  //    see: it has to be explained by a bill. Cash is the part that bends. So
+  //    every bank receipt is taken first, oldest first, and only then the cash
+  //    ones — and whatever target is left over after that becomes cash sales.
+  const inBank = (m) => String(m || '').toLowerCase() !== 'cash';
+  const ordered = [...receipts].sort((a, b) => {
+    const ab = inBank(a.mode) ? 0 : 1, bb = inBank(b.mode) ? 0 : 1;
+    if (ab !== bb) return ab - bb;
+    return String(a.pdate || '').localeCompare(String(b.pdate || ''));
+  });
+
+  for (const rec of ordered) {
     if (bills.length >= count) break;
     const amt = num(rec.amount);
     if (amt <= 0) continue;
@@ -371,6 +390,16 @@ export function planSample({
       bills.push({
         vdate: pick(r, days),
         party, lines,
+        // WHAT IS LEFT OVER IS CASH HE TOOK OVER THE COUNTER.
+        //
+        // Every rupee that came through the bank has already been spoken for
+        // above. Anything still needed to reach his figure is money that came
+        // in across the counter and was never written down — so it is a cash
+        // sale, not an amount somebody still owes him. Marking part of it
+        // udhar would put debt on customers who never took any.
+        //
+        // cashShare still lets him leave some of it on the books if that is
+        // how his month really went; at 1 the whole remainder is cash.
         is_cash: r() < cashShare,
         receipt: null,
         target: amt,
@@ -392,6 +421,19 @@ export function planSample({
       askedFor: n2(total),
       fromReceipts: used.length,
       receiptValue: n2(used.reduce((a, x) => a + num(x.amount), 0)),
+      // told apart, because he needs to see the bank side is fully covered
+      bankReceipts: used.filter((x) => inBank(x.mode)).length,
+      bankValue: n2(used.filter((x) => inBank(x.mode))
+                        .reduce((a, x) => a + num(x.amount), 0)),
+      cashReceipts: used.filter((x) => !inBank(x.mode)).length,
+      cashValue: n2(used.filter((x) => !inBank(x.mode))
+                        .reduce((a, x) => a + num(x.amount), 0)),
+      // and what is left over once every receipt has been settled
+      overAndAbove: n2(Math.max(0, value - used.reduce((a, x) => a + num(x.amount), 0))),
+      // bank money in the period that this run could NOT reach
+      bankLeftOver: n2(receipts.filter((x) => inBank(x.mode)
+                          && !used.some((u) => u.id === x.id))
+                        .reduce((a, x) => a + num(x.amount), 0)),
       cash: bills.filter((b) => b.is_cash).length,
       days: [...new Set(bills.map((b) => b.vdate))].length,
       items: [...new Set(bills.flatMap((b) => b.lines.map((l) => l.item.id)))].length,

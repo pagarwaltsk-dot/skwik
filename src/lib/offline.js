@@ -17,6 +17,9 @@
 // offline at the same time would both reach for the same number.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supportLine } from './contact';
+
+const SUPPORT = supportLine();
 
 const K = {
   items:    'skwik.cache.items',
@@ -137,9 +140,9 @@ export function sayPlainly(e) {
   if (sentence.test(raw.trim()) && !machine.test(raw)) return raw.trim();
 
   return 'Skwik hit a problem it did not expect. Nothing you typed has been '
-       + 'lost — check under Past bills before writing it again, and if it '
-       + 'keeps happening take a screenshot of this.\n\n('
-       + raw.slice(0, 120) + ')';
+       + 'lost — check under Past bills before writing it again.'
+       + (SUPPORT ? `\n\nIf it keeps happening, send a screenshot to ${SUPPORT}.` : '')
+       + '\n\n(' + raw.slice(0, 120) + ')';
 }
 
 /* ---------------- the copy on the phone ---------------- */
