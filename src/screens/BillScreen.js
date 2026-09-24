@@ -37,6 +37,7 @@ import {
 import { ScanSheet, ScanButton } from '../components/Scan';
 import { ColHead } from '../components/Register';
 import { CalButton, Calendar } from '../components/DatePick';
+import ThumbRail from '../components/ThumbRail';
 import { C, S } from '../theme';
 
 // Matched letters shown marked, the way the estimate app does it.
@@ -87,7 +88,11 @@ export default function BillScreen({ route, navigation }) {
   const [lines, setLines] = useState([]);            // newest FIRST
   const [swapFor, setSwapFor] = useState(null);
   const [sq, setSq]       = useState('');
-  const [priceList, setPriceList] = useState(1);
+  // A WALK-IN IS BILLED ON WHATEVER THE SHOP SAID IN SETTINGS.
+  // A firm row that has not been told yet — an app ahead of its database —
+  // reads as list 1, which is what every shop did before this existed.
+  const walkInList = Number(org?.walkin_price_list) === 2 ? 2 : 1;
+  const [priceList, setPriceList] = useState(walkInList);
   const [extra, setExtra] = useState('');
   const [extraNote, setExtraNote] = useState('');
   const [showExtra, setShowExtra] = useState(false);
@@ -342,7 +347,8 @@ export default function BillScreen({ route, navigation }) {
 
   const chooseCust = (p) => {
     setCust(p); setIsCash(cashInfo.isCash); setCustOpen(false);
-    applyList(Number(p.price_list) === 2 ? 2 : 1);
+    // his own list if he has one, otherwise the shop's answer for a walk-in
+    applyList(Number(p.price_list) === 2 ? 2 : (p.price_list ? 1 : walkInList));
     setTimeout(() => qRef.current?.focus(), 150);   // known name: straight to products
   };
   // THE COMMONEST SALE IN THE SHOP: a stranger, cash, no name.
@@ -361,6 +367,7 @@ export default function BillScreen({ route, navigation }) {
     setCust({ name: 'CASH', walkIn: true });
     setIsCash(true);
     setCustOpen(false);
+    applyList(walkInList);          // the shop's answer, given once in Settings
     setTimeout(() => qRef.current?.focus(), 150);
   };
 
@@ -375,7 +382,7 @@ export default function BillScreen({ route, navigation }) {
       kind: isBuy ? 'supplier' : 'customer',
       phone: '', area: '', address: '', gstin: '',
       opening_balance: '', opening_type: 'owes_you',
-      price_list: String(priceList || 1),
+      price_list: String(priceList || walkInList),
       state_code: String(org?.state_code || ''),
     });
     setIsCash(cashInfo.isCash);
@@ -1275,22 +1282,23 @@ export default function BillScreen({ route, navigation }) {
           that would put the name under the status bar */}
       <Bar style={keyGap > 0 ? { paddingBottom: 6 } : null}>
         <BackButton navigation={navigation} onPress={leave} />
-        <TouchableOpacity style={{ flex: 1, minWidth: 0 }} onPress={() => setCustOpen(true)}>
+        {/* THE NAME IS NOT A TITLE, SO IT NO LONGER SITS WHERE A TITLE SITS.
+            It was up here on the dark bar, in the same place and the same
+            type as the screen's own heading — so it read as furniture, and a
+            box he has to fill in before he can save looked like a label. It
+            is a field now, in the page, above the goods, where he can see it
+            is waiting for him. The bar is left doing what a bar does: which
+            document this is, its number, and what it comes to. */}
+        <View style={{ flex: 1, minWidth: 0 }}>
           <Text numberOfLines={1} style={S.barName}>
-            {cust ? (isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name)
-                  : 'Tap to choose customer'}
+            {docName}{nextNo ? `  ·  ${nextNo}` : ''}
           </Text>
-          {/* THE NUMBER HE IS WRITING, WHILE HE IS WRITING IT.
-              He reads it off the screen to say it to the customer, and to
-              check it against the book. A new bill has not been given its
-              number yet — the server issues that on save — so what is shown
-              is the one it is about to get, said plainly. */}
-          {keyGap === 0 && (
+          {keyGap === 0 && !!cust && (
             <Text numberOfLines={1} style={S.barSub}>
-              {docName}{nextNo ? `  ·  ${nextNo}` : ''}
+              {isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name}
             </Text>
           )}
-        </TouchableOpacity>
+        </View>
         {/* CASH OR UDHAR, SAID OUT LOUD.
             This was decided only by whether he happened to type "cash" in
             front of the name. A regular customer who paid at the counter was
@@ -1377,6 +1385,32 @@ export default function BillScreen({ route, navigation }) {
       {(
         <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                        borderBottomWidth: 1, borderBottomColor: C.line }}>
+
+          {/* WHO IT IS FOR. Empty, it is outlined in the accent colour and
+              says what it wants; filled, it goes quiet and shows the name. */}
+          <TouchableOpacity onPress={() => setCustOpen(true)} activeOpacity={0.7}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 10,
+                     paddingHorizontal: 12, paddingVertical: 10, marginBottom: 8,
+                     borderRadius: 11, borderWidth: 1.5,
+                     borderColor: cust ? C.line : C.accent,
+                     backgroundColor: cust ? C.card : C.accentSoft }}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ fontSize: 10.5, letterSpacing: 0.8, fontWeight: '700',
+                             color: cust ? C.muted : C.accent }}>
+                {isBuy ? 'SUPPLIER' : 'CUSTOMER'}
+              </Text>
+              <Text numberOfLines={1}
+                style={{ fontSize: 16, fontWeight: '700', marginTop: 1,
+                         color: cust ? C.ink : C.accent }}>
+                {cust
+                  ? (isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name)
+                  : (isBuy ? 'Choose a supplier' : 'Choose a customer')}
+              </Text>
+            </View>
+            <Text style={{ fontSize: 20, fontWeight: '700',
+                           color: cust ? C.muted : C.accent }}>›</Text>
+          </TouchableOpacity>
+
           <TextInput
             ref={qRef}
             style={S.input}
@@ -1393,23 +1427,28 @@ export default function BillScreen({ route, navigation }) {
               if (k === 'Tab') { e.preventDefault?.(); takeSel(); }
               else if (k === 'ArrowDown') { e.preventDefault?.(); walk(); }
             }} />
-          {isOut && !cust?.price_list && (
-            <View style={[S.row, { marginTop: 8 }]}>
-              {[1, 2].map((n) => {
-                const on = priceList === n;
-                const nm = n === 1 ? (org?.price1_name || 'Wholesale') : (org?.price2_name || 'Retail');
-                return (
-                  <TouchableOpacity key={n} onPress={() => applyList(n)}
-                    style={{ flex: 1, paddingVertical: 7, borderRadius: 9, alignItems: 'center',
-                             borderWidth: 1, borderColor: on ? C.accent : C.line,
-                             backgroundColor: on ? C.accentSoft : C.surface }}>
-                    <Text style={{ fontSize: 13, fontWeight: '600', color: on ? C.accent : C.muted }}>
-                      {nm}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+          {/* THE PRICE LIST IS NOT A QUESTION ABOUT THIS BILL.
+              Two buttons sat here, above the goods, on every counter sale —
+              and the answer was the same every time, because it is a fact
+              about the CUSTOMER and every customer already carries it on his
+              own row. The stranger paying cash is the one who does not, and
+              that is now said once in Settings instead of forty times a day.
+              What is left is a line saying which rates are being used, and it
+              can still be tapped on the odd bill that needs the other one. */}
+          {isOut && (
+            <TouchableOpacity onPress={() => applyList(priceList === 1 ? 2 : 1)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={{ paddingTop: 7 }}>
+              <Text style={{ fontSize: 11.5, color: C.muted }}>
+                {priceList === 1 ? (org?.price1_name || 'Wholesale') : (org?.price2_name || 'Retail')}
+                {' rates'}
+                {cust?.price_list ? ` · ${cust.name}'s list` : ''}
+                <Text style={{ color: C.accent, fontWeight: '700' }}>
+                  {'   use '}
+                  {priceList === 1 ? (org?.price2_name || 'Retail') : (org?.price1_name || 'Wholesale')}
+                </Text>
+              </Text>
+            </TouchableOpacity>
           )}
 
           {!!q.trim() && (
@@ -2425,58 +2464,15 @@ export default function BillScreen({ route, navigation }) {
         title="Point at the barcode"
         note="Scan the same packet twice and the quantity goes up" />
 
-      {/* ===================== THE BAR, ON TOP OF THE KEYBOARD ==============
-          The point of it is that his hand does not travel. Put beside the
-          list it was still up near the top of the screen, under the search
-          box, and reaching it means lifting the thumb off the keyboard and
-          walking it up the glass — which is the very thing he asked not to
-          have to do.
-          So it sits on the keyboard's own top edge: `bottom: keyGap` is the
-          height the phone reports for the keyboard, so the bar rests exactly
-          on it and covers none of it. With the keyboard down it drops to the
-          bottom of the screen and is still under his thumb.
-          It also says WHICH item it is holding, so he does not have to look
-          up at the list either — the name and the rate travel down to him.
-          ▼ and OK are on the right, where the thumb of the hand holding the
-          phone already is.                                                   */}
-      {wantRail && !!q.trim() && hits.length > 0 && (
-        <View style={{ position: 'absolute', left: 0, right: 0, bottom: keyGap,
-                       flexDirection: 'row', alignItems: 'center', gap: 8,
-                       paddingHorizontal: 10, paddingVertical: 7,
-                       backgroundColor: C.bg, borderTopWidth: 1.5, borderTopColor: C.line }}>
+      {/* ===================== ONE ARROW, WHERE HIS THUMB IS ==============
+          Tap walks the highlight down the list; hold puts that line on the
+          bill; Tab does the same from a keyboard. It floats and is dragged
+          where he wants it. The whole of it is in ThumbRail.              */}
+      <ThumbRail
+        visible={wantRail && !!q.trim() && hits.length > 0}
+        count={hits.length}
+        onNext={walk} onTake={takeSel} />
 
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <Text numberOfLines={1}
-              style={{ fontSize: 15, fontWeight: '800', color: C.ink }}>
-              {hits[at]?.p?.name}
-            </Text>
-            <Text numberOfLines={1} style={{ fontSize: 11.5, color: C.muted, marginTop: 1 }}>
-              {[`${at + 1} of ${hits.length}`,
-                `₹${fmt0(listRate(hits[at]?.p || {}))}`,
-                uqcShort(hits[at]?.p?.unit)].filter(Boolean).join('  ·  ')}
-            </Text>
-          </View>
-
-          {/* Walking down is the common one, so it is the big key. With only
-              one match there is nowhere to walk, and it goes quiet. */}
-          <TouchableOpacity onPress={walk} activeOpacity={0.7}
-            disabled={hits.length < 2}
-            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
-            style={{ width: 62, height: 46, borderRadius: 11, borderWidth: 1.5,
-                     borderColor: C.line, backgroundColor: C.card,
-                     alignItems: 'center', justifyContent: 'center',
-                     opacity: hits.length < 2 ? 0.35 : 1 }}>
-            <Text style={{ fontSize: 22, fontWeight: '800', color: C.ink }}>▼</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity onPress={takeSel} activeOpacity={0.7}
-            hitSlop={{ top: 8, bottom: 8, left: 6, right: 10 }}
-            style={{ width: 62, height: 46, borderRadius: 11, backgroundColor: C.accent,
-                     alignItems: 'center', justifyContent: 'center' }}>
-            <Text style={{ fontSize: 15, fontWeight: '800', color: '#fff' }}>OK</Text>
-          </TouchableOpacity>
-        </View>
-      )}
     </Screen>
   );
 }
