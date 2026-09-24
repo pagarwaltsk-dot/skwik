@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator, Modal,
+  View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator, Modal, FlatList,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
@@ -13,14 +13,14 @@ import { useApp } from '../AppContext';
 import { fmt0, today } from '../lib/money';
 import {
   sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml, planImport,
-  priceLevelsInTally,
+  priceLevelsInTally, applyPriceLevel,
   itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml, goesToTally,
   paymentsToCsv, expensesToCsv, balancesToCsv, stockToCsv, bookToCsv,
   looksMangled, base64ToBytes, decodeBytes,
   buildBackup, readBackup, backupVoucherPayload,
   ITEMS_TEMPLATE, PARTIES_TEMPLATE,
 } from '../lib/transfer';
-import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
+import { BackButton, Bar, Foot, Head, MoreButton, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // BRINGING BOOKS IN, AND SENDING THEM OUT.
@@ -55,11 +55,35 @@ function rangeDates(k) {
   return [null, null];
 }
 
+
+// A ROW DECLARED INSIDE THE SCREEN IS A NEW COMPONENT ON EVERY RENDER.
+//
+// React compares components by identity. Written inside TransferScreen, this
+// arrow function was a brand new type each time anything on the screen
+// changed, so React threw the whole list away and built it again from
+// nothing — with five hundred imported rows sitting in state, every single
+// tap. That is the freeze that makes a button look dead.
+const Row = ({ label, note, onPress, busyKey, tone, busy }) => (
+  <TouchableOpacity onPress={onPress} disabled={!!busy}
+    style={{ paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: C.line,
+             opacity: busy && busy !== busyKey ? 0.4 : 1 }}>
+    <View style={S.row}>
+      <Text style={{ flex: 1, fontSize: 16, fontWeight: '700',
+                     color: tone === 'quiet' ? C.ink : C.accent }}>{label}</Text>
+      {busy === busyKey && <ActivityIndicator size="small" color={C.accent} />}
+    </View>
+    {!!note && <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>{note}</Text>}
+  </TouchableOpacity>
+);
+
+
 export default function TransferScreen({ navigation }) {
   const { org, reloadOrg } = useApp();
   const [busy, setBusy]   = useState('');
   const [range, setRange] = useState('month');
   const [ready, setReady] = useState(null);   // what was read, waiting to be confirmed
+  const [seeAll, setSeeAll] = useState(false); // the whole list of it, not five rows
+  const [basisOk, setBasisOk] = useState(false); // he has told us these ARE closing figures
 
   /* ---------------- out ---------------- */
 
@@ -565,9 +589,13 @@ export default function TransferScreen({ navigation }) {
       if (read.problem) return Alert.alert('Could not read that file', read.problem);
       if (!read.rows.length) return Alert.alert('Nothing found', 'That file had no rows we could use.');
 
+      setBasisOk(false);
       setReady({ what, rows: read.rows, name: asset.name || 'the file',
                  kind: kind === 'csv' ? 'a spreadsheet' : 'a Tally export',
-                 text: kind === 'csv' ? '' : text,
+                 // The file itself is no longer held: changing the price
+                 // list works off the rates already read, and keeping a
+                 // several-megabyte string alive in state on a phone with
+                 // the import sheet open is memory for nothing.
                  columns: read.columns || null,
                  levels, level: saved, basis: read.basis || null });
     } catch (e) {
@@ -580,15 +608,23 @@ export default function TransferScreen({ navigation }) {
     } finally { setBusy(''); }
   };
 
-  // Reading the same file again on a different price level. The file is still
-  // in hand, so nothing is picked twice, and the choice is kept on the firm so
-  // the next import starts on the right list.
+  // A DIFFERENT PRICE LIST, WITHOUT READING THE FILE AGAIN.
+  //
+  // This used to re-parse the entire Tally export on every tap — half a
+  // megabyte of XML, on the phone's one thread, with nothing on the screen
+  // moving while it ran. The chip did not light up, the rates below did not
+  // change, and a finger on the glass got no answer at all: a control that
+  // works perfectly and looks broken. Every level's rate was already read
+  // when the file was opened, so this is now arithmetic on what is in hand
+  // and the chip lights the instant it is touched.
+  //
+  // The chosen list is still remembered on the firm, but quietly: reloading
+  // the firm row here re-rendered the whole screen for nothing.
   const useLevel = (level) => {
-    if (!ready?.text) return;
-    const read = itemsFromTallyXml(ready.text, { level });
-    setReady((r) => ({ ...r, level, rows: read.rows, basis: read.basis || r.basis }));
-    supabase.from('orgs').update({ tally_price_level: level || null }).eq('id', org.id)
-      .then(() => reloadOrg?.());
+    if (!ready) return;
+    setReady((r) => ({ ...r, level, rows: applyPriceLevel(r.rows, level) }));
+    supabase.from('orgs').update({ tally_price_level: level || null })
+      .eq('id', org.id).then(() => {}, () => {});
   };
 
   // Names already in the book are updated, new ones are added. Nothing is
@@ -651,18 +687,6 @@ export default function TransferScreen({ navigation }) {
 
   /* ---------------- screen ---------------- */
 
-  const Row = ({ label, note, onPress, busyKey, tone }) => (
-    <TouchableOpacity onPress={onPress} disabled={!!busy}
-      style={{ paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: C.line,
-               opacity: busy && busy !== busyKey ? 0.4 : 1 }}>
-      <View style={S.row}>
-        <Text style={{ flex: 1, fontSize: 16, fontWeight: '700',
-                       color: tone === 'quiet' ? C.ink : C.accent }}>{label}</Text>
-        {busy === busyKey && <ActivityIndicator size="small" color={C.accent} />}
-      </View>
-      {!!note && <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>{note}</Text>}
-    </TouchableOpacity>
-  );
 
   return (
     <Screen>
@@ -684,9 +708,9 @@ export default function TransferScreen({ navigation }) {
           never duplicated.
         </Text>
 
-        <Row label="Items" busyKey="in-items" onPress={() => pick('items')}
+        <Row busy={busy} label="Items" busyKey="in-items" onPress={() => pick('items')}
           note="Name, HSN, unit, rates and GST. Headings need not match exactly — Particulars, Rate and Per are all understood." />
-        <Row label="Customers and suppliers" busyKey="in-parties" onPress={() => pick('parties')}
+        <Row busy={busy} label="Customers and suppliers" busyKey="in-parties" onPress={() => pick('parties')}
           note="Name, GST number, phone and what they owed you before. The GST number fills in the state, which decides IGST." />
 
         <View style={{ height: 26 }} />
@@ -710,18 +734,18 @@ export default function TransferScreen({ navigation }) {
           })}
         </View>
 
-        <Row label="Everything, in order" busyKey="all" onPress={exportEverything}
+        <Row busy={busy} label="Everything, in order" busyKey="all" onPress={exportEverything}
           note="Sale bills, purchase bills, returns, every line, money in and out, expenses, what each party stands at, the cash book, the items and the stock — each as its own numbered sheet. This is what to send your accountant." />
 
-        <Row label="To Tally" busyKey="tally" onPress={exportTally}
+        <Row busy={busy} label="To Tally" busyKey="tally" onPress={exportTally}
           note={`Bills and purchases as a Tally XML your accountant imports with Gateway → Import → Vouchers. It uses the ledger names from Settings${org?.sales_ledger ? '' : ' — set those first, or it will use plain names like Sales and CGST'}.`} />
-        <Row label="Bills, one row each" busyKey="bills" onPress={exportBills} tone="quiet"
+        <Row busy={busy} label="Bills, one row each" busyKey="bills" onPress={exportBills} tone="quiet"
           note="A spreadsheet of every bill with its tax split. For your own checking, or your accountant's." />
-        <Row label="Bills, one row per item" busyKey="lines" onPress={exportBillLines} tone="quiet"
+        <Row busy={busy} label="Bills, one row per item" busyKey="lines" onPress={exportBillLines} tone="quiet"
           note="Every line of every bill. This is the one to use for working out what sold." />
-        <Row label="Items" busyKey="items" onPress={exportItems} tone="quiet"
+        <Row busy={busy} label="Items" busyKey="items" onPress={exportItems} tone="quiet"
           note="Your whole item list, in the same shape it can be brought back in." />
-        <Row label="Customers and suppliers" busyKey="parties" onPress={exportParties} tone="quiet"
+        <Row busy={busy} label="Customers and suppliers" busyKey="parties" onPress={exportParties} tone="quiet"
           note="Names, GST numbers, phones and balances." />
 
         <View style={{ height: 26 }} />
@@ -733,18 +757,18 @@ export default function TransferScreen({ navigation }) {
           month, and keeping it off this phone.
         </Text>
 
-        <Row label="Save a full backup" busyKey="backup" onPress={saveBackup}
+        <Row busy={busy} label="Save a full backup" busyKey="backup" onPress={saveBackup}
           note="Firm, items, customers, every bill and every line, receipts and payments." />
-        <Row label="Put a backup back" busyKey="restore" onPress={restoreBackup} tone="quiet"
+        <Row busy={busy} label="Put a backup back" busyKey="restore" onPress={restoreBackup} tone="quiet"
           note="Adds anything missing. Nothing here is deleted, and a bill already in your books is left alone." />
 
         <View style={{ height: 26 }} />
 
         <Text style={S.eyebrow}>Blank forms</Text>
-        <Row label="Items form" tone="quiet" busyKey="t1"
+        <Row busy={busy} label="Items form" tone="quiet" busyKey="t1"
           onPress={() => send('skwik-items-form.csv', ITEMS_TEMPLATE, 'text/csv')}
           note="Fill this in on a computer and bring it back." />
-        <Row label="Customers form" tone="quiet" busyKey="t2"
+        <Row busy={busy} label="Customers form" tone="quiet" busyKey="t2"
           onPress={() => send('skwik-customers-form.csv', PARTIES_TEMPLATE, 'text/csv')} />
 
         <Text style={[S.hint, { marginTop: 22 }]}>
@@ -757,16 +781,32 @@ export default function TransferScreen({ navigation }) {
       <Modal visible={!!ready} transparent animationType="slide"
              onRequestClose={() => setReady(null)}>
         <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end' }}>
+          {/* A SHEET THAT GREW TALLER THAN THE PHONE.
+              Title, a chip for every price list in his Tally, how the columns
+              were read, a note about the balances, five sample rows and two
+              buttons — on a big screen it fits and on a small one it does not,
+              and what does not fit runs off the edge. Anything off the edge is
+              not drawn and cannot be touched: on his phone the whole thing
+              looked dead, which is exactly what he reported.
+
+              So the sheet is now capped at seven eighths of the screen,
+              whatever screen that is, the middle scrolls, and the two buttons
+              are pinned outside the scroll where they can always be reached. */}
           <View style={{ backgroundColor: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22,
-                         padding: 20, paddingBottom: 28 }}>
+                         maxHeight: '88%' }}>
             {!!ready && (
               <>
-                <Text style={{ fontSize: 21, fontWeight: '700', color: C.ink }}>
-                  {fmt0(ready.rows.length)} {ready.what === 'items' ? 'items' : 'names'} read
-                </Text>
-                <Text style={{ fontSize: 13, color: C.muted, marginTop: 6, lineHeight: 19 }}>
-                  From {ready.name}, which looks like {ready.kind}. Nothing is saved yet.
-                </Text>
+                <View style={{ paddingHorizontal: 20, paddingTop: 20 }}>
+                  <Text style={{ fontSize: 21, fontWeight: '700', color: C.ink }}>
+                    {fmt0(ready.rows.length)} {ready.what === 'items' ? 'items' : 'names'} read
+                  </Text>
+                  <Text style={{ fontSize: 13, color: C.muted, marginTop: 6, lineHeight: 19 }}>
+                    From {ready.name}, which looks like {ready.kind}. Nothing is saved yet.
+                  </Text>
+                </View>
+
+                <ScrollView style={{ flexShrink: 1 }} keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 8 }}>
 
                 {ready.levels?.length > 1 && (
                   <View style={{ marginTop: 14 }}>
@@ -822,21 +862,49 @@ export default function TransferScreen({ navigation }) {
                   </View>
                 )}
 
-                {!!ready.basis && ready.basis !== 'closing' && (
+                {/* SKWIK CANNOT TELL, AND IT WAS TALKING AS IF IT COULD.
+                    Tally writes the stock figure into a tag called
+                    OPENINGBALANCE. When you export masters with "make closing
+                    balance as opening", Tally puts TODAY'S figure into that
+                    same tag — the name does not change. So a file carrying
+                    the right numbers looks identical to one carrying April's,
+                    and Skwik flatly told him his were wrong. He had done
+                    exactly what he was being told to do.
+
+                    It is a question now, not a verdict, and answering it puts
+                    it away. */}
+                {!!ready.basis && ready.basis !== 'closing' && !basisOk && (
                   <View style={{ marginTop: 14, padding: 12, backgroundColor: C.flagSoft,
                                  borderWidth: 1, borderColor: C.flagLine, borderRadius: 12 }}>
                     <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.flagInk }}>
-                      {ready.basis === 'mixed'
-                        ? 'Some of these are opening figures, not closing'
-                        : 'These are opening figures, not closing'}
+                      Is this stock as it stands today?
                     </Text>
                     <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 4, lineHeight: 17 }}>
-                      A Tally masters export carries the balance the books opened
-                      with on 1 April. To bring the balance as it stands today,
-                      export again from Tally with closing balances in it —
-                      Gateway → Display → Trial Balance (or Stock Summary for
-                      items) → Export.
+                      Tally writes the stock figure under the heading
+                      “opening balance” whichever one you exported, so Skwik
+                      cannot tell them apart. Check one item below against
+                      Tally.{'\n\n'}
+                      If it is April's figure instead, export again with
+                      “make closing balance as opening” turned on — Gateway →
+                      Display → Stock Summary → Export (Trial Balance for
+                      customers and suppliers).
                     </Text>
+                    <View style={[S.row, { gap: 8, marginTop: 10 }]}>
+                      <TouchableOpacity onPress={() => setBasisOk(true)}
+                        style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 9,
+                                 borderWidth: 1.5, borderColor: C.flagLine }}>
+                        <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.flagInk }}>
+                          Yes, it is today's
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => setSeeAll(true)}
+                        style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 9,
+                                 borderWidth: 1.5, borderColor: C.flagLine }}>
+                        <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.flagInk }}>
+                          Let me check
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 )}
 
@@ -854,25 +922,96 @@ export default function TransferScreen({ navigation }) {
                     </Text>
                   ))}
                   {ready.rows.length > 5 && (
-                    <Text style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
-                      and {fmt0(ready.rows.length - 5)} more
-                    </Text>
+                    <TouchableOpacity onPress={() => setSeeAll(true)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      style={{ marginTop: 6 }}>
+                      {/* HE TRIED TO TAP THIS. Of course he did — it is the
+                          only thing on the sheet that names what he cannot
+                          see, and it was a line of plain text. Checking five
+                          rows out of five hundred is not checking. */}
+                      <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.accent }}>
+                        and {fmt0(ready.rows.length - 5)} more — see all of them
+                      </Text>
+                    </TouchableOpacity>
                   )}
                 </View>
+                </ScrollView>
 
-                <TouchableOpacity style={[S.btn, { marginTop: 18 }]} onPress={commit}>
-                  <Text style={S.btnText}>Bring them in</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setReady(null)}
-                  style={{ marginTop: 12, alignItems: 'center', paddingVertical: 10 }}>
-                  <Text style={{ fontSize: 16, fontWeight: '600', color: C.muted }}>
-                    Not now
-                  </Text>
-                </TouchableOpacity>
+                {/* Pinned. Whatever is above them and however small the phone,
+                    these two are on the screen and can be pressed. */}
+                <View style={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 24,
+                               borderTopWidth: 1, borderTopColor: C.line,
+                               backgroundColor: C.bg }}>
+                  <TouchableOpacity style={S.btn} onPress={commit}>
+                    <Text style={S.btnText}>
+                      Bring in {fmt0(ready.rows.length)} {ready.what === 'items' ? 'items' : 'names'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setReady(null)}
+                    style={{ marginTop: 10, alignItems: 'center', paddingVertical: 10 }}>
+                    <Text style={{ fontSize: 16, fontWeight: '600', color: C.muted }}>
+                      Not now
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </>
             )}
           </View>
         </View>
+      </Modal>
+
+      {/* ---------- everything that was read, before a rupee of it is saved ---- */}
+      <Modal visible={!!seeAll && !!ready} animationType="slide"
+             onRequestClose={() => setSeeAll(false)}>
+        <Screen>
+          <Head more={false} onBack={() => setSeeAll(false)}
+                title={ready
+                  ? `${fmt0(ready.rows.length)} ${ready.what === 'items' ? 'items' : 'names'}`
+                  : ''} />
+          <FlatList
+            data={ready?.rows || []}
+            keyExtractor={(r, i) => `${r.name}|${i}`}
+            initialNumToRender={20}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 30 }}
+            ListHeaderComponent={
+              <Text style={{ fontSize: 12.5, color: C.muted, paddingVertical: 12, lineHeight: 18 }}>
+                {ready?.what === 'items'
+                  ? `Rate, HSN and opening stock as Skwik read them${
+                      ready?.level ? `, off your “${ready.level}” list` : ''}. `
+                    + 'Nothing is saved until you tap Bring them in.'
+                  : 'As Skwik read them. Nothing is saved until you tap Bring them in.'}
+              </Text>
+            }
+            renderItem={({ item, index }) => (
+              <View style={[S.row, { paddingVertical: 10, borderBottomWidth: 1,
+                                     borderBottomColor: C.line, gap: 10 }]}>
+                <Text style={[{ width: 34, fontSize: 11.5, color: C.faint }, S.num]}>
+                  {index + 1}
+                </Text>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text numberOfLines={1}
+                    style={{ fontSize: 14.5, fontWeight: '700', color: C.ink }}>
+                    {item.name}
+                  </Text>
+                  <Text numberOfLines={1} style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
+                    {ready?.what === 'items'
+                      ? [item.hsn ? `HSN ${item.hsn}` : null,
+                         item.unit,
+                         item.gst_rate ? `${item.gst_rate}% GST` : null,
+                         item.opening_stock ? `${item.opening_stock} in hand` : null]
+                        .filter(Boolean).join(' · ')
+                      : [item.gstin, item.phone, item.state_name].filter(Boolean).join(' · ')
+                        || 'nothing else on the file'}
+                  </Text>
+                </View>
+                <Text style={[{ fontSize: 14.5, fontWeight: '700', color: C.ink }, S.num]}>
+                  {ready?.what === 'items'
+                    ? `₹${fmt0(item.sale_price)}`
+                    : (item.opening_balance ? `₹${fmt0(item.opening_balance)}` : '')}
+                </Text>
+              </View>
+            )} />
+        </Screen>
       </Modal>
 
       {busy === 'saving' && (

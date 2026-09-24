@@ -1414,9 +1414,8 @@ export default function BillScreen({ route, navigation }) {
 
           {!!q.trim() && (
             <View style={{ marginTop: 6, maxHeight: 280, borderWidth: 1, borderColor: C.line,
-                           borderRadius: 9, backgroundColor: C.surface, overflow: 'hidden',
-                           flexDirection: 'row' }}>
-              <ScrollView style={{ flex: 1 }} ref={hitsRef} keyboardShouldPersistTaps="handled">
+                           borderRadius: 9, backgroundColor: C.surface, overflow: 'hidden' }}>
+              <ScrollView ref={hitsRef} keyboardShouldPersistTaps="handled">
                 {hits.map((h, hi) => (
                   <TouchableOpacity key={h.p.id} onPress={() => addHit(h)}
                     style={[S.hit, wantRail && hi === at && {
@@ -1454,29 +1453,6 @@ export default function BillScreen({ route, navigation }) {
                 </TouchableOpacity>
               </ScrollView>
 
-              {/* THE BAR. Exactly as wide as the OK on it, down the right,
-                  within reach of a thumb holding the phone. */}
-              {wantRail && hits.length > 1 && (
-                <View style={{ width: 58, borderLeftWidth: 1, borderLeftColor: C.line,
-                               padding: 6, gap: 6 }}>
-                  <TouchableOpacity onPress={walk} activeOpacity={0.7}
-                    style={{ flex: 1, minHeight: 74, borderRadius: 11, borderWidth: 1.5,
-                             borderColor: C.line, backgroundColor: C.card,
-                             alignItems: 'center', justifyContent: 'center' }}>
-                    <Text style={{ fontSize: 24, fontWeight: '800', color: C.ink }}>▼</Text>
-                    <Text style={[{ fontSize: 10, fontWeight: '700', color: C.muted,
-                                    marginTop: 1 }, S.num]}>
-                      {at + 1}/{hits.length}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity onPress={takeSel} activeOpacity={0.7}
-                    style={{ height: 38, borderRadius: 11, backgroundColor: C.accent,
-                             alignItems: 'center', justifyContent: 'center' }}>
-                    <Text style={{ fontSize: 14, fontWeight: '800', color: '#fff' }}>OK</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
             </View>
           )}
         </View>
@@ -2448,6 +2424,59 @@ export default function BillScreen({ route, navigation }) {
       <ScanSheet visible={scanOpen} onClose={() => setScanOpen(false)} onCode={scanned}
         title="Point at the barcode"
         note="Scan the same packet twice and the quantity goes up" />
+
+      {/* ===================== THE BAR, ON TOP OF THE KEYBOARD ==============
+          The point of it is that his hand does not travel. Put beside the
+          list it was still up near the top of the screen, under the search
+          box, and reaching it means lifting the thumb off the keyboard and
+          walking it up the glass — which is the very thing he asked not to
+          have to do.
+          So it sits on the keyboard's own top edge: `bottom: keyGap` is the
+          height the phone reports for the keyboard, so the bar rests exactly
+          on it and covers none of it. With the keyboard down it drops to the
+          bottom of the screen and is still under his thumb.
+          It also says WHICH item it is holding, so he does not have to look
+          up at the list either — the name and the rate travel down to him.
+          ▼ and OK are on the right, where the thumb of the hand holding the
+          phone already is.                                                   */}
+      {wantRail && !!q.trim() && hits.length > 0 && (
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: keyGap,
+                       flexDirection: 'row', alignItems: 'center', gap: 8,
+                       paddingHorizontal: 10, paddingVertical: 7,
+                       backgroundColor: C.bg, borderTopWidth: 1.5, borderTopColor: C.line }}>
+
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text numberOfLines={1}
+              style={{ fontSize: 15, fontWeight: '800', color: C.ink }}>
+              {hits[at]?.p?.name}
+            </Text>
+            <Text numberOfLines={1} style={{ fontSize: 11.5, color: C.muted, marginTop: 1 }}>
+              {[`${at + 1} of ${hits.length}`,
+                `₹${fmt0(listRate(hits[at]?.p || {}))}`,
+                uqcShort(hits[at]?.p?.unit)].filter(Boolean).join('  ·  ')}
+            </Text>
+          </View>
+
+          {/* Walking down is the common one, so it is the big key. With only
+              one match there is nowhere to walk, and it goes quiet. */}
+          <TouchableOpacity onPress={walk} activeOpacity={0.7}
+            disabled={hits.length < 2}
+            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+            style={{ width: 62, height: 46, borderRadius: 11, borderWidth: 1.5,
+                     borderColor: C.line, backgroundColor: C.card,
+                     alignItems: 'center', justifyContent: 'center',
+                     opacity: hits.length < 2 ? 0.35 : 1 }}>
+            <Text style={{ fontSize: 22, fontWeight: '800', color: C.ink }}>▼</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={takeSel} activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 6, right: 10 }}
+            style={{ width: 62, height: 46, borderRadius: 11, backgroundColor: C.accent,
+                     alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 15, fontWeight: '800', color: '#fff' }}>OK</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </Screen>
   );
 }
