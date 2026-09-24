@@ -24,24 +24,35 @@ import { C, S } from '../theme';
 
 const dmy = (d) => (d ? `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(0, 4)}` : '');
 
-const blank = { name: '', opening: '', opening_on: today(), is_default: false };
+const blank = { name: '', opening: '', opening_on: '', is_default: false };
 
 export default function BanksScreen({ navigation }) {
   const { org, isOwner } = useApp();
   const [rows, setRows] = useState([]);
   const [edit, setEdit] = useState(null);
   const [cash, setCash] = useState('');
+  // THE DAY THE BOOKS BEGAN, NOT A DATE HE HAS TO THINK ABOUT.
+  //
+  // An opening balance IS the figure on the day the books started — there is
+  // no other day it could be. Asking for it invited a different answer on
+  // every account, and a cash book that starts on four different days does
+  // not add up to anything. It is now worked out and shown, not typed.
   const [cashOn, setCashOn] = useState(today());
+  const [bookDay, setBookDay] = useState(today());
 
   const load = useCallback(async () => {
     const [{ data }, { data: o }] = await Promise.all([
       supabase.from('bank_accounts').select('*').order('name'),
-      supabase.from('orgs').select('opening_cash, opening_cash_on').eq('id', org.id).maybeSingle(),
+      supabase.from('orgs').select('opening_cash, opening_cash_on, created_at').eq('id', org.id).maybeSingle(),
     ]);
     setRows(data || []);
     if (o) {
+      const began = String(o.created_at || '').slice(0, 10) || today();
+      setBookDay(began);
       setCash(o.opening_cash ? String(o.opening_cash) : '');
-      setCashOn(o.opening_cash_on || today());
+      // a date already entered is left exactly as it is — rewriting it would
+      // move every figure in the cash book after it
+      setCashOn(o.opening_cash_on || began);
     }
   }, [org?.id]);
 
@@ -53,7 +64,7 @@ export default function BanksScreen({ navigation }) {
       org_id: org.id,
       name: edit.name.trim(),
       opening: num(edit.opening),
-      opening_on: edit.opening_on || null,
+      opening_on: edit.opening_on || bookDay || null,
       is_default: !!edit.is_default,
       is_active: true,
     };
@@ -88,7 +99,7 @@ export default function BanksScreen({ navigation }) {
 
   const saveCash = async () => {
     const { error } = await supabase.from('orgs')
-      .update({ opening_cash: num(cash), opening_cash_on: cashOn || null })
+      .update({ opening_cash: num(cash), opening_cash_on: cashOn || bookDay || null })
       .eq('id', org.id);
     if (error) return Alert.alert('Could not save', sayPlainly(error));
     Alert.alert('Saved', 'The cash book starts from that figure.');
@@ -126,10 +137,9 @@ export default function BanksScreen({ navigation }) {
           <Text style={S.label}>Opening cash</Text>
           <Box style={[{ marginTop: 6 }, S.num]} keyboardType="numeric" placeholder="0"
             value={cash} onChangeText={setCash} onBlur={() => setCash(settle(cash))} />
-          <Text style={[S.label, { marginTop: 12 }]}>On which date</Text>
-          <Box style={[{ marginTop: 6 }, S.num]} placeholder="2026-04-01"
-            keyboardType="numbers-and-punctuation"
-            value={cashOn} onChangeText={setCashOn} />
+          <Text style={[S.num, { fontSize: 12, color: C.muted, marginTop: 8 }]}>
+            as on {dmy(cashOn)} — the day your books start
+          </Text>
           <TouchableOpacity style={[S.btn, { marginTop: 14, paddingVertical: 12 }]}
             onPress={saveCash}>
             <Text style={[S.btnText, { fontSize: 14.5 }]}>Save the cash opening</Text>
@@ -141,7 +151,7 @@ export default function BanksScreen({ navigation }) {
         {rows.filter((r) => r.is_active).map((a) => (
           <TouchableOpacity key={a.id} onPress={() => setEdit({
             ...a, opening: a.opening ? String(a.opening) : '',
-            opening_on: a.opening_on || today(),
+            opening_on: a.opening_on || bookDay,
           })}
             style={[S.row, { paddingVertical: 14, borderBottomWidth: 1,
                              borderBottomColor: C.line }]}>
@@ -200,11 +210,9 @@ export default function BanksScreen({ navigation }) {
               onChangeText={(t) => setEdit((e) => ({ ...e, opening: t }))}
               onBlur={() => setEdit((e) => ({ ...e, opening: settle(e.opening) }))} />
 
-            <Text style={[S.label, { marginTop: 16 }]}>On which date</Text>
-            <Box style={[{ marginTop: 6 }, S.num]} placeholder="2026-04-01"
-              keyboardType="numbers-and-punctuation"
-              value={edit.opening_on}
-              onChangeText={(t) => setEdit((e) => ({ ...e, opening_on: t }))} />
+            <Text style={[S.num, { fontSize: 12, color: C.muted, marginTop: 8 }]}>
+              as on {dmy(edit.opening_on || bookDay)} — the day your books start
+            </Text>
 
             <TouchableOpacity
               onPress={() => setEdit((e) => ({ ...e, is_default: !e.is_default }))}

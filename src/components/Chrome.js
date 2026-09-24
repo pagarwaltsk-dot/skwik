@@ -264,6 +264,92 @@ export const Box = React.forwardRef(function Box(
 });
 
 
+// A NUMBER BOX THAT DOES NOT LOSE THE FIRST DIGIT.
+//
+// The quantity and rate cells were controlled straight off the bill's line
+// array: every keystroke rewrote the whole array and re-rendered every row,
+// and the box's own value came back out of that round trip. Select "10",
+// type 1 then 5 quickly, and the second key could land while React was still
+// putting the "1" back — the box reset and only the 5 survived. On a bill
+// with twenty lines the round trip is twenty rows long, so the faster the
+// counter types the worse it gets.
+//
+// The text now lives HERE, in the box's own state, and nothing outside can
+// pull it out from under his thumb. The parent is still told on every key —
+// the running total has to move as he types — but it is told, it does not
+// own. A value changed from outside (a batch picked, a rate looked up) still
+// lands, because that only happens while the box is not the one being typed
+// in.
+export const NumCell = React.forwardRef(function NumCell(
+  { value, onType, onDone, next, onSubmit, style, selectTextOnFocus, ...rest }, ref) {
+  const [text, setText] = useState(String(value ?? ''));
+  const typing = useRef(false);
+  const seen = useRef(String(value ?? ''));
+  // AND THE SELECTION IS MADE ONCE, NOT ON EVERY REDRAW.
+  //
+  // This is the actual bug behind "type 15 and only the 5 stays". With
+  // selectTextOnFocus the whole box is selected whenever it is drawn while
+  // focused — and it is redrawn on every keystroke, because the total at the
+  // foot has to move. Type 1, the screen redraws, the 1 is selected again,
+  // and the 5 replaces it. Typing fast HID it, because the second key landed
+  // before the redraw; typing at an ordinary speed lost the digit every time.
+  //
+  // So the box is selected once, when he arrives in it, and left alone from
+  // the first key onwards.
+  const [sel, setSel] = useState(undefined);
+
+  const outside = String(value ?? '');
+  if (!typing.current && seen.current !== outside) {
+    seen.current = outside;
+    setText(outside);
+  }
+
+  const last = !next;
+  // THE SPREAD GOES FIRST, AND IT MATTERS.
+  //
+  // With {...rest} at the END it quietly replaced this component's own
+  // onFocus — and the rate box, which is given an onFocus by the bill screen,
+  // therefore never selected its old value. Typing 1150 into a box showing
+  // 960 left 9601150 on the bill. Anything passed in is still honoured: each
+  // handler below calls rest's own version itself.
+  return (
+    <TextInput
+      {...rest}
+      ref={ref}
+      style={style}
+      value={text}
+      keyboardType="numeric"
+      returnKeyType={last ? 'done' : 'next'}
+      submitBehavior="submit"
+      selection={sel}
+      onFocus={(e) => {
+        typing.current = true;
+        if (selectTextOnFocus) setSel({ start: 0, end: String(text).length });
+        rest.onFocus?.(e);
+      }}
+      onChangeText={(t) => {
+        setSel(undefined);         // his cursor is his own from here
+        setText(t);
+        seen.current = t;          // what we just told the parent; not a change from outside
+        onType?.(t);
+      }}
+      onBlur={(e) => {
+        typing.current = false;
+        setSel(undefined);
+        const t = onDone?.(text);
+        if (typeof t === 'string') { setText(t); seen.current = t; }
+        rest.onBlur?.(e);
+      }}
+      onSubmitEditing={() => {
+        const t = onDone?.(text);
+        if (typeof t === 'string') { setText(t); seen.current = t; }
+        if (next?.current?.focus) next.current.focus();
+        else onSubmit?.();
+      }}
+    />
+  );
+});
+
 // SWIPING BETWEEN THE TABS, THE WAY EVERY OTHER APP DOES IT.
 //
 // Tapping a tab at the top of the screen means reaching for the top of the

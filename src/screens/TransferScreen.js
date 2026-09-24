@@ -323,18 +323,25 @@ export default function TransferScreen({ navigation }) {
         return out;
       };
 
-      const [items, parties, vouchers, lines, payments, expenses] = await Promise.all([
+      const [items, parties, vouchers, lines, payments, expenses,
+             godowns, banks, moves] = await Promise.all([
         grab('items'), grab('parties'), grab('vouchers'),
         grab('voucher_lines'), grab('payments'), grab('expenses'),
+        // the three that were never in the file: see buildBackup
+        grab('godowns'), grab('bank_accounts'), grab('stock_moves'),
       ]);
 
-      const text = buildBackup({ org, items, parties, vouchers, lines, payments, expenses });
+      const text = buildBackup({ org, items, parties, vouchers, lines, payments, expenses,
+                                 godowns, banks, moves });
       const day = today();
       await send(`skwik-backup-${day}.json`, text, 'application/json');
 
+      const ownMoves = (moves || []).filter((m) => !m.ref_voucher_id).length;
       Alert.alert('Backup made',
         `${vouchers.length} bills, ${items.length} items, ${parties.length} names, `
-        + `${expenses.length} money-out entries.\n\n`
+        + `${expenses.length} money-out entries.\n`
+        + `${godowns.length} godown(s), ${banks.length} bank account(s), `
+        + `${ownMoves} stock movement(s) no bill made.\n\n`
         + 'Keep it somewhere that is not this phone — Drive, or send it to '
         + 'yourself on WhatsApp.');
     } catch (e) {
@@ -373,6 +380,22 @@ export default function TransferScreen({ navigation }) {
     setBusy('saving');
     try {
       const mine = (r) => ({ ...r, org_id: org.id });
+
+      // THE GODOWNS AND THE BANK ACCOUNTS GO FIRST.
+      //
+      // Every bill carries a godown id and every receipt an account id, and
+      // both have a foreign key behind them. Put a bill back before its
+      // godown exists and the database refuses the whole row.
+      for (let i = 0; i < (b.godowns || []).length; i += 100) {
+        const { error } = await supabase.from('godowns')
+          .upsert((b.godowns || []).slice(i, i + 100).map(mine), { onConflict: 'id' });
+        if (error) throw error;
+      }
+      for (let i = 0; i < (b.banks || []).length; i += 100) {
+        const { error } = await supabase.from('bank_accounts')
+          .upsert((b.banks || []).slice(i, i + 100).map(mine), { onConflict: 'id' });
+        if (error) throw error;
+      }
 
       for (let i = 0; i < b.parties.length; i += 100) {
         const { error } = await supabase.from('parties')
@@ -474,9 +497,32 @@ export default function TransferScreen({ navigation }) {
         if (error) throw error;
       }
 
+      // THE MOVEMENTS NO BILL MADE.
+      //
+      // Transfers between godowns and opening-stock rows are written straight
+      // into stock_moves by their own routines, with no bill behind them, so
+      // nothing in the restore recreated them. A transfer nets to zero, which
+      // is why nobody noticed: the total stock came back right and the
+      // godown-wise figures were wrong.
+      //
+      // The ones a bill made are deliberately not in the file — save_voucher
+      // wrote them again a moment ago, and putting them back as well would
+      // count every sale twice.
+      const ownMoves = (b.moves || []).filter((m) => !m.ref_voucher_id);
+      for (let i = 0; i < ownMoves.length; i += 200) {
+        const { error } = await supabase.from('stock_moves')
+          .upsert(ownMoves.slice(i, i + 200).map(mine), { onConflict: 'id' });
+        if (error) throw error;
+      }
+
       Alert.alert('Put back',
         `${bills} bills restored${already ? `, ${already} were already here` : ''}.\n`
-        + `${b.items.length} items and ${b.parties.length} names checked.`);
+        + `${b.items.length} items and ${b.parties.length} names checked.\n`
+        + `${(b.godowns || []).length} godown(s), ${(b.banks || []).length} bank account(s), `
+        + `${ownMoves.length} stock movement(s) put back.`
+        + ((b.godowns || []).length || ownMoves.length ? '' :
+            '\n\nThis file was made by an older Skwik, so it carries no godowns, '
+            + 'no bank accounts and no transfers. Take a fresh backup.'));
     } catch (e) {
       Alert.alert('Stopped part way',
         `${sayPlainly(e)}\n\nWhat went back before the problem is saved. `

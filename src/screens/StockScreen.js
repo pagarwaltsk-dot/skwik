@@ -345,10 +345,17 @@ export default function StockScreen({ navigation }) {
           return (
             <TouchableOpacity
               disabled={!item.item_id}
+              // THE REGISTER OPENS ON THE STORE THE STRIP ABOVE IS SET TO.
+              // It used to open on the whole firm whichever button was lit,
+              // so a shopkeeper looking at his godown tapped an item and was
+              // shown his shop's sales in it.
               onPress={() => navigation.navigate('ItemMoves', {
                 itemId: item.item_id,
                 itemName: item.item_name,
-                unit: item.unit })}
+                unit: item.unit,
+                godownId: where === 'all' ? null : where,
+                godownName: where === 'all' ? ''
+                  : (godowns.find((g) => g.id === where)?.name || '') })}
               style={[S.row, { paddingVertical: under ? 10 : 14,
                                marginLeft: item.depth * 12,
                                paddingLeft: under ? 10 : 0,

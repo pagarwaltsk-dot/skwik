@@ -4,12 +4,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import {
-  showBatch, showExpenses, showExpiry, showGodowns, showPurchase, showRcmIn, showRcmOut, showRecon, showReports, showReturns, showStock, showTransfer, showVariants,
+  showBatch, showExpenses, showExpiry, showGodowns, showPurchase, showRcmIn, showRcmOut, showRecon, showReports, showReturns, showStock, showThumbRail, showTransfer, showVariants,
 } from '../lib/features';
 import { useApp } from '../AppContext';
 import { STATES } from './OnboardScreen';
 import { Alert as RNAlert } from 'react-native';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
+import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
 // Everything a shopkeeper can change about his own firm, on his phone.
@@ -52,7 +53,41 @@ const Toggle = ({ label, note, value, disabled, onValueChange }) => (
 );
 
 export default function SettingsScreen({ navigation }) {
-  const { org, reloadOrg, isOwner } = useApp();
+  const { org, reloadOrg, isOwner, joinShop } = useApp();
+
+  // THE WAY BACK OUT OF A SHOP MADE BY ACCIDENT.
+  //
+  // The man who is going to stand at the counter installs Skwik, is shown a
+  // screen headed "Your shop", and taps the button on it. Now his login owns
+  // an empty shop, the owner's code is refused from then on, and there is
+  // nowhere in the whole app left to type it. This is that door — and it only
+  // exists while the shop is genuinely empty, so nobody can walk out of a
+  // shop with bills in it by tapping something in Settings.
+  const [emptyShop, setEmptyShop] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joining, setJoining] = useState(false);
+  useEffect(() => {
+    let on = true;
+    (async () => {
+      const { count } = await supabase.from('vouchers')
+        .select('id', { count: 'exact', head: true });
+      if (on) setEmptyShop((count || 0) === 0);
+    })().catch(() => {});
+    return () => { on = false; };
+  }, [org?.id]);
+
+  const joinOther = async () => {
+    if (joinCode.trim().length < 4) {
+      return Alert.alert('The code', 'Ask the owner for the six-character shop code.');
+    }
+    setJoining(true);
+    try {
+      const r = await joinShop(joinCode);
+      Alert.alert('You are in', `You can now write bills for ${r?.name || 'the shop'}.`);
+    } catch (e) {
+      Alert.alert('Could not join', sayPlainly(e));
+    } finally { setJoining(false); }
+  };
   // the address a password reset can actually reach
   const [recoveryMail, setRecoveryMail] = useState('');
   const [savedMail, setSavedMail] = useState('');
@@ -78,6 +113,33 @@ export default function SettingsScreen({ navigation }) {
       d ? `Nothing on or before ${d} can be changed now.` : 'Your books are open again.');
   };
   const taxLedgers = !!f.is_gst_registered && !f.is_composition;
+
+  // A SWITCH HAS TO MOVE WHEN IT IS TOUCHED.
+  //
+  // Every one of these read its position off the firm row, so a tap went:
+  // disable all of them → write to the server → fetch the firm row back →
+  // and only then did the knob slide. On a shop counter's signal that is a
+  // second and a half of a switch that appears not to have worked, so he taps
+  // it again, and now he has flipped it twice. It also greyed out every OTHER
+  // switch on the page while it waited.
+  //
+  // Now the knob moves at once and the writing happens behind it. If the
+  // write fails the knob goes back and he is told — which is the only honest
+  // moment to interrupt him.
+  const [flag, setFlag] = useState({});
+  const at = (k, fallback) => (flag[k] === undefined ? fallback : flag[k]);
+  const flip = async (k, v, after) => {
+    setFlag((f) => ({ ...f, [k]: v }));
+    const { error } = await supabase.from('orgs').update({ [k]: v }).eq('id', org.id);
+    if (error) {
+      setFlag((f) => ({ ...f, [k]: !v }));
+      return Alert.alert('Could not save', sayPlainly(error));
+    }
+    await reloadOrg();
+    // the firm row now says what the knob says, so stop holding it by hand
+    setFlag((f) => { const n = { ...f }; delete n[k]; return n; });
+    after?.(v);
+  };
 
   const saveOrg = async (patch, msg) => {
     setBusy(true);
@@ -208,64 +270,66 @@ export default function SettingsScreen({ navigation }) {
 
       <Section title="What you use"
                note="Skwik opens as a billing book: sale, purchase, money in, money out. Switch on whatever else your shop needs and it appears straight away. Switching something off only hides it — nothing you have written is ever deleted.">
-        <Toggle label="Purchase bills" disabled={busy}
+        <Toggle label="Purchase bills"
                 note="Bills your suppliers give you. Leave it off if only your accountant enters them."
-                value={showPurchase(org)}
-                onValueChange={(v) => saveOrg({ show_purchase: v })} />
-        <Toggle label="Keep stock" disabled={busy}
+                value={at('show_purchase', showPurchase(org))}
+                onValueChange={(v) => flip('show_purchase', v)} />
+        <Toggle label="Keep stock"
                 note="Skwik counts what goes out and what comes in, and shows what is left."
-                value={showStock(org)}
-                onValueChange={(v) => saveOrg({ stock_enabled: v })} />
-        <Toggle label="Returns" disabled={busy}
+                value={at('stock_enabled', showStock(org))}
+                onValueChange={(v) => flip('stock_enabled', v)} />
+        <Toggle label="Returns"
                 note="Goods coming back — credit notes to your customer, debit notes to your supplier."
-                value={showReturns(org)}
-                onValueChange={(v) => saveOrg({ show_returns: v })} />
-        <Toggle label="Reports and GSTR-1" disabled={busy}
+                value={at('show_returns', showReturns(org))}
+                onValueChange={(v) => flip('show_returns', v)} />
+        <Toggle label="Reports and GSTR-1"
                 note="Day, month and party totals, tax rate-wise, and the GSTR-1 file for the portal."
-                value={showReports(org)}
-                onValueChange={(v) => saveOrg({ show_reports: v })} />
-        <Toggle label="Money out" disabled={busy}
+                value={at('show_reports', showReports(org))}
+                onValueChange={(v) => flip('show_reports', v)} />
+        <Toggle label="Money out"
                 note="Rent, salary, transport. Without them Skwik cannot tell you what you earned."
-                value={showExpenses(org)}
-                onValueChange={(v) => saveOrg({ show_expenses: v })} />
-        <Toggle label="Supplier credit (GSTR-2B)" disabled={busy}
+                value={at('show_expenses', showExpenses(org))}
+                onValueChange={(v) => flip('show_expenses', v)} />
+        <Toggle label="Supplier credit (GSTR-2B)"
                 note="Which of your suppliers has not filed, so you know before you claim."
-                value={showRecon(org)}
-                onValueChange={(v) => saveOrg({ show_recon: v })} />
-        <Toggle label="More than one godown" disabled={busy}
+                value={at('show_recon', showRecon(org))}
+                onValueChange={(v) => flip('show_recon', v)} />
+        <Toggle label="More than one godown"
                 note="A back store and a counter store, with goods moved between them."
-                value={showGodowns(org)}
-                onValueChange={(v) => {
-                  saveOrg({ godowns_enabled: v });
-                  if (v) navigation.navigate('Godowns');
-                }} />
-        <Toggle label="Batch numbers" disabled={busy}
+                value={at('godowns_enabled', showGodowns(org))}
+                onValueChange={(v) => flip('godowns_enabled', v,
+                  (on2) => { if (on2) navigation.navigate('Godowns'); })} />
+        <Toggle label="Batch numbers"
                 note="For a chemist or anyone selling in lots. Asked on each line of a bill."
-                value={showBatch(org)}
-                onValueChange={(v) => saveOrg({ batch_enabled: v })} />
-        <Toggle label="Expiry dates" disabled={busy}
+                value={at('batch_enabled', showBatch(org))}
+                onValueChange={(v) => flip('batch_enabled', v)} />
+        <Toggle label="Expiry dates"
                 note="Goes beside the batch on the line, and stays with the stock."
-                value={showExpiry(org)}
-                onValueChange={(v) => saveOrg({ expiry_enabled: v })} />
-        <Toggle label="Sizes of one item" disabled={busy}
+                value={at('expiry_enabled', showExpiry(org))}
+                onValueChange={(v) => flip('expiry_enabled', v)} />
+        <Toggle label="Sizes of one item"
                 note="9x2, 9x3, 10x2 clip tiffin as one product in three sizes, each with its own rate and stock."
-                value={showVariants(org)}
-                onValueChange={(v) => saveOrg({ variants_enabled: v })} />
-        <Toggle label="Import and export" disabled={busy}
+                value={at('variants_enabled', showVariants(org))}
+                onValueChange={(v) => flip('variants_enabled', v)} />
+        <Toggle label="One-handed picking"
+                note="Puts a down arrow and an OK down the right of the item list while you search, so the third match is two taps in the corner instead of a reach into the middle of the screen. The list still works exactly as it does now."
+                value={at('thumb_rail', showThumbRail(org))}
+                onValueChange={(v) => flip('thumb_rail', v)} />
+        <Toggle label="Import and export"
                 note="Bringing items and parties in from Tally or Excel, and taking your books out."
-                value={showTransfer(org)}
-                onValueChange={(v) => saveOrg({ show_transfer: v })} />
+                value={at('show_transfer', showTransfer(org))}
+                onValueChange={(v) => flip('show_transfer', v)} />
         {!!org?.is_gst_registered && (
-          <Toggle label="GST I owe on freight and the like" disabled={busy}
+          <Toggle label="GST I owe on freight and the like"
                   note="When a transporter charges you no GST, the GST is yours to pay. Skwik works it out on a purchase bill or on a Money out entry, puts it in GST owed, and gives your accountant the figure for GSTR-3B."
-                  value={showRcmIn(org)}
-                  onValueChange={(v) => saveOrg({ rcm_purchase_enabled: v })} />
+                  value={at('rcm_purchase_enabled', showRcmIn(org))}
+                  onValueChange={(v) => flip('rcm_purchase_enabled', v)} />
         )}
         {!!org?.is_gst_registered && !org?.is_composition && (
-          <Toggle label="Sales where the buyer pays the GST" disabled={busy}
+          <Toggle label="Sales where the buyer pays the GST"
                   note="Rare. Only for the few supplies the law names, and almost never for goods sold over a counter. Left off, the tick stays off your bill screen so it cannot be ticked by mistake."
-                  value={showRcmOut(org)}
-                  onValueChange={(v) => saveOrg({ rcm_sales_enabled: v })} />
+                  value={at('rcm_sales_enabled', showRcmOut(org))}
+                  onValueChange={(v) => flip('rcm_sales_enabled', v)} />
         )}
       </Section>
 
@@ -300,9 +364,17 @@ export default function SettingsScreen({ navigation }) {
 
       <Section title="Closing a month"
                note="Once a return has gone to the portal the bills behind it must not change. Put the last filed date here and Skwik refuses to write, alter or remove anything on or before it — a mistake in a closed month is put right with a credit note, which is what the return expects.">
-        <Field ref={rLock} onSubmit={saveLock} label="FILED UP TO (YYYY-MM-DD)"
-               value={f.books_locked_upto || ''} onChange={set('books_locked_upto')}
-               placeholder="2026-08-31" />
+        <View style={[S.row, { gap: 8, alignItems: 'flex-end' }]}>
+          <View style={{ flex: 1 }}>
+            <Field ref={rLock} onSubmit={saveLock} label="FILED UP TO (YYYY-MM-DD)"
+                   value={f.books_locked_upto || ''} onChange={set('books_locked_upto')}
+                   placeholder="2026-08-31" />
+          </View>
+          <CalButton value={f.books_locked_upto || ''} size={48}
+            onPick={(iso) => set('books_locked_upto')(iso)}
+            title="Filed up to which day?"
+            note="Everything on or before this day is closed." />
+        </View>
         <Text style={{ fontSize: 12, fontWeight: '600', color: C.muted, marginTop: 6 }}>
           {org?.books_locked_upto
             ? `Your books are closed up to ${org.books_locked_upto}.`
@@ -333,6 +405,30 @@ export default function SettingsScreen({ navigation }) {
         <TouchableOpacity style={S.btn} onPress={() => navigation.navigate('Staff')}>
           <Text style={S.btnText}>SHOP CODE AND PEOPLE</Text>
         </TouchableOpacity>
+
+        {emptyShop && (
+          <View style={{ marginTop: 16, padding: 14, backgroundColor: C.surface,
+                         borderWidth: 1, borderColor: C.line, borderRadius: 12 }}>
+            <Text style={{ fontSize: 13.5, fontWeight: '700', color: C.ink }}>
+              Actually, I work at someone else's shop
+            </Text>
+            <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 5, lineHeight: 18 }}>
+              If you made this shop by mistake and the owner has given you a
+              code, type it here. This shop has nothing in it, so nothing is
+              lost. Once you have written a bill this goes away.
+            </Text>
+            <View style={[S.row, { gap: 8, marginTop: 10 }]}>
+              <TextInput style={[S.input, { flex: 1, letterSpacing: 3, marginBottom: 0 }, S.num]}
+                autoCapitalize="characters" maxLength={6} placeholder="ABC123"
+                placeholderTextColor={C.faint} value={joinCode}
+                onChangeText={(t) => setJoinCode(t.toUpperCase().replace(/[^A-Z0-9]/g, ''))} />
+              <TouchableOpacity style={[S.btnGhost, { paddingHorizontal: 18, paddingVertical: 12 }]}
+                onPress={joinOther} disabled={joining}>
+                <Text style={S.ghostText}>{joining ? '…' : 'JOIN'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
       </Section>
 
       <Section title="Your firm" note="This prints at the top of every bill.">
@@ -457,8 +553,8 @@ export default function SettingsScreen({ navigation }) {
             <Text style={{ flex: 1, fontSize: 16, fontWeight: '700', color: C.ink }}>
               Show HSN codes
             </Text>
-            <Switch value={org?.hsn_enabled !== false} disabled={busy}
-                    onValueChange={(v) => saveOrg({ hsn_enabled: v })}
+            <Switch value={at('hsn_enabled', org?.hsn_enabled !== false)}
+                    onValueChange={(v) => flip('hsn_enabled', v)}
                     trackColor={{ true: C.green }} />
           </View>
         </Section>

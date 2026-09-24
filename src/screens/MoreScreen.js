@@ -116,9 +116,10 @@ export default function MoreScreen({ navigation }) {
           reports, money out. Repeating them here makes the app look twice as
           big as it is and gives a shopkeeper two doors to the same room. This
           list is the rest: the things touched once a month or once ever. */}
+      {/* Ledgers used to sit here as well as on the day-book strip. Two doors
+          to the same room only makes the app look bigger than it is. */}
       <View style={{ marginTop: 10 }}>
         <Item label="Past bills"            onPress={() => navigation.navigate('Bills')} />
-        <Item label="Ledgers — every account" onPress={() => navigation.navigate('Ledgers')} />
         {isOwner &&
           <Item label="Cash & bank accounts" onPress={() => navigation.navigate('Banks')} />}
         {showGodowns(org) && isOwner &&

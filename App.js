@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, View, Alert, Linking } from 'react-native';
 
+import { supabase } from './src/lib/supabase';
 import { AppProvider, useApp } from './src/AppContext';
 import { C } from './src/theme';
 
@@ -58,6 +59,89 @@ const PATIENCE = 6000;
 
 const Stack = createNativeStackNavigator();
 
+// THE LINK IN THE RESET EMAIL WENT NOWHERE.
+//
+// "I provided my mail id, I received a mail of password reset verification,
+// but nothing happened then." Exactly so. Three separate things were missing:
+//
+//   * ResetScreen was imported at the top of this file and then never put in
+//     the navigator, so there was no screen with that name to arrive at
+//   * nothing anywhere listened for the link. The Supabase client is told
+//     detectSessionInUrl: false, which is right on a phone — a phone has no
+//     address bar and the library cannot see the URL that opened the app — so
+//     the app has to pick the link up itself and it never did
+//   * so the app opened on the home screen and the shopkeeper, standing there
+//     having done everything he was asked, was shown nothing at all
+//
+// Now: Skwik catches skwik://reset however it arrives, turns whatever the
+// email put on the end of it into a live session, and walks him to the screen
+// where he types the new password.
+//
+// Supabase has sent these links three different ways across its versions, and
+// which one a project sends depends on settings nobody should have to think
+// about. All three are read here, so it works whichever this project is on.
+const navRef = createNavigationContainerRef();
+
+const partsOf = (url) => {
+  const out = {};
+  const grab = (blob) => String(blob || '').split('&').forEach((bit) => {
+    const i = bit.indexOf('=');
+    if (i > 0) out[decodeURIComponent(bit.slice(0, i))] = decodeURIComponent(bit.slice(i + 1));
+  });
+  const u = String(url || '');
+  const h = u.indexOf('#');
+  const q = u.indexOf('?');
+  if (h >= 0) grab(u.slice(h + 1));
+  if (q >= 0) grab(u.slice(q + 1, h >= 0 ? h : undefined));
+  return out;
+};
+
+// Walk him to the password screen the moment the navigator is ready for it.
+// The link can arrive before React Navigation has mounted, and a navigate()
+// into a navigator that does not exist yet is simply lost.
+const goReset = () => {
+  if (navRef.isReady()) return navRef.navigate('Reset');
+  setTimeout(goReset, 250);
+};
+
+async function handleLink(url) {
+  if (!url || !/reset/i.test(url)) return;
+  const p = partsOf(url);
+
+  if (p.error_description || p.error) {
+    return Alert.alert('That link did not work',
+      /expired/i.test(p.error_description || p.error || '')
+        ? 'It has expired. Ask for a new one from the login screen and open it as '
+          + 'soon as it arrives.'
+        : (p.error_description || p.error));
+  }
+
+  try {
+    if (p.access_token && p.refresh_token) {
+      const { error } = await supabase.auth.setSession({
+        access_token: p.access_token, refresh_token: p.refresh_token });
+      if (error) throw error;
+    } else if (p.code) {
+      const { error } = await supabase.auth.exchangeCodeForSession(p.code);
+      if (error) throw error;
+    } else if (p.token_hash) {
+      const { error } = await supabase.auth.verifyOtp({
+        token_hash: p.token_hash, type: p.type || 'recovery' });
+      if (error) throw error;
+    } else {
+      return;      // skwik://reset with nothing on it: not a real reset link
+    }
+  } catch (e) {
+    return Alert.alert('That link did not work',
+      /expired|invalid|token/i.test(String(e?.message || ''))
+        ? 'It has expired. Ask for a new one from the login screen and open it as '
+          + 'soon as it arrives.'
+        : String(e?.message || 'Please ask for a new link.'));
+  }
+
+  goReset();
+}
+
 function Routes() {
   const { session, org, loading, registering, checking } = useApp();
 
@@ -99,9 +183,13 @@ function Routes() {
           <Stack.Screen name="Welcome"  component={WelcomeScreen} />
           <Stack.Screen name="Register" component={RegisterScreen} />
           <Stack.Screen name="Forgot"   component={ForgotScreen} />
+          <Stack.Screen name="Reset"    component={ResetScreen} />
         </>
       ) : !org ? (
-        <Stack.Screen name="Onboard" component={OnboardScreen} />
+        <>
+          <Stack.Screen name="Onboard" component={OnboardScreen} />
+          <Stack.Screen name="Reset"   component={ResetScreen} />
+        </>
       ) : (
         <>
           <Stack.Screen name="Home"    component={HomeScreen} />
@@ -128,6 +216,7 @@ function Routes() {
           <Stack.Screen name="Staff"    component={StaffScreen} />
           <Stack.Screen name="Godowns"  component={GodownScreen} />
           <Stack.Screen name="Sample"   component={SampleScreen} />
+          <Stack.Screen name="Reset"    component={ResetScreen} />
         </>
       )}
     </Stack.Navigator>
@@ -135,11 +224,29 @@ function Routes() {
 }
 
 export default function App() {
+  // The link that opened the app from cold, and any that arrives while it is
+  // already running — a man who taps the email twice gets the same answer.
+  useEffect(() => {
+    Linking.getInitialURL().then(handleLink).catch(() => {});
+    const sub = Linking.addEventListener('url', ({ url }) => { handleLink(url); });
+    return () => sub.remove();
+  }, []);
+
+  // And the belt to that brace: if the client itself works out that this is a
+  // recovery — which it does when the session is restored from storage — the
+  // password screen is still where he should be.
+  useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') goReset();
+    });
+    return () => data?.subscription?.unsubscribe?.();
+  }, []);
+
   return (
     <SafeAreaProvider>
       <AppProvider>
         <StatusBar style="dark" />
-        <NavigationContainer>
+        <NavigationContainer ref={navRef}>
           <Routes />
         </NavigationContainer>
       </AppProvider>

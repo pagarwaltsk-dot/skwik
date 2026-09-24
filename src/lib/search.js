@@ -83,6 +83,39 @@ function score(hit) {
   return s;
 }
 
+
+// ---------------------------------------------------------------- barcodes
+
+// THE SAME PACKET, READ TWO DIFFERENT WAYS.
+//
+// "No product with that barcode" on a packet he had scanned in himself a week
+// earlier, because the two numbers were not the same string even though they
+// are the same code:
+//
+//   * a code TYPED into the item screen picks up a space at either end, or a
+//     hyphen off the label, or is copied in with a non-breaking space in it
+//   * UPC-A on an Indian import is thirteen digits on one reader and twelve
+//     on another — the same number with a zero in front of it. EAN-8 does the
+//     same thing against a shorter code.
+//   * a QR code carrying letters differs in case between two readings
+//
+// So a code is compared by what it IS — its digits and letters, nothing else
+// — and a leading zero is not allowed to decide the question.
+export const codeKey = (v) => String(v || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+
+export const sameCode = (a, b) => {
+  const x = codeKey(a), y = codeKey(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // 0123456789012 read against 123456789012
+  return x.replace(/^0+/, '') === y.replace(/^0+/, '') && x.replace(/^0+/, '') !== '';
+};
+
+// Every item carrying that code. More than one is possible — he has put the
+// same code on two sizes — and the caller decides what to do about it.
+export const itemsWithCode = (items, code) =>
+  (items || []).filter((it) => sameCode(it.barcode, code));
+
 // Returns [{ p, qty, toks }], best first.
 export function searchItems(items, raw, limit = 20) {
   const p = parseQuery(raw);
@@ -92,7 +125,7 @@ export function searchItems(items, raw, limit = 20) {
   // the packet in his hand is that item and nothing else.
   const code = String(raw || '').trim();
   if (/^[0-9]{6,}$/.test(code)) {
-    const exact = items.filter((it) => String(it.barcode || '').trim() === code);
+    const exact = itemsWithCode(items, code);
     if (exact.length) return exact.map((pr) => ({ p: pr, qty: null, toks: [] }));
   }
 

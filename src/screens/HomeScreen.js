@@ -8,6 +8,7 @@ import { useApp } from '../AppContext';
 import { fmt0, n2, num, today } from '../lib/money';
 import { Bar, Foot, MoreButton, Screen } from '../components/Chrome';
 import { ColHead, DoKey, Figure, Glyph, Rule, Words } from '../components/Register';
+import { Calendar } from '../components/DatePick';
 import {
   showExpenses, showRecon, showReports, showStock,
 } from '../lib/features';
@@ -67,6 +68,10 @@ export default function HomeScreen({ navigation }) {
   // It was always today's and there was no way back. A shopkeeper writing up
   // yesterday evening, or checking what Saturday came to, had nowhere to look.
   const [day, setDay] = useState(today());
+  // TWO MONTHS BACK IS TWO TAPS, NOT SIXTY.
+  // The arrows walk a day at a time, which is right for yesterday and
+  // absurd for anything further. The date itself now opens a calendar.
+  const [pickDay, setPickDay] = useState(false);
   const estimate = org?.mode === 'estimate';
 
   /* ---------------- the day's entries ---------------- */
@@ -479,14 +484,14 @@ export default function HomeScreen({ navigation }) {
                   <Text style={{ fontSize: 20, fontWeight: '700', color: C.muted }}>‹</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity onPress={() => navigation.navigate('Bills')}
+                <TouchableOpacity onPress={() => setPickDay(true)}
                   style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, flex: 1 }}>
                   <Text style={{ fontSize: 15, fontWeight: '700', color: C.ink }}>
-                    {day === today() ? 'Day book' : 'Day book'}
+                    Day book
                   </Text>
                   <Text style={[S.num, { flex: 1, fontSize: 12,
                                          color: day === today() ? C.muted : C.edit }]}>
-                    {day === today() ? dmy(day) : `${dmy(day)} — not today`}
+                    {day === today() ? `${dmy(day)}  ▾` : `${dmy(day)} — not today  ▾`}
                   </Text>
                 </TouchableOpacity>
 
@@ -551,8 +556,6 @@ export default function HomeScreen({ navigation }) {
                          borderLeftWidth: 1, borderLeftColor: C.line }}>
             <View style={{ padding: 8, paddingBottom: 6, gap: 6,
                            borderBottomWidth: 1, borderBottomColor: C.line }}>
-              <Text style={{ fontSize: 9.5, fontWeight: '700', letterSpacing: 0.9,
-                             color: C.muted, paddingLeft: 2, paddingBottom: 2 }}>DO</Text>
               {pinned.map((k) => (
                 <DoKey key={k.label} label={k.label} icon={k.icon} on={k.on} onPress={k.go} />
               ))}
@@ -565,6 +568,10 @@ export default function HomeScreen({ navigation }) {
           </View>
         </View>
       )}
+
+      <Calendar visible={pickDay} value={day} max={today()}
+        title="Which day?" note="The day book of any day you have been trading."
+        onPick={setDay} onClose={() => setPickDay(false)} />
 
       {/* the foot: how many entries, and whether they have reached the books */}
       <Foot style={{ borderTopWidth: 1, borderTopColor: C.line, gap: 8 }}>

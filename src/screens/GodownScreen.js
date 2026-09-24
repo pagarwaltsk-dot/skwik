@@ -25,6 +25,8 @@ export default function GodownScreen({ navigation }) {
   const [stock, setStock] = useState([]);
   const [items, setItems] = useState([]);
   const [name, setName]   = useState('');
+  // Android has no Alert.prompt, so the rename box is drawn in the row itself
+  const [renaming, setRenaming] = useState(null);
   const [busy, setBusy]   = useState(false);
 
   // the move being built
@@ -67,6 +69,36 @@ export default function GodownScreen({ navigation }) {
     setBusy(false);
     if (error) return Alert.alert('Could not add', sayPlainly(error));
     setName('');
+    load();
+  };
+
+  // A GODOWN GETS ITS NAME WRONG ONCE AND KEEPS IT FOR EVER.
+  //
+  // There was no way to change it. A typo, a shed that moved, a name the men
+  // stopped using — the only way out was a second godown and moving every
+  // item across. Renaming touches nothing but the name: every entry ever
+  // made points at the godown's id, not its name, so the whole history
+  // follows it across without moving a single piece of stock.
+  const rename = (g) => {
+    Alert.prompt
+      ? Alert.prompt('Rename this godown', `Now called ${g.name}.`,
+          [{ text: 'Cancel', style: 'cancel' },
+           { text: 'Save', onPress: (t) => doRename(g, t) }],
+          'plain-text', g.name)
+      : setRenaming({ id: g.id, name: g.name });
+  };
+  const doRename = async (g, t) => {
+    const n = String(t || '').trim();
+    if (!n) return;
+    if (n === g.name) return setRenaming(null);
+    const clash = list.some((x) => x.id !== g.id
+      && x.name.trim().toLowerCase() === n.toLowerCase());
+    if (clash) return Alert.alert('That name is taken',
+      'Another godown is already called that. Two stores with one name make '
+      + 'the stock summary impossible to read.');
+    const { error } = await supabase.from('godowns').update({ name: n }).eq('id', g.id);
+    if (error) return Alert.alert('Could not rename', sayPlainly(error));
+    setRenaming(null);
     load();
   };
 
@@ -167,17 +199,39 @@ export default function GodownScreen({ navigation }) {
             <View key={g.id} style={[S.line, { marginBottom: 8 }]}>
               <View style={S.row}>
                 <View style={{ flex: 1 }}>
-                  <Text style={S.lineNm}>{g.name}{g.is_main ? '  · main' : ''}</Text>
+                  {renaming && renaming.id === g.id ? (
+                    <Box autoFocus value={renaming.name}
+                      onChangeText={(t) => setRenaming((r) => ({ ...r, name: t }))}
+                      onSubmit={() => doRename(g, renaming.name)} />
+                  ) : (
+                    <Text style={S.lineNm}>{g.name}{g.is_main ? '  · main' : ''}</Text>
+                  )}
                   <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
                     {held.length} item{held.length === 1 ? '' : 's'} in hand
                   </Text>
                 </View>
-                {!g.is_main && (
-                  <TouchableOpacity onPress={() => makeMain(g)}>
-                    <Text style={{ fontSize: 12, fontWeight: '800', color: C.accent }}>
-                      MAKE MAIN
-                    </Text>
-                  </TouchableOpacity>
+                {renaming && renaming.id === g.id ? (
+                  <View style={[S.row, { gap: 12 }]}>
+                    <TouchableOpacity onPress={() => doRename(g, renaming.name)}>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: C.accent }}>SAVE</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setRenaming(null)}>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: C.muted }}>CANCEL</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={[S.row, { gap: 12 }]}>
+                    <TouchableOpacity onPress={() => setRenaming({ id: g.id, name: g.name })}>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: C.muted }}>RENAME</Text>
+                    </TouchableOpacity>
+                    {!g.is_main && (
+                      <TouchableOpacity onPress={() => makeMain(g)}>
+                        <Text style={{ fontSize: 12, fontWeight: '800', color: C.accent }}>
+                          MAKE MAIN
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 )}
               </View>
             </View>

@@ -23,6 +23,20 @@ export default function OnboardScreen() {
   // wrong table of GSTR-1. Assam stays the default, because that is where most
   // of these shops are; it is now a default and not a decision.
   const [stateCode, setStateCode] = useState('18');
+
+  // WHICH OF THE TWO PEOPLE ARE YOU?
+  //
+  // This screen asked one of them and buried the other. It opened headed
+  // "Your shop" with a Start billing button, and the box for the shop code —
+  // the only thing the man who is going to stand at the counter came here
+  // for — was the last card on a page he had to scroll to find. So of course
+  // he tapped Start billing. And that was that: his login then owned an empty
+  // shop of its own, the code was refused from then on, and there was no
+  // screen left anywhere in Skwik that would take it.
+  //
+  // Now the question is asked first, in two words, before anything can be
+  // tapped by mistake.
+  const [who, setWho] = useState('');
   const fName = useRef(null), fPhone = useRef(null), fCode = useRef(null);
   const [code, setCode] = useState('');
 
@@ -69,6 +83,71 @@ export default function OnboardScreen() {
     await reloadOrg();
   };
 
+  if (!who) {
+    return (
+      <KeyForm style={S.screen} contentContainerStyle={{ padding: 24, paddingTop: 80 }}>
+        <Text style={{ fontSize: 28, fontWeight: '700', color: C.ink }}>Welcome</Text>
+        <Text style={{ fontSize: 15, color: C.muted, marginTop: 8, marginBottom: 28 }}>
+          One question, and then you are billing.
+        </Text>
+
+        <TouchableOpacity onPress={() => setWho('owner')}
+          style={{ backgroundColor: C.accentSoft, borderWidth: 1, borderColor: '#C9E4DF',
+                   borderRadius: 12, padding: 18, marginBottom: 12 }}>
+          <Text style={{ fontSize: 18, fontWeight: '700', color: C.accent }}>
+            This is my shop
+          </Text>
+          <Text style={{ fontSize: 13, color: C.muted, marginTop: 5, lineHeight: 18 }}>
+            Give it a name and start writing bills.
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={() => setWho('staff')}
+          style={{ backgroundColor: C.surface, borderWidth: 1, borderColor: C.line,
+                   borderRadius: 12, padding: 18 }}>
+          <Text style={{ fontSize: 18, fontWeight: '700', color: C.ink }}>
+            I work at a shop
+          </Text>
+          <Text style={{ fontSize: 13, color: C.muted, marginTop: 5, lineHeight: 18 }}>
+            The owner already uses Skwik. He will read you a six-character code.
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={signOut} style={{ marginTop: 26, alignItems: 'center' }}>
+          <Text style={{ fontSize: 14, fontWeight: '700', color: C.muted }}>Log out</Text>
+        </TouchableOpacity>
+      </KeyForm>
+    );
+  }
+
+  if (who === 'staff') {
+    return (
+      <KeyForm style={S.screen} contentContainerStyle={{ padding: 24, paddingTop: 80 }}>
+        <Text style={{ fontSize: 28, fontWeight: '700', color: C.ink }}>The shop code</Text>
+        <Text style={{ fontSize: 15, color: C.muted, marginTop: 8, marginBottom: 24, lineHeight: 21 }}>
+          Ask the owner to open Skwik, go to Settings → Who can bill, and tap
+          Open. He will read you six letters and numbers. They only work for
+          one hour, and for one phone.
+        </Text>
+
+        <Box ref={fCode} onSubmit={join} autoFocus
+          style={[{ letterSpacing: 6, fontSize: 26, textAlign: 'center' }, S.num]}
+          autoCapitalize="characters" maxLength={6} placeholder="ABC123"
+          value={code} onChangeText={(t) => setCode(t.toUpperCase().replace(/[^A-Z0-9]/g, ''))} />
+
+        <TouchableOpacity style={[S.btn, { marginTop: 18 }, busy && { opacity: 0.6 }]}
+          onPress={join} disabled={busy}>
+          <Text style={S.btnText}>{busy ? 'One moment…' : 'Join the shop'}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={() => setWho('')}
+          style={{ marginTop: 18, alignItems: 'center', paddingVertical: 10 }}>
+          <Text style={{ fontSize: 15, fontWeight: '700', color: C.muted }}>Back</Text>
+        </TouchableOpacity>
+      </KeyForm>
+    );
+  }
+
   return (
     <KeyForm style={S.screen} contentContainerStyle={{ padding: 24, paddingTop: 80 }}>
       <Text style={{ fontSize: 28, fontWeight: '700', color: C.ink }}>Your shop</Text>
@@ -105,27 +184,12 @@ export default function OnboardScreen() {
         </Text>
       </View>
 
-      {/* The other kind of person who lands here: not an owner at all, but
-          somebody whose employer already has a shop in Skwik. */}
-      <View style={{ marginTop: 18, padding: 14, backgroundColor: C.surface, borderWidth: 1,
-                     borderColor: C.line, borderRadius: 12 }}>
-        <Text style={{ fontSize: 13.5, fontWeight: '700', color: C.ink }}>
-          I work at a shop
+      <TouchableOpacity onPress={() => setWho('staff')}
+        style={{ marginTop: 18, alignItems: 'center', paddingVertical: 10 }}>
+        <Text style={{ fontSize: 14, fontWeight: '700', color: C.accent }}>
+          I work at a shop — I have a code
         </Text>
-        <Text style={{ fontSize: 12.5, fontWeight: '600', color: C.muted, marginTop: 5, lineHeight: 18 }}>
-          If the owner already uses Skwik, ask him for the shop code and type
-          it here. Six letters and numbers.
-        </Text>
-        <View style={[S.row, { gap: 8, marginTop: 10 }]}>
-          <Box ref={fCode} onSubmit={join} style={[{ flex: 1, letterSpacing: 3 }, S.num]}
-            autoCapitalize="characters" maxLength={6} placeholder="ABC123"
-            value={code} onChangeText={(t) => setCode(t.toUpperCase().replace(/[^A-Z0-9]/g, ''))} />
-          <TouchableOpacity style={[S.btnGhost, { paddingHorizontal: 18, paddingVertical: 12 }]}
-            onPress={join} disabled={busy}>
-            <Text style={S.ghostText}>JOIN</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      </TouchableOpacity>
 
       <TouchableOpacity onPress={signOut} style={{ marginTop: 20, alignItems: 'center' }}>
         <Text style={{ fontSize: 14, fontWeight: '700', color: C.muted }}>Log out</Text>

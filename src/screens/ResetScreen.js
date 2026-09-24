@@ -38,7 +38,10 @@ export default function ResetScreen({ navigation }) {
       if (error) throw error;
       Alert.alert('Done',
         'Your new password is set. Use it the next time Skwik asks you to log in.',
-        [{ text: 'OK', onPress: () => navigation.reset({ index: 0, routes: [{ name: 'Home' }] }) }]);
+        // He may have arrived here from the login screen, from the set-up
+        // screen or from inside a working shop, so there is no one screen to
+        // send him to. Back is back, wherever he came from.
+        [{ text: 'OK', onPress: () => { if (navigation.canGoBack()) navigation.goBack(); } }]);
     } catch (e) {
       // The commonest reason is a link that has been sitting in the inbox too
       // long, and that needs saying rather than the raw message.
@@ -53,7 +56,8 @@ export default function ResetScreen({ navigation }) {
 
   return (
     <Screen>
-      <Head title="Set a new password" onBack={() => navigation.goBack()} />
+      <Head title="Set a new password"
+            onBack={() => { if (navigation.canGoBack()) navigation.goBack(); }} />
       <View style={{ padding: 18 }}>
         <Text style={[S.hint, { marginTop: 0, marginBottom: 18 }]}>
           Choose something you will remember. Six letters or numbers at least.

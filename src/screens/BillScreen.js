@@ -21,8 +21,8 @@ import {
 } from '../lib/money';
 import { pdfName, renamed, sharePdf } from '../lib/pdf';
 import { STATES } from '../lib/states';
-import { showBatch, showExpiry, showGodowns, showRcmIn, showRcmOut, showStock } from '../lib/features';
-import { searchItems, parseQuery, highlightParts, tok } from '../lib/search';
+import { showBatch, showExpiry, showGodowns, showRcmIn, showRcmOut, showStock, showThumbRail } from '../lib/features';
+import { searchItems, parseQuery, highlightParts, tok, itemsWithCode } from '../lib/search';
 import { uqcShort } from '../lib/uqc';
 import { checkHsn, hsnExists } from '../lib/hsn';
 import { HsnField, UomField, StateField } from '../components/Pickers';
@@ -33,10 +33,10 @@ import {
   cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue, sayPlainly,
 } from '../lib/offline';
 import {
-  BackButton, Bar, Box, Foot, KeyForm, MoreButton, Screen, useKeyboardGap,
-} from '../components/Chrome';
+  BackButton, Bar, Box, Foot, KeyForm, MoreButton, Screen, useKeyboardGap, NumCell } from '../components/Chrome';
 import { ScanSheet, ScanButton } from '../components/Scan';
 import { ColHead } from '../components/Register';
+import { CalButton, Calendar } from '../components/DatePick';
 import { C, S } from '../theme';
 
 // Matched letters shown marked, the way the estimate app does it.
@@ -68,7 +68,15 @@ export default function BillScreen({ route, navigation }) {
   const [items, setItems]     = useState([]);
   const [parties, setParties] = useState([]);
 
-  const [custOpen, setCustOpen] = useState(!route.params?.voucherId);
+  // STRAIGHT ONTO THE GOODS.
+  //
+  // Every new bill used to open on a full page asking who it was for, and
+  // nothing else could be done until that was answered. But the counter is
+  // usually already reading out items while the customer is still deciding
+  // what he wants, and on a cash sale there is no name at all. The name is a
+  // bar at the top of the bill now — tap it whenever you like, and the bill
+  // will not save without it, which is the only moment it is actually needed.
+  const [custOpen, setCustOpen] = useState(false);
   const [cq, setCq]       = useState('');
   const [cust, setCust]   = useState(null);          // {id?, name, phone, state_code…}
   const [isCash, setIsCash] = useState(false);
@@ -103,9 +111,37 @@ export default function BillScreen({ route, navigation }) {
   // What he TYPED, and what Skwik made of it, kept apart so a half-written
   // date is never handed to the database as a whole one.
   const [supDateText, setSupDateText] = useState(showDate(today()));
+  const [supCal, setSupCal] = useState(false);
   const supDate = parseDate(supDateText);
   const [vdate, setVdate] = useState(today());
   const [loadingBill, setLoadingBill] = useState(!!route.params?.voucherId);
+
+  // HAS ANYTHING ACTUALLY CHANGED?
+  //
+  // "Leave this bill? 3 lines will be lost" used to fire on HAVING lines, not
+  // on having changed any of them — so opening an old bill to look at it and
+  // stepping back always accused him of losing work that was saved weeks ago.
+  // A man who is told that every time stops reading it, and then it is no
+  // warning at all on the day it matters.
+  //
+  // This is a fingerprint of everything he can edit. It is taken when the
+  // bill finishes loading (or empty, for a new one) and compared on the way
+  // out: identical, no question asked.
+  const fingerprint = () => JSON.stringify({
+    c: cust?.id || cust?.name || '', k: !!isCash, g: godown || '',
+    d: String(less || ''), x: String(extra || ''), xg: String(extraGst || ''),
+    xn: String(extraNote || ''), r: !!rcharge,
+    sn: String(supNo || ''), sd: String(supDateText || ''), v: String(vdate || ''),
+    l: (lines || []).map((l) => [l.item_id || l.name || '', String(l.qty), String(l.rate),
+                                 String(l.disc || ''), l.batch || '', l.godown_id || '']),
+  });
+  const asOpened = useRef(null);
+  const markSaved = () => { asOpened.current = fingerprint(); };
+  const changedSince = () => asOpened.current !== null && asOpened.current !== fingerprint();
+  // read through a ref, so the copy taken when the bill lands is the newest
+  // one and not the closure from the render that started the load
+  const markSavedRef = useRef(markSaved);
+  markSavedRef.current = markSaved;
 
   const [busy, setBusy]   = useState(false);
   const [nudged, setNudged] = useState(false);
@@ -252,6 +288,9 @@ export default function BillScreen({ route, navigation }) {
       // The store the goods really moved through, not today's default.
       if (v.godown_id) setGodown(v.godown_id);
 
+      /* the fingerprint is taken AFTER the lines land, on the next tick, so
+         it reflects the bill as he is actually seeing it */
+      setTimeout(markSavedRef.current, 0);
       setLines((ls || []).map((l) => {
         seq.current += 1;
         return {
@@ -330,7 +369,9 @@ export default function BillScreen({ route, navigation }) {
     // number is a reminder that can never be sent, and one with no state is a
     // bill that may carry the wrong tax.
     setPartySheet({
-      name: cashInfo.name || 'CASH',
+      // whatever he typed, if it was not a cash sale — the name he was
+      // half-way through writing should not have to be written twice
+      name: cashInfo.name || (cq.trim() || 'CASH'),
       kind: isBuy ? 'supplier' : 'customer',
       phone: '', area: '', address: '', gstin: '',
       opening_balance: '', opening_type: 'owes_you',
@@ -364,12 +405,76 @@ export default function BillScreen({ route, navigation }) {
     if (!isBuy) applyList(Number(np.price_list) === 2 ? 2 : 1);
     setPartySheet(null);
     setTimeout(() => qRef.current?.focus(), 150);
+
+    // A NAME ENTERED IS A NAME KEPT, WHETHER OR NOT A BILL FOLLOWS.
+    //
+    // He was only written when the bill was saved. A counter who takes the
+    // man's name, his phone and his old dues and is then interrupted — the
+    // customer walks off, the phone rings, the bill is abandoned — had typed
+    // all of it for nothing, and typed it again the next time.
+    //
+    // He goes in now. If there is no signal, the same queue that carries the
+    // bill carries him, exactly as before.
+    (async () => {
+      try {
+        const saved = await findOrCreateParty(np.name.trim(), {
+          state_code: code || org?.state_code,
+          kind: np.kind, phone: np.phone, area: np.area, address: np.address,
+          gstin: np.gstin, opening_balance: np.opening_balance,
+          opening_type: np.opening_type, price_list: np.price_list,
+        });
+        if (saved?.id) setCust((c) => (c && c.name === np.name.trim()
+          ? { ...saved, isNew: false } : c));
+      } catch (e) { /* the save path writes him again if this did not stick */ }
+    })();
   };
 
   /* ---------------- product entry ---------------- */
 
   const hits = useMemo(() => searchItems(items, q), [items, q]);
   const parsed = parseQuery(q);
+
+  /* ---------------- ONE-HANDED PICKING ---------------------------------- */
+  //
+  // Type "steel" and four things come back: steel thali, steel balti, steel
+  // batti, steel glass. The one he wants is third. Until now that meant
+  // either typing more of the name — with the packet in his other hand — or
+  // reaching a thumb up into the middle of a six-inch screen and aiming at a
+  // row forty pixels high, across a counter, standing up.
+  //
+  // So: a bar down the RIGHT of the list, where his thumb already is. One big
+  // down arrow walks the highlight a line at a time and comes back round to
+  // the top at the end; a small OK under it puts the highlighted item on the
+  // bill. Enter does the same thing, and so does Tab on a keyboard, for a
+  // shop billing off a laptop.
+  //
+  // Nothing is taken away: every row is still a row he can tap, and a shop
+  // that never turns this on sees exactly what it saw before.
+  const wantRail = showThumbRail(org);
+  const [sel, setSel] = useState(0);
+  const hitsRef = useRef(null);
+
+  // A new search is a new list, so the highlight goes back to the top. It is
+  // also clamped, because a list can get shorter under it while he types.
+  useEffect(() => { setSel(0); }, [q]);
+  const at = hits.length ? Math.min(sel, hits.length - 1) : 0;
+
+  const walk = () => {
+    if (!hits.length) return;
+    const n = (at + 1) % hits.length;
+    setSel(n);
+    // keep the highlighted row in the window without moving the page
+    hitsRef.current?.scrollTo({ y: Math.max(0, n * 56 - 112), animated: true });
+  };
+
+  const takeSel = () => {
+    if (hits.length) return addHit(hits[at]);
+    if (q.trim()) {
+      setQuick({ name: parsed.base || parsed.full, alias: '', unit: 'PCS', hsn: '',
+                 gst_rate: '', rate: '', rate2: '', other: '', opening_stock: '',
+                 qty: parsed.qty == null ? '' : String(parsed.qty) });
+    }
+  };
 
   // Which list this bill is on decides the rate. A rate already typed by hand
   // is never touched by it.
@@ -385,17 +490,45 @@ export default function BillScreen({ route, navigation }) {
   // quantity box is waiting. Scanned twice: the quantity goes up by one
   // instead of a second line appearing, which is what a shop actually wants.
   // Unknown code: he is asked once what it is, and it is remembered.
-  const scanned = (code) => {
-    const hit = items.find((it) => String(it.barcode || '').trim() === code);
-    if (hit) {
+  const scanned = async (code) => {
+    const take = (hit) => {
       const already = lines.find((l) => l.item_id === hit.id);
-      if (already) {
-        setLine(already.key, { qty: String(num(already.qty) + 1) });
-      } else {
-        addHit({ p: hit, qty: 1, toks: [] });
+      if (already) setLine(already.key, { qty: String(num(already.qty) + 1) });
+      else addHit({ p: hit, qty: 1, toks: [] });
+    };
+
+    // The list this screen is holding, compared properly — a space typed into
+    // the item screen, a hyphen off the label or the thirteenth zero an EAN
+    // reader puts in front of a UPC no longer make it a different packet.
+    const hit = itemsWithCode(items, code)[0];
+    if (hit) return take(hit);
+
+    // NOT IN THE LIST IS NOT THE SAME AS NOT IN THE BOOK.
+    //
+    // This screen reads the items once, when it opens. A code put against an
+    // item a minute ago on the item screen, or on the owner's phone while the
+    // counter boy had the bill screen open, or against an item that has since
+    // been switched off, is simply not in the copy it is holding — and he was
+    // told, flatly, that no product carries that code, standing there with
+    // the packet in his hand. So before saying that, ask the database.
+    try {
+      // the same three spellings the in-memory match already forgives
+      const c = String(code).trim();
+      const tries = [...new Set([c, c.replace(/^0+/, ''), `0${c}`])].filter(Boolean);
+      const { data } = await supabase.from('items').select('*')
+        .in('barcode', tries).limit(1);
+      const server = (data || [])[0];
+      if (server) {
+        setItems((old2) => (old2.some((x) => x.id === server.id)
+          ? old2.map((x) => (x.id === server.id ? server : x))
+          : [...old2, server]));
+        return take(server);
       }
-      return;
+    } catch (_) {
+      // no signal. Fall through and offer to add it, which is what he would
+      // have been offered anyway.
     }
+
     setScanOpen(false);
     Alert.alert('New barcode',
       'No item in your book carries that code. Add it to an item now?',
@@ -404,6 +537,24 @@ export default function BillScreen({ route, navigation }) {
   };
 
   const addHit = (h) => {
+    // A SCANNED CODE THAT TURNED OUT TO BE AN ITEM HE ALREADY HAS.
+    //
+    // He scans a packet, is told nothing carries that code, says yes to
+    // adding it — and then types the name and finds the item sitting there
+    // all along, under a name he had entered by hand. Skwik used to keep the
+    // code only for an item it CREATED, so the next scan of that same packet
+    // asked him the same question again, for ever. Now the code goes onto
+    // whichever item he picked, and that is the end of it.
+    if (pendingCode && h.p?.id && !String(h.p.barcode || '').trim()) {
+      const code = pendingCode;
+      setPendingCode('');
+      setItems((old2) => old2.map((x) => (x.id === h.p.id ? { ...x, barcode: code } : x)));
+      (async () => {
+        try { await supabase.from('items').update({ barcode: code }).eq('id', h.p.id); }
+        catch (_) { /* no signal: the next scan asks again, which is honest */ }
+      })();
+    }
+
     const rate = listRate(h.p);
     seq.current += 1;
     const line = {
@@ -553,6 +704,30 @@ export default function BillScreen({ route, navigation }) {
     setPickFor(null);
   };
 
+  // A BATCH TYPED IN BY HAND SHOULD BRING ITS EXPIRY TOO.
+  //
+  // The list beside the box takes the expiry with the batch, and that always
+  // worked. But most of the time he does not open the list — the batch is on
+  // the strip in his hand and typing it is faster — and then the expiry box
+  // sat there empty, waiting for a date he would have to read off the foil
+  // and turn round into the order the box wanted. It is the same lot either
+  // way: Skwik already knows when B-101 goes off.
+  //
+  // So the moment what he has typed matches a batch of that item Skwik holds,
+  // the expiry fills itself in. Only when the box is empty — a date he has
+  // put in himself is his, and is never overwritten.
+  const fillExpiryFromBatch = (l, typed) => {
+    const want = String(typed || '').trim().toUpperCase();
+    if (!want) return;
+    const have = inStock[stockKey(l)];
+    if (!have || !have.length) return;
+    const b = have.find((x) => String(x.batch || '').trim().toUpperCase() === want);
+    if (!b || !b.expiry) return;
+    const iso = String(b.expiry).slice(0, 10);
+    setLines((ls) => ls.map((x) => (x.key !== l.key || (x.expiryText || x.expiry) ? x
+      : { ...x, expiry: iso, expiryText: showDate(iso) })));
+  };
+
   const swapHits = useMemo(
     () => (swapFor == null ? [] : searchItems(items, sq || ' ', 12)), [items, sq, swapFor]);
 
@@ -665,31 +840,32 @@ export default function BillScreen({ route, navigation }) {
 
   /* ---------------- save ---------------- */
 
-  const findOrCreateParty = async (name) => {
+  const findOrCreateParty = async (name, from) => {
     const hit = parties.find((p) => p.name.toLowerCase() === name.toLowerCase());
     if (hit) return hit;
 
     // The phone decides the id, so the same customer cannot be created twice
     // when the queue is sent.
-    const code = String(cust?.state_code || org.state_code || '').trim();
+    const src = from || cust;
+    const code = String(src?.state_code || org.state_code || '').trim();
     const body = {
       id: uuid(),
       org_id: org.id, name,
-      kind: cust?.kind || (isBuy ? 'supplier' : 'customer'),
-      phone: cust?.phone || null,
-      area: cust?.area || null,
-      address: cust?.address || null,
-      gstin: cust?.gstin || null,
-      is_registered: !!cust?.gstin,
+      kind: src?.kind || (isBuy ? 'supplier' : 'customer'),
+      phone: src?.phone || null,
+      area: src?.area || null,
+      address: src?.address || null,
+      gstin: src?.gstin || null,
+      is_registered: !!src?.gstin,
       // what he already owed before this bill — asked on the sheet, because a
       // customer entered mid-bill with a balance left out of him reads as
       // settled, and the udhar list is then wrong from the first day
-      opening_balance: num(cust?.opening_balance),
-      opening_type: cust?.opening_type === 'you_owe' ? 'you_owe' : 'owes_you',
-      opening_date: cust?.opening_balance ? today() : null,
-      price_list: isBuy ? 1 : (Number(cust?.price_list) || priceList),
+      opening_balance: num(src?.opening_balance),
+      opening_type: src?.opening_type === 'you_owe' ? 'you_owe' : 'owes_you',
+      opening_date: src?.opening_balance ? today() : null,
+      price_list: isBuy ? 1 : (Number(src?.price_list) || priceList),
       state_code: code,
-      state_name: STATES[code] || cust?.state_name || org.state_name,
+      state_name: STATES[code] || src?.state_name || org.state_name,
     };
 
     try {
@@ -707,6 +883,8 @@ export default function BillScreen({ route, navigation }) {
     }
   };
 
+  // asked once per save, like the quantity-looks-like-a-price question
+  const shortOk = useRef(false);
   const save = async (holdOnly) => {
     if (!good.length) return Alert.alert('Nothing to save', 'Add at least one item with a quantity.');
     if (!cust?.name) return Alert.alert('Who is it for?', 'Choose a customer first.');
@@ -744,6 +922,46 @@ export default function BillScreen({ route, navigation }) {
           + 'the price was typed into the quantity box. Change it, or tap save '
           + 'again to go ahead.');
       }
+    }
+    // MORE THAN THE SHOP HAS.
+    //
+    // Nothing anywhere in the billing path ever looked at stock. A counter
+    // could sell four hundred of something he has eleven of, and the only
+    // sign was a minus figure on the stock screen weeks later. It is NOT
+    // blocked — the goods are on the floor whatever the app believes, and a
+    // customer standing at the counter is not going to wait for a stock
+    // correction — but he is told once, with the figures, before it is
+    // written. Asked once per save, for the whole bill, so it costs one
+    // request and not one per keystroke.
+    if (isOut && org?.stock_enabled && !shortOk.current) {
+      try {
+        const ids = [...new Set(good.map((l) => l.item_id).filter(Boolean))];
+        if (ids.length) {
+          const { data: have } = await supabase.from('stock_in_hand')
+            .select('item_id, qty').in('item_id', ids);
+          const inHand = {};
+          (have || []).forEach((r) => { inHand[r.item_id] = num(r.qty); });
+          const want = {};
+          good.forEach((l) => { if (l.item_id)
+            want[l.item_id] = num(want[l.item_id]) + num(l.qty); });
+          const short = Object.keys(want)
+            .filter((id) => inHand[id] !== undefined && want[id] > inHand[id])
+            .map((id) => {
+              const l = good.find((x) => x.item_id === id);
+              return `${l.item_name}: ${fmt0(want[id])} going out, ${fmt0(inHand[id])} in hand`;
+            });
+          if (short.length) {
+            shortOk.current = true;
+            return Alert.alert('More than you have',
+              short.slice(0, 5).join('\n')
+              + (short.length > 5 ? `\n+ ${short.length - 5} more` : '')
+              + '\n\nSave it anyway if the goods really went out — the stock '
+              + 'figure is what needs correcting, not the bill.',
+              [{ text: 'Let me check' },
+               { text: 'It really went out', onPress: () => save(holdOnly) }]);
+          }
+        }
+      } catch (e) { /* stock is a courtesy here; it never stops a bill */ }
     }
     // A DATE SKWIK CANNOT READ IS SAID SO HERE — not left to the database to
     // refuse it in a sentence about quantities being far too large.
@@ -783,8 +1001,18 @@ export default function BillScreen({ route, navigation }) {
         vtype,
         // A purchase belongs to the date on the supplier's bill. He often
         // enters August's bills in September, and they must land in August.
+        // THE DAY IT WENT INTO YOUR BOOKS, NOT THE DAY THEY WROTE IT.
+        //
+        // A new purchase used to take the SUPPLIER'S bill date as its own.
+        // Goods are received in September against a bill written in July, so
+        // the entry landed in July's day book and July's GST period — a
+        // period already filed. Their date is kept, on its own column, where
+        // it belongs for the law and for matching 2B; the books use the day
+        // the entry was actually made.
+        //
+        // Purchases already entered keep the dates they have. Rewriting them
+        // would move figures in months that are closed.
         vdate: editId ? vdate
-             : (isBuy && supDate) ? supDate
              : today(),
         party_id: pty?.id || null, printed_name: cust.name, is_cash: isCash,
         supplier_invoice_no: isBuy ? supNo : null,
@@ -952,60 +1180,12 @@ export default function BillScreen({ route, navigation }) {
     }
   };
 
-  // STRAIGHT INTO HIS CHAT.
-  //
-  // WhatsApp will open a named person's chat from a link, but it will NOT
-  // carry a file in with it — no app can hand WhatsApp an attachment and a
-  // recipient at the same time; only the sharing sheet can attach a file, and
-  // the sharing sheet cannot choose the person. So there are two ways out of
-  // this screen, and they do different jobs:
-  //
-  //   the chat      opens his own conversation with the figures written out,
-  //                 no picking a name from a list, no typing
-  //   the PDF       the sharing sheet, where he picks the chat himself
-  //
-  // Most counters want the first: the customer wants to know what he owes,
-  // and the printed copy is already in his hand.
-  const waNumber = () => {
-    const raw = String(saved?.party?.phone || '').replace(/\D/g, '');
-    if (!raw) return null;
-    if (raw.length === 10) return `91${raw}`;             // an Indian number as everyone writes it
-    if (raw.length === 12 && raw.startsWith('91')) return raw;
-    if (raw.length > 12) return raw.slice(-12);
-    return raw;
-  };
+  // The plain-text route to a named chat used to live here. It could open
+  // the customer's own conversation, which the PDF route cannot — but all it
+  // could carry was six typed lines, and a bill nobody can keep is not worth
+  // the biggest button on the screen. If it is ever wanted back, the trick
+  // was: whatsapp://send?phone=<91xxxxxxxxxx>&text=<the lines>
 
-  const onWhatsApp = async () => {
-    const to = waNumber();
-    const v = saved?.voucher || {};
-    // WHAT A STRANGER READS ON HIS PHONE. He is not a Skwik user and the word
-    // "New" means nothing to him — it is this screen's own label leaking out.
-    // And a customer who has PAID and one who owes the money were being sent
-    // the same six lines ending "Thank you.", which reads like a receipt to
-    // both of them.
-    const kind = vtype === 'estimate' ? 'Estimate' : isBuy ? 'Purchase' : 'Bill';
-    const body = [
-      `${org?.name || 'Bill'}`,
-      `${kind} ${v.voucher_no || ''}`.trim(),
-      `Amount: ₹${fmt0(v.total || 0)}`,
-      v.vdate ? `Date: ${String(v.vdate).split('-').reverse().join('/')}` : null,
-      (!isBuy && vtype !== 'estimate')
-        ? (v.is_cash ? 'Paid — thank you.' : 'Amount still due.') : null,
-      '',
-      'Thank you.',
-    ].filter((x) => x !== null).join('\n');
-
-    const url = to
-      ? `whatsapp://send?phone=${to}&text=${encodeURIComponent(body)}`
-      : `whatsapp://send?text=${encodeURIComponent(body)}`;
-    try {
-      await Linking.openURL(url);
-    } catch (e) {
-      Alert.alert('WhatsApp did not open',
-        'This phone may not have WhatsApp installed. '
-        + 'Use “PDF on WhatsApp” or “Print” instead.');
-    }
-  };
   // A PRINT THAT FAILS MUST SAY SO. With no catch here, tapping Print with no
   // printer set up on the phone did nothing at all — no paper, no message —
   // and he had no way to tell whether the customer's copy had gone out.
@@ -1048,11 +1228,16 @@ export default function BillScreen({ route, navigation }) {
       if (!cust) { navigation.goBack(); return true; } // no customer picked yet
       setCustOpen(false); return true;
     }
-    if (lines.length) {
-      Alert.alert('Leave this bill?',
-        `${lines.length} line${lines.length > 1 ? 's' : ''} will be lost.`,
+    // An old bill nobody touched goes back without a word.
+    if (editId && !changedSince()) { navigation.goBack(); return true; }
+    if (lines.length && (!editId || changedSince())) {
+      Alert.alert(editId ? 'Unsaved changes' : 'Leave this bill?',
+        editId
+          ? 'What you have changed on this bill has not been saved.'
+          : `${lines.length} line${lines.length > 1 ? 's' : ''} will be lost.`,
         [{ text: 'Stay on the bill' },
-         { text: 'Leave', style: 'destructive', onPress: () => navigation.goBack() }]);
+         { text: editId ? 'Throw the changes away' : 'Leave', style: 'destructive',
+           onPress: () => navigation.goBack() }]);
       return true;
     }
     navigation.goBack();
@@ -1124,7 +1309,7 @@ export default function BillScreen({ route, navigation }) {
             </Text>
           </TouchableOpacity>
         )}
-        {!!cust && keyGap === 0 && <ScanButton light onPress={() => setScanOpen(true)} />}
+        {keyGap === 0 && <ScanButton light onPress={() => setScanOpen(true)} />}
         {keyGap === 0 && (
           <View style={{ alignItems: 'flex-end' }}>
             <Text style={S.barTotL}>TOTAL</Text>
@@ -1158,27 +1343,38 @@ export default function BillScreen({ route, navigation }) {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={S.cellLabel}>Its date</Text>
-              <TextInput style={[S.cell, S.num]} value={supDateText}
-                onChangeText={setSupDateText}
-                onBlur={() => { const d = parseDate(supDateText);
-                                if (d) setSupDateText(showDate(d)); }}
-                placeholder="19-09-2026" placeholderTextColor={C.faint}
-                keyboardType="numbers-and-punctuation"
-                returnKeyType="next" submitBehavior="submit"
-                onSubmitEditing={() => qRef.current?.focus()} />
+              <View style={[S.row, { gap: 6 }]}>
+                <TextInput style={[S.cell, S.num, { flex: 1 }]} value={supDateText}
+                  onChangeText={setSupDateText}
+                  onBlur={() => { const d = parseDate(supDateText);
+                                  if (d) setSupDateText(showDate(d)); }}
+                  placeholder="19-09-2026" placeholderTextColor={C.faint}
+                  keyboardType="numbers-and-punctuation"
+                  returnKeyType="next" submitBehavior="submit"
+                  onSubmitEditing={() => qRef.current?.focus()} />
+                <TouchableOpacity onPress={() => setSupCal(true)}
+                  style={{ width: 40, height: 40, borderRadius: 9, borderWidth: 1,
+                           borderColor: C.line, backgroundColor: C.surface,
+                           alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ fontSize: 17 }}>📅</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
           <Text style={[S.hint, { marginBottom: 8 }]}>
-            The date on his bill, not today — a bill from last month is entered
-            under last month.
+            The date printed on HIS bill. Your own books use the day you enter
+            it, so a July bill entered today does not land back in July.
           </Text>
         </View>
       )}
 
       {/* THE ENTRY LINE — one box, product and quantity together.
           Its key is the arrow, not the tick: every box on a bill carries you
-          forward to the next one, so they all show the same thing. */}
-      {!!cust && (
+          forward to the next one, so they all show the same thing.
+          It is here from the first moment now: the bill opens on the goods,
+          and the name is a bar at the top that can be filled in at any point
+          before it is saved. */}
+      {(
         <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                        borderBottomWidth: 1, borderBottomColor: C.line }}>
           <TextInput
@@ -1188,12 +1384,14 @@ export default function BillScreen({ route, navigation }) {
             placeholderTextColor={C.faint}
             value={q} onChangeText={setQ}
             returnKeyType="next" submitBehavior="submit"
-            onSubmitEditing={() => {
-              if (hits.length) addHit(hits[0]);
-              else if (q.trim()) setQuick({ name: parsed.base || parsed.full, alias: '',
-                                            unit: 'PCS', hsn: '', gst_rate: '', rate: '',
-                                            rate2: '', other: '', opening_stock: '',
-                                            qty: parsed.qty == null ? '' : String(parsed.qty) });
+            onSubmitEditing={takeSel}
+            // Tab, for the shops billing off a laptop with a keyboard plugged
+            // in. It confirms whatever the rail is sitting on, exactly as the
+            // OK button does.
+            onKeyPress={(e) => {
+              const k = e?.nativeEvent?.key;
+              if (k === 'Tab') { e.preventDefault?.(); takeSel(); }
+              else if (k === 'ArrowDown') { e.preventDefault?.(); walk(); }
             }} />
           {isOut && !cust?.price_list && (
             <View style={[S.row, { marginTop: 8 }]}>
@@ -1216,10 +1414,15 @@ export default function BillScreen({ route, navigation }) {
 
           {!!q.trim() && (
             <View style={{ marginTop: 6, maxHeight: 280, borderWidth: 1, borderColor: C.line,
-                           borderRadius: 9, backgroundColor: C.surface, overflow: 'hidden' }}>
-              <ScrollView keyboardShouldPersistTaps="handled">
-                {hits.map((h) => (
-                  <TouchableOpacity key={h.p.id} onPress={() => addHit(h)} style={S.hit}>
+                           borderRadius: 9, backgroundColor: C.surface, overflow: 'hidden',
+                           flexDirection: 'row' }}>
+              <ScrollView style={{ flex: 1 }} ref={hitsRef} keyboardShouldPersistTaps="handled">
+                {hits.map((h, hi) => (
+                  <TouchableOpacity key={h.p.id} onPress={() => addHit(h)}
+                    style={[S.hit, wantRail && hi === at && {
+                      backgroundColor: C.accentSoft,
+                      borderLeftWidth: 3, borderLeftColor: C.accent,
+                      paddingHorizontal: 11 }]}>
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <View style={[S.row, { gap: 6 }]}>
                         <Marked text={h.p.name} toks={h.toks} style={[S.hitName, { flexShrink: 1 }]} />
@@ -1250,6 +1453,30 @@ export default function BillScreen({ route, navigation }) {
                   </Text>
                 </TouchableOpacity>
               </ScrollView>
+
+              {/* THE BAR. Exactly as wide as the OK on it, down the right,
+                  within reach of a thumb holding the phone. */}
+              {wantRail && hits.length > 1 && (
+                <View style={{ width: 58, borderLeftWidth: 1, borderLeftColor: C.line,
+                               padding: 6, gap: 6 }}>
+                  <TouchableOpacity onPress={walk} activeOpacity={0.7}
+                    style={{ flex: 1, minHeight: 74, borderRadius: 11, borderWidth: 1.5,
+                             borderColor: C.line, backgroundColor: C.card,
+                             alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 24, fontWeight: '800', color: C.ink }}>▼</Text>
+                    <Text style={[{ fontSize: 10, fontWeight: '700', color: C.muted,
+                                    marginTop: 1 }, S.num]}>
+                      {at + 1}/{hits.length}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity onPress={takeSel} activeOpacity={0.7}
+                    style={{ height: 38, borderRadius: 11, backgroundColor: C.accent,
+                             alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 14, fontWeight: '800', color: '#fff' }}>OK</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
           )}
         </View>
@@ -1266,7 +1493,7 @@ export default function BillScreen({ route, navigation }) {
                   style={{ flex: 1 }}
                   contentContainerStyle={{ paddingBottom: 30 }}>
 
-        {!lines.length && !!cust && (
+        {!lines.length && (
           <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center',
                          marginTop: 40, paddingHorizontal: 24, lineHeight: 20 }}>
             Type an item above. Put the quantity after it — “thali 12” — and it
@@ -1373,31 +1600,23 @@ export default function BillScreen({ route, navigation }) {
               <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8 }}>
                 <View style={{ flex: 1 }}>
                   <Text style={S.cellLabel}>Qty</Text>
-                  <TextInput style={[S.cell, S.num]} keyboardType="numeric" value={String(l.qty)}
+                  <NumCell style={[S.cell, S.num]} value={String(l.qty)}
                     ref={(r) => { cell.current[`${l.key}:qty`] = r; }}
                     selectTextOnFocus
-                    returnKeyType="next" submitBehavior="submit"
-                    onBlur={() => setLine(l.key, { qty: settle(l.qty) })}
-                    onSubmitEditing={() => {
-                      setLine(l.key, { qty: settle(l.qty) });
-                      focusCell(l.key, 'rate');
-                    }}
-                    onChangeText={(t) => setLine(l.key, { qty: t })} />
+                    onType={(t) => setLine(l.key, { qty: t })}
+                    onDone={(t) => { const v = settle(t); setLine(l.key, { qty: v }); return v; }}
+                    onSubmit={() => focusCell(l.key, 'rate')} />
                 </View>
                 <Text style={{ fontSize: 14, color: C.muted, paddingBottom: 11 }}>×</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={S.cellLabel}>Rate</Text>
-                  <TextInput style={[S.cell, S.num]} keyboardType="numeric" value={String(l.rate)}
+                  <NumCell style={[S.cell, S.num]} value={String(l.rate)}
                     ref={(r) => { cell.current[`${l.key}:rate`] = r; }}
                     selectTextOnFocus
-                    returnKeyType="next" submitBehavior="submit"
-                    onBlur={() => setLine(l.key, { rate: settle(l.rate) })}
-                    onSubmitEditing={() => {
-                      setLine(l.key, { rate: settle(l.rate) });
-                      qRef.current?.focus();
-                    }}
                     onFocus={() => setLine(l.key, { rateTouched: true })}
-                    onChangeText={(t) => setLine(l.key, { rate: t, rateEdited: true })} />
+                    onType={(t) => setLine(l.key, { rate: t, rateEdited: true })}
+                    onDone={(t) => { const v = settle(t); setLine(l.key, { rate: v }); return v; }}
+                    onSubmit={() => qRef.current?.focus()} />
                 </View>
                 <Text style={[S.amt, { paddingBottom: 10, minWidth: 74 }]}>
                   {amt ? `₹${fmt0(amt)}` : '–'}
@@ -1422,7 +1641,10 @@ export default function BillScreen({ route, navigation }) {
                         placeholder="B-77" placeholderTextColor={C.faint}
                         autoCapitalize="characters"
                         returnKeyType="next" submitBehavior="submit"
-                        onChangeText={(t) => setLine(l.key, { batch: t })} />
+                        onFocus={() => l.item_id && loadBatches(l.item_id, lineGodown(l))}
+                        onBlur={() => fillExpiryFromBatch(l, l.batch)}
+                        onChangeText={(t) => { setLine(l.key, { batch: t });
+                                               fillExpiryFromBatch(l, t); }} />
                     </View>
                   )}
                   {wantExpiry && (
@@ -1431,15 +1653,22 @@ export default function BillScreen({ route, navigation }) {
                       {/* Same trap as the supplier's bill date: he writes
                           31/03/2027 and the database wanted the other way
                           round. Read his way, kept the only way it stores. */}
-                      <TextInput style={[S.cell, S.num]} value={l.expiryText ?? (l.expiry || '')}
-                        placeholder="31-03-2027" placeholderTextColor={C.faint}
-                        keyboardType="numbers-and-punctuation"
-                        returnKeyType="next" submitBehavior="submit"
-                        onSubmitEditing={() => qRef.current?.focus()}
-                        onBlur={() => { const d = parseDate(l.expiryText ?? l.expiry);
-                                        setLine(l.key, d ? { expiry: d, expiryText: showDate(d) }
-                                                         : { expiry: '' }); }}
-                        onChangeText={(t) => setLine(l.key, { expiryText: t })} />
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <TextInput style={[S.cell, S.num, { flex: 1 }]}
+                          value={l.expiryText ?? (l.expiry || '')}
+                          placeholder="31-03-2027" placeholderTextColor={C.faint}
+                          keyboardType="numbers-and-punctuation"
+                          returnKeyType="next" submitBehavior="submit"
+                          onSubmitEditing={() => qRef.current?.focus()}
+                          onBlur={() => { const d = parseDate(l.expiryText ?? l.expiry);
+                                          setLine(l.key, d ? { expiry: d, expiryText: showDate(d) }
+                                                           : { expiry: '' }); }}
+                          onChangeText={(t) => setLine(l.key, { expiryText: t })} />
+                        <CalButton value={l.expiry || ''} size={38}
+                          title="When does this lot go off?"
+                          onPick={(iso) => setLine(l.key,
+                            { expiry: iso, expiryText: showDate(iso) })} />
+                      </View>
                     </View>
                   )}
                 </View>
@@ -1575,41 +1804,11 @@ export default function BillScreen({ route, navigation }) {
         {!!lines.length && (
           <View style={[S.card, { marginHorizontal: 14, marginTop: 14 }]}>
             <Text style={S.eyebrow}>Totals</Text>
-            <Row k="Items" v={fmt(calc.gross)} />
-
-            {/* ONE DISCOUNT, AT THE BOTTOM, WHERE IT IS ACTUALLY GIVEN.
-                It is shared out across the lines behind the scenes so each
-                tax rate is charged on what was really taken for it — the
-                customer sees one round figure, the return sees the truth. */}
-            <View style={[S.row, { marginTop: 6, marginBottom: 2, gap: 8 }]}>
-              <Text style={{ flex: 1, fontSize: 14, color: C.muted }}>Less</Text>
-              <TextInput style={[S.cell, S.num, { width: 120, textAlign: 'right' }]}
-                keyboardType="numeric" placeholder="0" placeholderTextColor={C.faint}
-                selectTextOnFocus value={less}
-                onChangeText={setLess} onBlur={() => setLess(settle(less))}
-                returnKeyType="done" />
-            </View>
-            {discAsked > discTotal && (
-              <Text style={{ fontSize: 11.5, color: C.flagInk, marginBottom: 4 }}>
-                Only {fmt(discTotal)} can come off — that is the whole bill.
-              </Text>
-            )}
-
-            <Row k={extraAmt ? 'Taxable value' : 'Items total'} v={fmt(calc.taxable)} />
-            {isBuy && taxIsCost(org) && mode !== 'none' && (
-              <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2, lineHeight: 17 }}>
-                You cannot claim this tax back, so Skwik puts it into what the
-                goods cost you. Ten pieces at 100 with 5% on them become 105 each.
-              </Text>
-            )}
-            {mode === 'cgst_sgst' && (<><Row k="CGST" v={fmt(calc.cgst)} /><Row k="SGST" v={fmt(calc.sgst)} /></>)}
-            {mode === 'igst' && <Row k="IGST" v={fmt(calc.igst)} />}
+            <Row k="Gross Total" v={fmt(calc.gross)} />
             {!!extraAmt && (
-              <Row k={`${extraNote || 'Freight'}${mode !== 'none' && extraRate
+              <Row k={`Add : ${extraNote || 'Expenses'}${mode !== 'none' && extraRate
                         ? ` (in the ${pct(extraRate)}% above)` : ''}`} v={fmt(extraAmt)} />
             )}
-            {!!roundOff && <Row k="Round off" v={fmt(roundOff)} />}
-
             {!showExtra ? (
               <TouchableOpacity onPress={() => setShowExtra(true)} style={{ paddingTop: 8 }}>
                 <Text style={{ fontSize: 13, fontWeight: '600', color: C.accent }}>
@@ -1648,6 +1847,40 @@ export default function BillScreen({ route, navigation }) {
                 })}
               </View>
             )}
+            {/* ONE DISCOUNT, AND IT COMES OFF AFTER THE EXPENSES.
+                Gross Total, add what was spent on top, take the discount off
+                that, and what is left is what he has to pay. The screen used
+                to take the discount off before the freight had been added,
+                which is not how anybody adds up a bill.
+                It is shared out across the lines behind the scenes so each
+                tax rate is charged on what was really taken for it — the
+                customer sees one round figure, the return sees the truth. */}
+            <View style={[S.row, { marginTop: 6, marginBottom: 2, gap: 8 }]}>
+              <Text style={{ flex: 1, fontSize: 14, color: C.muted }}>Less : Discount</Text>
+              <TextInput style={[S.cell, S.num, { width: 120, textAlign: 'right' }]}
+                keyboardType="numeric" placeholder="0" placeholderTextColor={C.faint}
+                selectTextOnFocus value={less}
+                onChangeText={setLess} onBlur={() => setLess(settle(less))}
+                returnKeyType="done" />
+            </View>
+            {discAsked > discTotal && (
+              <Text style={{ fontSize: 11.5, color: C.flagInk, marginBottom: 4 }}>
+                Only {fmt(discTotal)} can come off — that is the whole bill.
+              </Text>
+            )}
+
+
+            <Row k={extraAmt || discAsked ? 'Taxable value' : 'Net of goods'} v={fmt(calc.taxable)} />
+            {isBuy && taxIsCost(org) && mode !== 'none' && (
+              <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2, lineHeight: 17 }}>
+                You cannot claim this tax back, so Skwik puts it into what the
+                goods cost you. Ten pieces at 100 with 5% on them become 105 each.
+              </Text>
+            )}
+            {mode === 'cgst_sgst' && (<><Row k="CGST" v={fmt(calc.cgst)} /><Row k="SGST" v={fmt(calc.sgst)} /></>)}
+            {mode === 'igst' && <Row k="IGST" v={fmt(calc.igst)} />}
+            {!!roundOff && <Row k="Round off" v={fmt(roundOff)} />}
+
 
             {/* REVERSE CHARGE.
                 Ticking this means the BUYER pays the tax to the government
@@ -1727,7 +1960,7 @@ export default function BillScreen({ route, navigation }) {
             )}
 
             <View style={[S.tline, { borderTopWidth: 2, borderTopColor: C.ink, marginTop: 8, paddingTop: 10 }]}>
-              <Text style={{ fontSize: 20, fontWeight: '700', color: C.ink }}>Total</Text>
+              <Text style={{ fontSize: 20, fontWeight: '700', color: C.ink }}>Net Total</Text>
               <Text style={[{ fontSize: 20, fontWeight: '700', color: C.ink }, S.num]}>₹{fmt0(grand)}</Text>
             </View>
 
@@ -1824,9 +2057,19 @@ export default function BillScreen({ route, navigation }) {
             placeholder={isOut ? 'Name, phone, or CASH' : 'Supplier name or phone'}
             placeholderTextColor={C.faint}
             returnKeyType="next" submitBehavior="submit"
-            onSubmitEditing={() => { if (custHits.length) chooseCust(custHits[0]);
-                                     else if (cashInfo.name) newCust();
-                                     else if (cashWalkIn) startWalkIn(); }}
+            onSubmitEditing={() => {
+              // A NAME THAT MATCHES NOTHING IS A NEW CUSTOMER.
+              //
+              // Pressing next used to do nothing at all when the list was
+              // empty, so a name nobody has bought from before was a dead end
+              // — he had to find the + button with his other hand. Anything
+              // typed that matches nobody now opens the new-customer sheet
+              // with the name already in it.
+              if (custHits.length) return chooseCust(custHits[0]);
+              if (cashInfo.name) return newCust();
+              if (cashWalkIn) return startWalkIn();
+              if (cq.trim().length >= 2) return newCust();
+            }}
             value={cq} onChangeText={setCq} />
           {isOut && cashInfo.isCash && (
             <Text style={{ marginTop: 8, fontSize: 12.5, fontWeight: '700', color: C.green }}>
@@ -2171,27 +2414,23 @@ export default function BillScreen({ route, navigation }) {
                           S.num]}>
               ₹{fmt0(saved?.voucher?.total || 0)}
             </Text>
-            <TouchableOpacity style={[S.btn, { backgroundColor: C.wa }]} onPress={onWhatsApp}>
-              <Text style={S.btnText}>
-                {saved?.party?.phone
-                  ? `WhatsApp ${String(saved.party.name || '').split(' ')[0]}`
-                  : 'Send on WhatsApp'}
-              </Text>
+            {/* THREE WAYS OUT, AND ALL THREE CARRY THE BILL.
+                There used to be a fourth at the top, in green, that sent the
+                customer six lines of plain text — his name, the number, the
+                amount. A man who wants the bill wants the BILL; a typed-out
+                amount with no bill behind it is not something anybody keeps,
+                and it was the biggest button on the screen. */}
+            <TouchableOpacity style={[S.btn, { backgroundColor: C.wa }]} onPress={onWhatsAppPdf}>
+              <Text style={S.btnText}>Send PDF on WhatsApp</Text>
             </TouchableOpacity>
-            {!saved?.party?.phone && (
-              <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 16 }}>
-                No phone number on his record, so you will have to pick the chat.
-                Put his number under Customers and it opens straight into it.
-              </Text>
-            )}
             <View style={[S.row, { marginTop: 10, gap: 10 }]}>
-              <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
-                onPress={onWhatsAppPdf}>
-                <Text style={[S.ghostText, { fontSize: 15 }]}>PDF on WhatsApp</Text>
-              </TouchableOpacity>
               <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
                 onPress={onPrint}>
                 <Text style={[S.ghostText, { fontSize: 15 }]}>Print</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
+                onPress={onShare}>
+                <Text style={[S.ghostText, { fontSize: 15 }]}>Download</Text>
               </TouchableOpacity>
             </View>
             <TouchableOpacity onPress={() => { setSaved(null); navigation.navigate('Home'); }}
@@ -2201,6 +2440,11 @@ export default function BillScreen({ route, navigation }) {
           </View>
         </View>
       </Modal>
+      <Calendar visible={supCal} value={supDate || today()} max={today()}
+        title="Date on his bill"
+        note="The date they printed on it. Your books use the day you entered it."
+        onPick={(iso) => setSupDateText(showDate(iso))}
+        onClose={() => setSupCal(false)} />
       <ScanSheet visible={scanOpen} onClose={() => setScanOpen(false)} onCode={scanned}
         title="Point at the barcode"
         note="Scan the same packet twice and the quantity goes up" />
