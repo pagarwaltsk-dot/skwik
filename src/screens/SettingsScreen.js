@@ -573,6 +573,31 @@ export default function SettingsScreen({ navigation }) {
                placeholder="Wholesale" />
         <Field ref={rP2} label="PRICE LIST 2" value={f.price2_name} onChange={set('price2_name')}
                placeholder="Retail" />
+        {/* THE QUESTION THE BILL SCREEN USED TO ASK FORTY TIMES A DAY.
+            Every customer carries his own list. The stranger paying cash does
+            not, and he is most of the counter — so it is answered once, here,
+            and the bill screen stops asking. */}
+        <Text style={[S.label, { marginTop: 18 }]}>A WALK-IN PAYS</Text>
+        <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>
+          Cash at the counter, no name taken. A customer you have written down
+          is billed on his own list whatever this says.
+        </Text>
+        <View style={[S.row, { gap: 8, marginTop: 8 }]}>
+          {[1, 2].map((n) => {
+            const on = Number(at('walkin_price_list', org?.walkin_price_list || 1)) === n;
+            const nm = n === 1 ? (f.price1_name || 'Wholesale') : (f.price2_name || 'Retail');
+            return (
+              <TouchableOpacity key={n} onPress={() => flip('walkin_price_list', n)}
+                style={{ flex: 1, paddingVertical: 11, borderRadius: 10, alignItems: 'center',
+                         borderWidth: 1.5, borderColor: on ? C.accent : C.line,
+                         backgroundColor: on ? C.accentSoft : C.surface }}>
+                <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '700',
+                                                 color: on ? C.accent : C.muted }}>{nm}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
         <TouchableOpacity style={[S.btn, { marginTop: 16 }]} disabled={busy}
           onPress={() => saveOrg({ price1_name: (f.price1_name || 'Wholesale').trim(),
                                    price2_name: (f.price2_name || 'Retail').trim() },

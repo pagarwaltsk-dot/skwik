@@ -601,6 +601,7 @@ export default function TransferScreen({ navigation }) {
 
       setBasisOk(false);
       setReady({ what, rows: read.rows, name: asset.name || 'the file',
+                 noRate: read.noRate || 0, skipped: read.skipped || 0,
                  kind: kind === 'csv' ? 'a spreadsheet' : 'a Tally export',
                  // The file itself is no longer held: changing the price
                  // list works off the rates already read, and keeping a
@@ -632,7 +633,12 @@ export default function TransferScreen({ navigation }) {
   // the firm row here re-rendered the whole screen for nothing.
   const useLevel = (level) => {
     if (!ready) return;
-    setReady((r) => ({ ...r, level, rows: applyPriceLevel(r.rows, level) }));
+    setReady((r) => {
+      const rows = applyPriceLevel(r.rows, level);
+      // The count of items with no rate belongs to the list he just picked,
+      // not to the one the file was first read on.
+      return { ...r, level, rows, noRate: rows.filter((x) => !x.sale_price).length };
+    });
     supabase.from('orgs').update({ tally_price_level: level || null })
       .eq('id', org.id).then(() => {}, () => {});
   };
@@ -868,6 +874,46 @@ export default function TransferScreen({ navigation }) {
                     <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 7, lineHeight: 16 }}>
                       If any of those went to the wrong place, rename the heading in
                       your file and pick it again. Nothing is saved yet.
+                    </Text>
+                  </View>
+                )}
+
+                {/* WHAT THE FILE DID NOT HAVE.
+                    Both of these used to happen in silence — items arriving
+                    with the purchase price standing in for a selling price,
+                    and ledgers dropped because they sit in a group inside a
+                    group. Counting them is the difference between an import
+                    he can check and one he has to take on trust. */}
+                {!!ready.noRate && (
+                  <View style={{ marginTop: 14, padding: 12, backgroundColor: C.flagSoft,
+                                 borderWidth: 1, borderColor: C.flagLine, borderRadius: 12 }}>
+                    <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.flagInk }}>
+                      {fmt0(ready.noRate)} of these have no selling rate
+                      {ready.level ? ` on your “${ready.level}” list` : ' in the file'}
+                    </Text>
+                    <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 4, lineHeight: 17 }}>
+                      They come in with the rate blank rather than with what you
+                      PAID for them, which is what Skwik used to do — a bill
+                      written off that price gives the goods away. Put a rate
+                      against them in Items, or pick a different list above.
+                      {ready.levels?.length > 1
+                        ? ' Tally only holds a rate on the lists you actually set.'
+                        : ''}
+                    </Text>
+                  </View>
+                )}
+
+                {!!ready.skipped && (
+                  <View style={{ marginTop: 14, padding: 12, backgroundColor: C.surface,
+                                 borderWidth: 1, borderColor: C.line, borderRadius: 12 }}>
+                    <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink }}>
+                      {fmt0(ready.skipped)} other ledgers left out
+                    </Text>
+                    <Text style={{ fontSize: 12, color: C.muted, marginTop: 4, lineHeight: 17 }}>
+                      Sales, purchase, tax, bank and cash ledgers are not people
+                      and do not belong in your customer list. Only what sits
+                      under Sundry Debtors or Sundry Creditors — at any depth,
+                      inside your own groups — is brought over.
                     </Text>
                   </View>
                 )}

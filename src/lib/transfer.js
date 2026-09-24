@@ -393,6 +393,29 @@ const nameAttr = (chunk) => {
 };
 
 // "116.95/Doz", " 29.50 Doz", " 6", "-3450.03" — pull the number out of any of them.
+// A QUANTITY TALLY WROTE, WHICH IS NOT ALWAYS A NUMBER.
+//
+// "200 Nos" is two hundred. "10 Box of 12 Nos" is a hundred and twenty, and
+// reading the first number off it gives ten — so a shop that keeps tiffin
+// clips in boxes had a twelfth of its stock, and the value of the shelf came
+// out a twelfth of what Tally says. Tally writes the conversion into the
+// string itself, so it is there to be read.
+const qtyOf = (x) => {
+  const t = String(x ?? '');
+  if (!t.trim()) return 0;
+  const nums = t.match(/-?[\d,]*\.?\d+/g);
+  if (!nums || !nums.length) return 0;
+  // "10 Box of 12 Nos" — the numbers on either side of "of" multiply
+  let v = Number(nums[0].replace(/,/g, '')) || 0;
+  if (/\bof\b/i.test(t)) {
+    for (let i = 1; i < nums.length; i++) {
+      const n = Number(nums[i].replace(/,/g, '')) || 0;
+      if (n) v *= n;
+    }
+  }
+  return v;
+};
+
 const numOf = (x) => {
   const m = String(x ?? '').match(/-?[\d,]*\.?\d+/);
   return m ? Number(m[0].replace(/,/g, '')) || 0 : 0;
@@ -458,10 +481,11 @@ function inherited(groups, parent, field, depth = 0) {
 // what a shopkeeper means when he says "his balance", so it wins whenever it
 // is in the file. Skwik says afterwards which of the two it found, because
 // importing the wrong one silently is how a whole ledger goes wrong.
-function balanceOf(block) {
+function balanceOf(block, isQty = false) {
+  const read = isQty ? qtyOf : numOf;
   const cl = tagOf(block, 'CLOSINGBALANCE');
-  if (cl !== '') return { value: numOf(cl), basis: 'closing' };
-  return { value: numOf(tagOf(block, 'OPENINGBALANCE')), basis: 'opening' };
+  if (cl !== '') return { value: read(cl), basis: 'closing' };
+  return { value: read(tagOf(block, 'OPENINGBALANCE')), basis: 'opening' };
 }
 
 // Every price level named anywhere in the file. A shop that keeps a wholesale
@@ -499,6 +523,19 @@ function ratesOf(block) {
   return out;
 }
 
+// The plain selling rate, for a shop that never made a price list at all.
+// Tally keeps it under its own heading, and reading only the price levels
+// missed it entirely.
+function standardRate(block) {
+  let best = 0, bestDate = '';
+  for (const pl of blocksOf(block, 'STANDARDPRICELIST.LIST')) {
+    const date = tagOf(pl, 'DATE') || '';
+    const rate = numOf(tagOf(pl, 'RATE'));
+    if (rate && date >= bestDate) { best = rate; bestDate = date; }
+  }
+  return best || numOf(tagOf(block, 'STANDARDPRICE'));
+}
+
 // The newest rate on the level he named. If he named none, or that level has
 // no rate for this item, the newest rate of any level — which is right for the
 // shops that keep a single price list.
@@ -517,9 +554,11 @@ function rateAt(rates, level) {
 // The same rows, priced off a different list. Nothing is read again.
 export function applyPriceLevel(rows, level) {
   return (rows || []).map((r) => {
-    if (!r._rates || !r._rates.length) return r;
-    const sale = rateAt(r._rates, level);
-    return { ...r, sale_price: sale || r.purchase_price };
+    if (!r._rates) return r;
+    // Same order as the first read: his list, then the plain selling rate,
+    // and NEVER the purchase price — see sale_price below.
+    const sale = rateAt(r._rates, level) || r._std || 0;
+    return { ...r, sale_price: sale };
   });
 }
 
@@ -527,7 +566,7 @@ export function itemsFromTallyXml(xml, opts = {}) {
   xml = cleanText(xml);
   const groups = groupsFromTallyXml(xml);
   const out = [];
-  let sawClosing = false, sawOpening = false;
+  let sawClosing = false, sawOpening = false, noRate = 0;
 
   for (const b of blocksOf(xml, 'STOCKITEM')) {
     const name = nameAttr(b) || tagOf(b, 'NAME');
@@ -539,19 +578,46 @@ export function itemsFromTallyXml(xml, opts = {}) {
 
     // The rate he sells at, off the price level he picked.
     const rates = ratesOf(b);
-    const sale  = rateAt(rates, opts.level);
-    const two   = opts.level2 ? rateAt(rates, opts.level2) : 0;
+    const onList = rateAt(rates, opts.level);
+    // A shop with no price list at all keeps its selling rate here instead.
+    const sale = onList || standardRate(b);
+    const two  = opts.level2 ? rateAt(rates, opts.level2) : 0;
+    if (!sale) noRate++;
 
-    const cost = numOf(tagOf(b, 'OPENINGRATE'));
-    const bal  = balanceOf(b);
+    const bal  = balanceOf(b, true);     // a quantity, not a rupee figure
     if (bal.basis === 'closing') sawClosing = true; else sawOpening = true;
+
+    // WHAT THE GOODS COST, WORKED OUT THE WAY TALLY WORKED IT OUT.
+    //
+    // This read OPENINGRATE and stopped. But the rate is quoted per whatever
+    // unit Tally felt like — "1,200.00/Box of 12 Nos" — while the quantity is
+    // counted in pieces, so multiplying the two gave a shelf worth twelve
+    // times what it is. Tally also hands over the VALUE of that stock, and
+    // value divided by quantity is the cost of one, in the unit the quantity
+    // is counted in, by construction. That is the figure that makes Skwik's
+    // stock total agree with his Stock Summary instead of merely resembling
+    // it. The plain rate stays as the answer when there is no value to divide.
+    const val  = numOf(tagOf(b, 'OPENINGVALUE'));
+    const rate = numOf(tagOf(b, 'OPENINGRATE'));
+    const cost = (bal.value && val) ? n2(Math.abs(val) / Math.abs(bal.value)) : rate;
 
     out.push({
       name,
       alias: '',
       hsn,
       unit: asUqc(tagOf(b, 'BASEUNITS')),
-      sale_price: sale || cost,
+      // A SELLING PRICE THAT IS SECRETLY THE PURCHASE PRICE IS A SHOP
+      // SELLING AT COST.
+      //
+      // When the chosen price list had no rate for an item — and most
+      // exports have a rate for only some of them — this quietly wrote the
+      // purchase price into the selling price. On screen the two then read
+      // the same and nothing anywhere said why. Worse, every bill written
+      // off it gives the goods away. An item Tally has no selling rate for
+      // now arrives with none, the bill screen already says so in words
+      // ("No selling price on this item"), and the count is reported before
+      // a single row is saved.
+      sale_price: sale,
       price2: two,
       purchase_price: cost,
       gst_rate: gst,
@@ -570,11 +636,12 @@ export function itemsFromTallyXml(xml, opts = {}) {
       // planImport builds its own body field by field, so this never reaches
       // the database.
       _rates: rates,
+      _std: standardRate(b),
     });
   }
 
   if (out.length) {
-    return { rows: out, problem: null,
+    return { rows: out, problem: null, noRate,
              levels: priceLevelsInTally(xml),
              basis: sawClosing && !sawOpening ? 'closing'
                   : sawClosing ? 'mixed' : 'opening' };
@@ -585,18 +652,65 @@ export function itemsFromTallyXml(xml, opts = {}) {
     : `No stock items in that file. It begins: ${peek(xml, 90)}` };
 }
 
+// THE GROUPS A SHOP ACTUALLY FILES ITS CUSTOMERS UNDER.
+//
+// Nobody with three hundred customers leaves them all directly under Sundry
+// Debtors. They go under "Assam Parties", or "Guwahati Local", or "North
+// East" — a group inside a group inside Sundry Debtors. Tally writes the
+// IMMEDIATE parent on the ledger, so a test for the words "debtor" or
+// "creditor" on that one line matched almost none of them, and every one it
+// did not match was skipped without a word. That is why his debtors and
+// creditors did not add up: most of them were never brought in at all.
+//
+// Tally exports the groups themselves alongside the ledgers, each with its
+// own parent, so the chain can be walked to the top.
+function ledgerGroupsFromTallyXml(xml) {
+  const map = {};
+  for (const b of blocksOf(xml, 'GROUP')) {
+    const name = nameAttr(b) || tagOf(b, 'NAME');
+    if (!name) continue;
+    map[name.toLowerCase()] = {
+      parent: tagOf(b, 'PARENT'),
+      primary: tagOf(b, 'PRIMARYGROUP') || tagOf(b, 'RESERVEDNAME'),
+    };
+  }
+  return map;
+}
+
+const DEBTOR   = /sundry\s*debtor|accounts\s*receivable/i;
+const CREDITOR = /sundry\s*creditor|accounts\s*payable/i;
+
+// customer, supplier, or neither — following the chain as far as it goes.
+function sideOf(groups, parent, depth = 0) {
+  const p = String(parent || '');
+  if (!p || depth > 8) return '';
+  if (CREDITOR.test(p)) return 'supplier';
+  if (DEBTOR.test(p)) return 'customer';
+  const g = groups[p.toLowerCase()];
+  if (!g) return '';
+  if (g.primary) {
+    if (CREDITOR.test(g.primary)) return 'supplier';
+    if (DEBTOR.test(g.primary)) return 'customer';
+  }
+  return sideOf(groups, g.parent, depth + 1);
+}
+
 export function partiesFromTallyXml(xml) {
   xml = cleanText(xml);
   const out = [];
-  let sawClosing = false, sawOpening = false;
+  let sawClosing = false, sawOpening = false, skipped = 0;
+  const groups = ledgerGroupsFromTallyXml(xml);
 
   for (const b of blocksOf(xml, 'LEDGER')) {
     const name = nameAttr(b) || tagOf(b, 'NAME');
     if (!name) continue;
 
-    const parent = tagOf(b, 'PARENT').toLowerCase();
-    // only people who owe money or are owed it — not Sales, Duties, Bank
-    if (!/debtor|creditor/.test(parent)) continue;
+    // only people who owe money or are owed it — not Sales, Duties, Bank.
+    // Some exports put the answer straight on the ledger; otherwise the
+    // chain of groups above it is walked.
+    const parent = tagOf(b, 'PARENT');
+    const side = sideOf(groups, tagOf(b, 'PRIMARYGROUP')) || sideOf(groups, parent);
+    if (!side) { skipped++; continue; }
 
     const gstin = (tagOf(b, 'PARTYGSTIN') || tagOf(b, 'GSTIN')).toUpperCase().replace(/\s/g, '');
     const code  = gstin.slice(0, 2);
@@ -606,7 +720,7 @@ export function partiesFromTallyXml(xml) {
 
     out.push({
       name,
-      kind: /creditor/.test(parent) ? 'supplier' : 'customer',
+      kind: side,
       gstin: gstin.length === 15 ? gstin : '',
       phone: String(tagOf(b, 'LEDGERPHONE') || tagOf(b, 'LEDGERMOBILE')).replace(/[^0-9]/g, '').slice(-10),
       address: tagOf(b, 'ADDRESS'),
@@ -619,7 +733,7 @@ export function partiesFromTallyXml(xml) {
   }
 
   if (out.length) {
-    return { rows: out, problem: null,
+    return { rows: out, problem: null, skipped,
              basis: sawClosing && !sawOpening ? 'closing'
                   : sawClosing ? 'mixed' : 'opening' };
   }
