@@ -60,3 +60,8 @@ export const showRcmOut = (org) => !!org?.rcm_sales_enabled;
 // shops. On for any registered shop unless he turns it off.
 export const showRcmIn = (org) =>
   !!org?.is_gst_registered && on(org?.rcm_purchase_enabled);
+
+// THE THUMB RAIL on the item search: a down arrow and an OK down the right
+// hand side, so the third match on the list is two taps in the corner of the
+// screen instead of a reach into the middle of it. Off until a shop asks.
+export const showThumbRail = (org) => !!org?.thumb_rail;

@@ -25,13 +25,19 @@ import { sayPlainly } from '../lib/offline';
 
 // The filter strip only offers what this shop has switched on, so a counter
 // that never takes goods back is not asked to read the word "Returns".
-const kindsFor = (org) => [
-  { key: 'all',      label: 'All'       },
-  { key: 'sale',     label: 'Bills'     },
-  { key: 'estimate', label: 'Estimates' },
-  showPurchase(org) && { key: 'purchase', label: 'Purchases' },
-  showReturns(org)  && { key: 'returns',  label: 'Returns'   },
-].filter(Boolean);
+const kindsFor = (org) => {
+  // A SHOP THAT ONLY WRITES ESTIMATES HAS NO BILLS TAB.
+  // It was always there and always empty, and an empty tab on a small screen
+  // is one more thing to tap and be disappointed by.
+  const estimateOnly = String(org?.mode || '') === 'estimate';
+  return [
+    { key: 'all',      label: 'All'       },
+    !estimateOnly && { key: 'sale',     label: 'Bills'     },
+    { key: 'estimate', label: 'Estimates' },
+    showPurchase(org) && { key: 'purchase', label: 'Purchases' },
+    showReturns(org)  && { key: 'returns',  label: 'Returns'   },
+  ].filter(Boolean);
+};
 
 const dmy = (d) => `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(0, 4)}`;
 
@@ -323,6 +329,13 @@ export default function BillsScreen({ navigation }) {
                       <Text numberOfLines={1} style={S.lineNm}>{who}</Text>
                       <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>
                         {v.voucher_no ? `${v.voucher_no} · ` : ''}
+                        {/* HIS NUMBER IS NOT THE ONE HE LOOKS FOR ON A PURCHASE.
+                            Skwik's own number means nothing on somebody else's
+                            bill — what he is holding in his hand, and what the
+                            supplier will quote back at him, is the number
+                            printed on their bill. */}
+                        {v.vtype === 'purchase' && v.supplier_invoice_no
+                          ? `their bill ${v.supplier_invoice_no} · ` : ''}
                         {v.vtype === 'purchase' ? 'Purchase'
                           : v.vtype === 'estimate' ? 'Estimate'
                           : v.vtype === 'sale_return' ? `Credit note${v.ref_invoice_no ? ` on ${v.ref_invoice_no}` : ''}`

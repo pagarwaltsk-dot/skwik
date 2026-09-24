@@ -10,13 +10,13 @@
 //
 // THE SLIP HAS TO ADD UP, TOP TO BOTTOM, exactly as the customer reads it:
 //
-//   Items      the lines above, added up, BEFORE any discount
-//   Less       the discount, once
-//   Freight    if there is any
-//   Taxable    what tax is worked out on  = Items - Less + Freight
+//   Gross Total      the lines above, added up, BEFORE any discount
+//   Add : Expenses   freight or labour, if there is any
+//   Less : Discount  the discount, once
+//   Taxable          what tax is worked out on  = Gross + Expenses - Discount
 //   CGST/SGST  the tax
 //   Round off
-//   TOTAL
+//   NET TOTAL
 //
 // Two things used to break that. The Items figure was built from the stored
 // taxable value, which already has the freight inside it, so it over-stated
@@ -98,12 +98,14 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
     : `<div class="tr"><span>CGST</span><span>${fmt(voucher.cgst)}</span></div>
        <div class="tr"><span>SGST</span><span>${fmt(voucher.sgst)}</span></div>`);
 
-  const less = Number(voucher.discount)
-    ? `<div class="tr"><span>Less</span><span>- ${fmt(Math.abs(Number(voucher.discount)))}</span></div>` : '';
+  // Expenses first, discount after it: the discount comes off a figure that
+  // has already been arrived at, which is the order he adds it up in.
+  const extraAmt = Number(voucher.extra_amount) || 0;
+  const extra = extraAmt
+    ? `<div class="tr"><span>${extraAmt < 0 ? 'Less' : 'Add'} : ${esc(voucher.extra_note || 'Expenses')}</span><span>${fmt(extraAmt)}</span></div>` : '';
 
-  // Freight belongs ABOVE the taxable line, because it is inside it.
-  const extra = Number(voucher.extra_amount)
-    ? `<div class="tr"><span>${esc(voucher.extra_note || 'Other')}</span><span>${fmt(voucher.extra_amount)}</span></div>` : '';
+  const less = Number(voucher.discount)
+    ? `<div class="tr"><span>Less : Discount</span><span>- ${fmt(Math.abs(Number(voucher.discount)))}</span></div>` : '';
 
   const round = Number(voucher.round_off)
     ? `<div class="tr"><span>Round off</span><span>${fmt(voucher.round_off)}</span></div>` : '';
@@ -169,12 +171,12 @@ export function thermalHtml({ org, voucher, party, lines, width = '80' }) {
   ${rows}
   <div class="rule"></div>
 
-  <div class="tr"><span>Items</span><span>${fmt(items)}</span></div>
-  ${less}
+  <div class="tr"><span>Gross Total</span><span>${fmt(items)}</span></div>
   ${extra}
+  ${less}
   ${gst ? `<div class="tr"><span>Taxable</span><span>${fmt(voucher.taxable)}</span></div>` : ''}
   ${taxRows}${round}
-  <div class="tot"><span>TOTAL</span><span>&#8377; ${fmt0(voucher.total)}</span></div>
+  <div class="tot"><span>NET TOTAL</span><span>&#8377; ${fmt0(voucher.total)}</span></div>
   <div class="words muted">${esc(amountInWords(voucher.total))}</div>
 
   <div class="mid foot">

@@ -28,7 +28,7 @@
 
 import {
   fmt, fmt0, qty, pct, amountInWords, hsnSummary, n2, num, hsnApplies,
-  extraAsLine, lineGross, supplyOf, supplyShort, isTaxableLine,
+  extraAsLine, lineGross, itemsGross, supplyOf, supplyShort, isTaxableLine,
 } from './money';
 import { uqcShort } from './uqc';
 
@@ -185,13 +185,29 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
   // across the lines inside the books so each rate is taxed on what was
   // really taken for it, but the customer is shown the round figure — and the
   // lines above it are printed gross, so taking it off here takes it off once.
-  const lessRow = Number(voucher.discount)
-    ? addLine('Less (discount)', -Math.abs(Number(voucher.discount))) : '';
+  // THE ORDER A SHOPKEEPER ADDS IT UP IN.
+  //
+  //     Gross Total          what the goods came to
+  //     Add : Expenses       freight, labour, whatever was spent on top
+  //     Less : Discount      the round figure taken off
+  //     Net Total            what he has to pay
+  //
+  // It used to print the discount first and the freight after it, which is
+  // nobody's arithmetic: you cannot take a discount off a figure that has not
+  // been arrived at yet. A customer reads a bill downwards and expects each
+  // row to act on the one above it.
+  const discAmt  = Math.abs(Number(voucher.discount) || 0);
+  const extraAmt = Number(voucher.extra_amount) || 0;
 
-  const extraRow = Number(voucher.extra_amount)
-    ? addLine(voucher.extra_note
-        || (Number(voucher.extra_amount) < 0 ? 'Less' : 'Freight & Other Charges'),
-      voucher.extra_amount) : '';
+  const extraRow = extraAmt
+    ? addLine(`${extraAmt < 0 ? 'Less' : 'Add'} : ${voucher.extra_note || 'Expenses'}`,
+      extraAmt) : '';
+
+  const lessRow = discAmt ? addLine('Less : Discount', -discAmt) : '';
+
+  // Only worth a row when something moves below it; on a plain bill the column
+  // already adds up to the total printed under it.
+  const grossRow = (extraAmt || discAmt) ? addLine('Gross Total', itemsGross(lines)) : '';
 
   const taxRows = (!gst ? '' : (igst
     ? addLine('IGST', voucher.igst)
@@ -349,13 +365,13 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
       </tr></thead>
       <tbody>
       ${itemRows}
-      ${lessRow}${extraRow}
+      ${grossRow}${extraRow}${lessRow}
       ${taxRows}
       <tr class="fill"><td></td><td></td>${showHsn ? '<td></td>' : ''}${showRate ? '<td></td>' : ''}
         <td></td><td></td><td></td><td></td></tr>
       <tr class="rule">
         <td></td>
-        <td class="r big">Total</td>
+        <td class="r big">Net Total</td>
         ${showHsn ? '<td></td>' : ''}
         ${showRate ? '<td></td>' : ''}
         <td class="r big">${unitAll.length === 1 ? `${qty(qtyAll)} ${esc(unitAll[0])}` : ''}</td>

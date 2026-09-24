@@ -96,7 +96,33 @@ export default function LedgersScreen({ navigation }) {
           placeholderTextColor={C.faint} value={q} onChangeText={setQ} returnKeyType="search" />
       </View>
 
-      <View style={[S.row, { paddingHorizontal: 14, paddingVertical: 11,
+      {/* THE CASH BOOK AND THE BANK BOOK WERE BUILT AND THEN LEFT UNREACHABLE.
+          They lived behind one tile on the home screen that only an owner with
+          Reports switched on ever saw, and it was called "Books", which does
+          not say cash or bank to anybody. A ledger is a ledger: the cash box
+          and each bank account are accounts of the firm exactly as a customer
+          is, so they belong on the page that lists the accounts. */}
+      <View style={{ paddingHorizontal: 14, paddingTop: 12 }}>
+        <Text style={S.eyebrow}>YOUR OWN ACCOUNTS</Text>
+        <View style={[S.row, { gap: 8, marginTop: 8 }]}>
+          {[{ k: 'cash',  label: 'Cash book',  sub: 'the drawer' },
+            { k: 'bank',  label: 'Bank book',  sub: 'per account' },
+            { k: 'sheet', label: 'Balance sheet', sub: 'what you are worth' }].map((b) => (
+            <TouchableOpacity key={b.k}
+              onPress={() => navigation.navigate('Books', { book: b.k })}
+              style={{ flex: 1, paddingVertical: 11, paddingHorizontal: 8, borderRadius: 11,
+                       borderWidth: 1.5, borderColor: C.line, backgroundColor: C.surface,
+                       alignItems: 'center' }}>
+              <Text numberOfLines={1}
+                style={{ fontSize: 13, fontWeight: '800', color: C.ink }}>{b.label}</Text>
+              <Text numberOfLines={1}
+                style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>{b.sub}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      <View style={[S.row, { paddingHorizontal: 14, paddingVertical: 11, marginTop: 12,
                              borderBottomWidth: 1.5, borderBottomColor: C.ink, gap: 14 }]}>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 10.5, letterSpacing: 0.8, fontWeight: '700', color: C.muted }}>

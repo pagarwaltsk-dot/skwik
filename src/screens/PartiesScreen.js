@@ -9,6 +9,7 @@ import { num, today } from '../lib/money';
 import { STATES } from '../lib/states';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
 import { StateField } from '../components/Pickers';
+import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 import { sayPlainly } from '../lib/offline';
 
@@ -38,6 +39,21 @@ export default function PartiesScreen({ navigation }) {
   // or paying it. Someone who is both — he buys from him and sells to him —
   // appears under both, which is correct, because he is both.
   const [side, setSide] = useState('customer');
+
+  // A NAME AND WHICH SIDE HE IS ON. THAT IS THE WHOLE FORM.
+  //
+  // Eleven boxes opened for a walk-in who paid cash and left: phone, GST
+  // number, state, area, address, price list, opening balance, its date. A
+  // shop that is not registered cannot charge IGST, so the state and the GST
+  // number decide nothing for it at all — and every one of them was optional
+  // anyway, which the form never said. So the form now asks the two questions
+  // it needs and keeps the rest one tap away, for the day he wants them.
+  const [more, setMore] = useState(false);
+
+  // Registered shops still see the GST number and the state without asking,
+  // because those two change what a bill CARRIES. Nothing is taken away from
+  // anybody — it is a question of what opens first.
+  const gstShop = !!org?.is_gst_registered;
 
   // name → phone → GST → state → address → what was outstanding → its date
   const fName  = useRef(null), fPhone = useRef(null), fGstin = useRef(null);
@@ -134,9 +150,13 @@ export default function PartiesScreen({ navigation }) {
   const newKind = side === 'all' ? 'customer' : side;
   // The + NEW button and the "add what he typed" row must open the very same
   // form, or the two would drift apart the first time either is touched.
-  const startNew = (name = '') => setEdit({ ...empty, kind: newKind, name });
+  const startNew = (name = '') => { setMore(false); setEdit({ ...empty, kind: newKind, name }); };
 
-  const startEdit = (p) => setEdit({
+  // An existing party who already HAS these details opens with them showing.
+  // Hiding a filled-in box is how a phone number goes missing.
+  const startEdit = (p) => { setMore(!!(p.phone || p.gstin || p.area || p.address
+      || Number(p.opening_balance) || Number(p.price_list) === 2));
+    return setEdit({
     ...empty, ...p,
     phone: p.phone || '', gstin: p.gstin || '',
     area: p.area || '', address: p.address || '',
@@ -145,7 +165,7 @@ export default function PartiesScreen({ navigation }) {
     opening_balance: p.opening_balance ? String(p.opening_balance) : '',
     opening_type: p.opening_type || 'owes_you',
     opening_date: p.opening_date || today(),
-  });
+  }); };
 
   const Label = ({ children, top = 14 }) => (
     <Text style={[S.label, { marginTop: top }]}>{children}</Text>
@@ -257,87 +277,151 @@ export default function PartiesScreen({ navigation }) {
             </Text>
 
             <Label top={18}>Name</Label>
-            <Box ref={fName} next={fPhone} style={{ marginTop: 6 }} value={edit.name}
+            {/* Next goes to the next box THAT IS ON THE SCREEN. Pointing it at
+                a hidden one left a "next" key that did nothing at all. */}
+            <Box ref={fName} next={gstShop ? fGstin : (more ? fPhone : undefined)}
+              onSubmit={save} style={{ marginTop: 6 }} value={edit.name}
               onChangeText={set('name')} placeholder="Sri Ganesh Store" />
 
             <Label>They are a</Label>
+            {/* BOTH IS A REAL ANSWER, AND THE APP ALREADY UNDERSTANDS IT.
+                The list filters on it, the counters split it, the bill screen
+                accepts it and Fill reads it — but this box offered only two
+                of the three. A man who buys from you and sells to you opened
+                with NEITHER chip lit, and the first save turned him into
+                whichever one was tapped, silently. */}
             <Pick value={edit.kind} onChange={set('kind')}
-              options={[{ v: 'customer', label: 'Customer' }, { v: 'supplier', label: 'Supplier' }]} />
+              options={[{ v: 'customer', label: 'Customer' },
+                        { v: 'supplier', label: 'Supplier' },
+                        { v: 'both', label: 'Both' }]} />
 
-            <Label>Phone</Label>
-            <Box ref={fPhone} next={fGstin} style={[S.num, { marginTop: 6 }]} keyboardType="phone-pad"
-              value={edit.phone} onChangeText={set('phone')} placeholder="98640 12345" />
-
-            <Label>GST number</Label>
-            <Box ref={fGstin} next={fArea} style={{ marginTop: 6 }}
-              autoCapitalize="characters" maxLength={15}
-              value={edit.gstin} onChangeText={setGstin} placeholder="Leave empty if unregistered" />
-
-            {/* He is asked which STATE, not which number. The code behind it
-                is Skwik's business, and it fills itself in. */}
-            <Label>State</Label>
-            <View style={{ marginTop: 6 }}>
-              <StateField value={String(edit.state_code || '')}
-                homeCode={String(org?.state_code || '')}
-                onChange={(code, name) =>
-                  setEdit((e) => ({ ...e, state_code: code, state_name: name }))} />
-            </View>
-            <Text style={S.hint}>
-              {edit.state_name
-                ? (String(edit.state_code) === String(org?.state_code)
-                    ? 'Same state as you, so bills carry CGST and SGST.'
-                    : 'Another state, so bills carry IGST.')
-                : 'This decides whether a bill carries CGST and SGST, or IGST.'}
-            </Text>
-
-            <Label>Area</Label>
-            <Box ref={fArea} next={fAddr} style={{ marginTop: 6 }}
-              value={edit.area} onChangeText={set('area')}
-              placeholder="Fancy Bazar, Ward 4, GS Road" />
-
-            <Label>Address</Label>
-            <Box ref={fAddr} next={fOpen} style={{ marginTop: 6 }}
-              value={edit.address} onChangeText={set('address')}
-              placeholder="Shop and street" />
-
-            {/* A price list is what you CHARGE somebody, so it is a question
-                about a customer only. Asking it about a supplier — who sets
-                his own rates — is a question with no answer, and he was
-                answering it anyway and wondering what it did. Somebody who
-                is both is still asked, because he is still sold to.
-                The list keeps saving either way, so a supplier turned back
-                into a customer keeps the one he had. */}
-            {edit.kind !== 'supplier' && (
+            {gstShop && (
               <>
-                <Label>Which price list</Label>
-                <Pick value={Number(edit.price_list)} onChange={set('price_list')}
-                  options={[{ v: 1, label: org?.price1_name || 'Wholesale' },
-                            { v: 2, label: org?.price2_name || 'Retail' }]} />
+              <Label>GST number</Label>
+              <Box ref={fGstin} next={more ? fArea : undefined} onSubmit={save}
+                style={{ marginTop: 6 }}
+                autoCapitalize="characters" maxLength={15}
+                value={edit.gstin} onChangeText={setGstin} placeholder="Leave empty if unregistered" />
+
+              {/* He is asked which STATE, not which number. The code behind it
+                  is Skwik's business, and it fills itself in. */}
+              <Label>State</Label>
+              <View style={{ marginTop: 6 }}>
+                <StateField value={String(edit.state_code || '')}
+                  homeCode={String(org?.state_code || '')}
+                  onChange={(code, name) =>
+                    setEdit((e) => ({ ...e, state_code: code, state_name: name }))} />
+              </View>
+              <Text style={S.hint}>
+                {edit.state_name
+                  ? (String(edit.state_code) === String(org?.state_code)
+                      ? 'Same state as you, so bills carry CGST and SGST.'
+                      : 'Another state, so bills carry IGST.')
+                  : 'This decides whether a bill carries CGST and SGST, or IGST.'}
+              </Text>
               </>
             )}
 
-            <View style={{ marginTop: 24, padding: 14, backgroundColor: C.surface,
-                           borderWidth: 1, borderColor: C.line, borderRadius: 12 }}>
-              <Text style={S.eyebrow}>Before Skwik</Text>
-              <Text style={{ fontSize: 12.5, color: C.muted, marginBottom: 10, lineHeight: 18 }}>
-                What was already outstanding when you started. Leave it empty if
-                nothing was.
-              </Text>
+            {/* ONE TAP FOR THE REST. It says how many are behind it so it is
+                not a door into the unknown. */}
+            {!more ? (
+              <TouchableOpacity onPress={() => setMore(true)}
+                style={{ marginTop: 20, paddingVertical: 12, borderRadius: 11,
+                         borderWidth: 1.5, borderColor: C.line, backgroundColor: C.surface,
+                         alignItems: 'center' }}>
+                <Text style={{ fontSize: 15, fontWeight: '700', color: C.accent }}>
+                  + Add more details
+                </Text>
+                <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
+                  Phone{gstShop ? '' : ', GST number, state'}, address, price list, opening balance
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <>
+              {!gstShop && (
+                <>
+                <Label>GST number</Label>
+                <Box ref={fGstin} next={fPhone} style={{ marginTop: 6 }}
+                  autoCapitalize="characters" maxLength={15}
+                  value={edit.gstin} onChangeText={setGstin} placeholder="Leave empty if unregistered" />
 
-              <Box ref={fOpen} next={fDate} style={S.num} keyboardType="numeric"
-                value={edit.opening_balance} onChangeText={set('opening_balance')}
-                placeholder="0" />
+                {/* He is asked which STATE, not which number. The code behind it
+                    is Skwik's business, and it fills itself in. */}
+                <Label>State</Label>
+                <View style={{ marginTop: 6 }}>
+                  <StateField value={String(edit.state_code || '')}
+                    homeCode={String(org?.state_code || '')}
+                    onChange={(code, name) =>
+                      setEdit((e) => ({ ...e, state_code: code, state_name: name }))} />
+                </View>
+                <Text style={S.hint}>
+                  {edit.state_name
+                    ? (String(edit.state_code) === String(org?.state_code)
+                        ? 'Same state as you, so bills carry CGST and SGST.'
+                        : 'Another state, so bills carry IGST.')
+                    : 'This decides whether a bill carries CGST and SGST, or IGST.'}
+                </Text>
+                </>
+              )}
+              <Label>Phone</Label>
+              <Box ref={fPhone} next={fArea} style={[S.num, { marginTop: 6 }]} keyboardType="phone-pad"
+                value={edit.phone} onChangeText={set('phone')} placeholder="98640 12345" />
 
-              <Pick value={edit.opening_type} onChange={set('opening_type')}
-                options={[{ v: 'owes_you', label: 'They owe you' },
-                          { v: 'you_owe', label: 'You owe them' }]} />
+              <Label>Area</Label>
+              <Box ref={fArea} next={fAddr} style={{ marginTop: 6 }}
+                value={edit.area} onChangeText={set('area')}
+                placeholder="Fancy Bazar, Ward 4, GS Road" />
 
-              <Label top={12}>As on</Label>
-              <Box ref={fDate} onSubmit={save} style={[S.num, { marginTop: 6 }]}
-                keyboardType="numbers-and-punctuation"
-                value={edit.opening_date} onChangeText={set('opening_date')}
-                placeholder="2026-04-01" />
-            </View>
+              <Label>Address</Label>
+              <Box ref={fAddr} next={fOpen} style={{ marginTop: 6 }}
+                value={edit.address} onChangeText={set('address')}
+                placeholder="Shop and street" />
+
+              {/* A price list is what you CHARGE somebody, so it is a question
+                  about a customer only. Asking it about a supplier — who sets
+                  his own rates — is a question with no answer, and he was
+                  answering it anyway and wondering what it did. Somebody who
+                  is both is still asked, because he is still sold to.
+                  The list keeps saving either way, so a supplier turned back
+                  into a customer keeps the one he had. */}
+              {edit.kind !== 'supplier' && (
+                <>
+                  <Label>Which price list</Label>
+                  <Pick value={Number(edit.price_list)} onChange={set('price_list')}
+                    options={[{ v: 1, label: org?.price1_name || 'Wholesale' },
+                              { v: 2, label: org?.price2_name || 'Retail' }]} />
+                </>
+              )}
+
+              <View style={{ marginTop: 24, padding: 14, backgroundColor: C.surface,
+                             borderWidth: 1, borderColor: C.line, borderRadius: 12 }}>
+                <Text style={S.eyebrow}>Before Skwik</Text>
+                <Text style={{ fontSize: 12.5, color: C.muted, marginBottom: 10, lineHeight: 18 }}>
+                  What was already outstanding when you started. Leave it empty if
+                  nothing was.
+                </Text>
+
+                <Box ref={fOpen} next={fDate} style={S.num} keyboardType="numeric"
+                  value={edit.opening_balance} onChangeText={set('opening_balance')}
+                  placeholder="0" />
+
+                <Pick value={edit.opening_type} onChange={set('opening_type')}
+                  options={[{ v: 'owes_you', label: 'They owe you' },
+                            { v: 'you_owe', label: 'You owe them' }]} />
+
+                <Label top={12}>As on</Label>
+                <View style={[S.row, { marginTop: 6, gap: 8, alignItems: 'center' }]}>
+                  <Box ref={fDate} onSubmit={save} style={[S.num, { flex: 1, marginBottom: 0 }]}
+                    keyboardType="numbers-and-punctuation"
+                    value={edit.opening_date} onChangeText={set('opening_date')}
+                    placeholder="2026-04-01" />
+                  <CalButton value={edit.opening_date}
+                    onPick={(iso) => set('opening_date')(iso)}
+                    title="Outstanding as on which day?" size={48} />
+                </View>
+              </View>
+              </>
+            )}
 
             <TouchableOpacity style={[S.btn, { marginTop: 24 }]} onPress={save}>
               <Text style={S.btnText}>Save</Text>

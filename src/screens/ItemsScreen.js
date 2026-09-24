@@ -224,13 +224,19 @@ export default function ItemsScreen({ navigation }) {
       const body = {
         org_id: org.id,
         name: edit.name.trim(),
-        search_words: edit.search_words.trim(),
+        // NULL IS NOT A STRING, AND THE DATABASE IS FULL OF NULLS.
+        // Both of these columns are nullable, and an item that came in
+        // through import or the quick-add sheet has them empty. The form
+        // copied the row straight in, so .trim() threw the moment he opened
+        // one and pressed save — which is also why a barcode could not be
+        // added to an existing item: the save was dying two lines above it.
+        search_words: (edit.search_words || '').trim(),
         barcode: (edit.barcode || '').trim() || null,
         supply: supplyOf(edit),
         variant_of: edit.variant_of || null,
         variant: (edit.variant || '').trim() || null,
         alias: (edit.alias || '').trim(),
-        hsn: edit.hsn.trim(),
+        hsn: (edit.hsn || '').trim(),
         unit: edit.unit,
         sale_price: num(edit.sale_price),
         price2: num(edit.price2),
@@ -406,6 +412,11 @@ export default function ItemsScreen({ navigation }) {
           <TouchableOpacity
             onPress={() => setEdit({ ...item,
               unit: item.unit || 'PCS',
+              search_words: item.search_words || '',
+              hsn: item.hsn || '',
+              alias: item.alias || '',
+              barcode: item.barcode || '',
+              variant: item.variant || '',
               sale_price: String(item.sale_price ?? ''),
               price2: String(item.price2 ?? ''),
               purchase_price: String(item.purchase_price ?? ''),
@@ -547,7 +558,7 @@ export default function ItemsScreen({ navigation }) {
 
               <Text style={[S.label, { marginTop: 14 }]}>OTHER SEARCH WORDS</Text>
               <Box ref={fWords} next={fGst} style={{ marginTop: 6 }} placeholder="thali, plate, steel"
-                value={edit.search_words} onChangeText={set('search_words')} />
+                value={edit.search_words || ''} onChangeText={set('search_words')} />
 
               {hsnApplies(org) && (
                 <>

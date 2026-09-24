@@ -10,6 +10,7 @@ import { useApp } from '../AppContext';
 import { fmt0, n2, num, today } from '../lib/money';
 import { ColHead, Figure, Rule, Words } from '../components/Register';
 import { Head, Screen, Swipe, useTabSwipe } from '../components/Chrome';
+import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
 // THE BOOKS.
@@ -64,9 +65,12 @@ function rangeOf(k, from, to) {
 
 const rupee = (x) => `${num(x) < 0 ? '−' : ''}${fmt0(Math.abs(num(x)))}`;
 
-export default function BooksScreen({ navigation }) {
+export default function BooksScreen({ navigation, route }) {
   const { org } = useApp();
-  const [tab, setTab]     = useState('cash');     // cash | bank | sheet
+  // Opened from Ledgers, which says WHICH book he asked for. On its own it
+  // still opens on the cash book, which is the one most shops want.
+  const [tab, setTab]     = useState(
+    ['cash', 'bank', 'sheet'].includes(route?.params?.book) ? route.params.book : 'cash');
   const [range, setRange] = useState('month');
   // his own two dates, when none of the three ready-made periods is the one
   // he wants — a week, a quarter, the days since he last showed his accountant
@@ -217,10 +221,14 @@ export default function BooksScreen({ navigation }) {
               <TextInput style={[S.cell, S.num, { flex: 1 }]} placeholder="2026-04-01"
                 placeholderTextColor={C.faint} keyboardType="numbers-and-punctuation"
                 value={from} onChangeText={setFrom} />
+              <CalButton value={from} onPick={setFrom} size={40} max={to || today()}
+                title="From which day?" />
               <Text style={{ fontSize: 13, color: C.muted }}>to</Text>
               <TextInput style={[S.cell, S.num, { flex: 1 }]} placeholder={today()}
                 placeholderTextColor={C.faint} keyboardType="numbers-and-punctuation"
                 value={to} onChangeText={setTo} />
+              <CalButton value={to} onPick={setTo} size={40} min={from || undefined}
+                title="Up to which day?" />
             </View>
           )}
           {tab === 'bank' && (

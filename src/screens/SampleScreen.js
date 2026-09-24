@@ -10,6 +10,7 @@ import { computeBill, fmt0, num, taxModeFor } from '../lib/money';
 import { planSample } from '../lib/sample';
 import { sayPlainly } from '../lib/offline';
 import { Box, Head, Screen } from '../components/Chrome';
+import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
 // SEEING IT WORK, BEFORE TRUSTING IT.
@@ -250,12 +251,20 @@ export default function SampleScreen({ navigation }) {
         </View>
 
         <Text style={S.label}>FROM</Text>
-        <Box style={[S.num, { marginTop: 6 }]} value={from} onChangeText={setFrom}
-          placeholder="2026-04-01" next={fCount} />
+        <View style={[S.row, { marginTop: 6, gap: 8, alignItems: 'center' }]}>
+          <Box style={[S.num, { flex: 1, marginBottom: 0 }]} value={from} onChangeText={setFrom}
+            placeholder="2026-04-01" next={fCount} />
+          <CalButton value={from} onPick={setFrom} size={48} max={to || undefined}
+            title="Start of the month to fill" />
+        </View>
 
         <Text style={[S.label, { marginTop: 12 }]}>TO</Text>
-        <Box style={[S.num, { marginTop: 6 }]} value={to} onChangeText={setTo}
-          placeholder="2026-04-30" next={fCount} />
+        <View style={[S.row, { marginTop: 6, gap: 8, alignItems: 'center' }]}>
+          <Box style={[S.num, { flex: 1, marginBottom: 0 }]} value={to} onChangeText={setTo}
+            placeholder="2026-04-30" next={fCount} />
+          <CalButton value={to} onPick={setTo} size={48} min={from || undefined}
+            title="End of the month to fill" />
+        </View>
 
         <TouchableOpacity style={[S.btnGhost, { marginTop: 12 }]} onPress={lookAtMoney}
           disabled={!!busy}>

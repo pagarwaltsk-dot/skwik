@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView, Alert,
+  View, Text, TextInput, TouchableOpacity, ScrollView, Alert, BackHandler,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase, allRows } from '../lib/supabase';
@@ -8,6 +8,7 @@ import { sayPlainly, withTimeout } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, num, settle, today } from '../lib/money';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
+import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
 // MONEY IN, MONEY OUT — and putting it right when it was typed wrong.
@@ -88,6 +89,24 @@ export default function MoneyScreen({ route, navigation }) {
   }, [ptype]);
 
   useFocusEffect(useCallback(() => { load().catch(() => {}); }, [load]));
+
+  // BACK OUT OF THE REGISTER, NOT OUT OF THE SCREEN.
+  //
+  // "Write several at once" opens a page of its own inside this screen, but
+  // the phone's back button knew nothing about it and threw him all the way
+  // home — losing whatever he had written down the page. Back now closes the
+  // register first and leaves him on the single entry, which is where he came
+  // from; a second press goes home, as it always did.
+  const leaveBatch = useCallback(() => {
+    if (batch === null) return false;
+    setBatch(null);
+    return true;
+  }, [batch]);
+
+  useFocusEffect(useCallback(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', leaveBatch);
+    return () => sub.remove();
+  }, [leaveBatch]));
 
   const matches = text.trim() && !party
     ? parties.filter((p) => p.name.toLowerCase().includes(text.toLowerCase())).slice(0, 5)
@@ -359,7 +378,8 @@ export default function MoneyScreen({ route, navigation }) {
 
   return (
     <Screen>
-      <Head navigation={navigation} title={received ? 'Money received' : 'Money paid'} />
+      <Head navigation={navigation} title={received ? 'Money received' : 'Money paid'}
+        onBack={batch === null ? undefined : () => setBatch(null)} />
       <KeyForm
                   contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
 
@@ -451,6 +471,8 @@ export default function MoneyScreen({ route, navigation }) {
                 <Box ref={fDate} next={fAmt} style={[{ flex: 1 }, S.num]}
                   keyboardType="numbers-and-punctuation" placeholder="2026-09-20"
                   value={pdate} onChangeText={setPdate} />
+                <CalButton value={pdate} onPick={setPdate} max={today()}
+                  title="Which day was this?" />
                 <TouchableOpacity onPress={() => { setPdate(today()); setDateOpen(false); }}
                   style={[S.btnGhost, { paddingVertical: 12 }]}>
                   <Text style={S.ghostText}>Today</Text>

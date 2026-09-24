@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
-import { Alert, Linking } from 'react-native';
+import { Alert } from 'react-native';
 import { supabase, phoneToEmail } from './lib/supabase';
 import { STATES } from './lib/states';
 import { cacheOrg, cachedOrg, noteServerCounters, queueCount, flushQueue,
@@ -21,7 +21,6 @@ export function AppProvider({ children }) {
   const [checking, setChecking] = useState(false);
   // True while the login on this phone came in through a "forgotten password"
   // link and is good for one thing only: setting a new password.
-  const [recovering, setRecovering] = useState(false);
 
   // WHICH FIRM THE PHONE IS WORKING FOR, readable from inside a callback
   // that was made before the firm was known. Used by the outbox: a bill
@@ -157,84 +156,10 @@ export function AppProvider({ children }) {
       } else {
         setOrg(null);
         setRole('owner');
-        // Only a real sign-out, not the empty INITIAL_SESSION the client
-        // announces at start-up — that one can arrive after a reset link has
-        // already been taken, and would drop him back at the login screen
-        // holding a link he has now used.
-        if (event === 'SIGNED_OUT') setRecovering(false);
       }
     });
     return () => { alive = false; sub.subscription.unsubscribe(); };
   }, [loadOrg]);
-
-  // THE LINK IN THE "FORGOTTEN PASSWORD" E-MAIL.
-  //
-  // Supabase sends him back to skwik://reset-password with the login on the
-  // end of it. Nothing in the app was listening, so the link did nothing and
-  // a shopkeeper who had forgotten his password stayed out of his own books
-  // for good. This takes the login off the address, signs him in with it, and
-  // marks the session as a recovery — the app then shows him one screen and
-  // one screen only until the password is actually changed.
-  //
-  // `detectSessionInUrl` is off (this is a phone, not a browser), so the
-  // address is read here. Both shapes Supabase can send are handled: the
-  // tokens on the fragment, and the newer single code.
-  const takeRecoveryLink = useCallback(async (url) => {
-    if (!url || !/[/#?]reset|type=recovery/.test(String(url))) return false;
-    try {
-      const raw = String(url);
-      const after = raw.includes('#') ? raw.slice(raw.indexOf('#') + 1) : '';
-      const query = raw.includes('?')
-        ? raw.slice(raw.indexOf('?') + 1).split('#')[0] : '';
-      const bag = new URLSearchParams(`${query}${query && after ? '&' : ''}${after}`);
-
-      const access = bag.get('access_token');
-      const refresh = bag.get('refresh_token');
-      const code = bag.get('code');
-
-      if (!access && !refresh && !code) {
-        // A link that arrived with nothing on it — usually one already used.
-        return false;
-      }
-
-      // Marked BEFORE the login is taken, not after: signing in fires the
-      // auth listener, and for the moment between the two the app would
-      // otherwise show him his books — which is the one thing a recovery
-      // login must not do.
-      setRecovering(true);
-      try {
-        if (access && refresh) {
-          const { error } = await supabase.auth.setSession({
-            access_token: access, refresh_token: refresh });
-          if (error) throw error;
-        } else {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) throw error;
-        }
-      } catch (e) {
-        setRecovering(false);
-        Alert.alert('That link did not work',
-          'It may have been used already, or it may have run out. Ask for a '
-          + 'new one from "Forgotten your password?" on the login screen.');
-        return false;
-      }
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    // the app was already open when he tapped the link
-    const sub = Linking.addEventListener('url', ({ url }) => {
-      if (alive) takeRecoveryLink(url);
-    });
-    // the app was closed, and the link is what opened it
-    Linking.getInitialURL().then((url) => { if (alive && url) takeRecoveryLink(url); })
-      .catch(() => {});
-    return () => { alive = false; sub.remove(); };
-  }, [takeRecoveryLink]);
 
   // Everything the register screens collected, turned into a login and a firm.
   //
@@ -372,7 +297,6 @@ export function AppProvider({ children }) {
 
   return (
     <Ctx.Provider value={{ session, org, loading, registering, checking, register, role,
-                           recovering, finishRecovery: () => setRecovering(false),
                            // WHO THE OWNER IS, DECIDED THE SAME WAY THE DATABASE
                            // DECIDES IT.
                            //

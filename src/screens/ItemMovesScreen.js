@@ -65,6 +65,10 @@ export default function ItemMovesScreen({ route, navigation }) {
   const itemId   = route.params?.itemId;
   const itemName = route.params?.itemName || 'Item';
   const unit     = route.params?.unit || '';
+  // Which store the Stock screen was set to when he tapped the item. Empty
+  // means Everywhere.
+  const godownId   = route.params?.godownId || null;
+  const godownName = route.params?.godownName || '';
   const { org } = useApp();
 
   const [range, setRange] = useState('month');
@@ -73,6 +77,8 @@ export default function ItemMovesScreen({ route, navigation }) {
   // A register that could not be fetched must never be drawn as an empty one.
   // "No movement" is an answer a shopkeeper acts on.
   const [failed, setFailed] = useState('');
+  // True when he asked for one store and the database could not give him one.
+  const [stale, setStale] = useState(false);
 
   useFocusEffect(useCallback(() => {
     let on = true;
@@ -80,11 +86,29 @@ export default function ItemMovesScreen({ route, navigation }) {
       setBusy(true);
       try {
         const [from, to] = rangeOf(range);
-        const { data: d, error } = await supabase.rpc('item_moves',
-          { p_item: itemId, p_from: from, p_to: to });
+        // ONE STORE IF HE ASKED FOR ONE.
+        //
+        // The four-argument form arrived with 1.9.20. A phone that has been
+        // updated before the database still has to open the register, so a
+        // missing function falls back to the old three-argument one and the
+        // page says plainly that it is showing the whole firm.
+        let d = null, error = null, whole = false;
+        if (godownId) {
+          ({ data: d, error } = await supabase.rpc('item_moves',
+            { p_item: itemId, p_from: from, p_to: to, p_godown: godownId }));
+          if (error) {
+            ({ data: d, error } = await supabase.rpc('item_moves',
+              { p_item: itemId, p_from: from, p_to: to }));
+            whole = !error;
+          }
+        } else {
+          ({ data: d, error } = await supabase.rpc('item_moves',
+            { p_item: itemId, p_from: from, p_to: to }));
+        }
         if (!on) return;
         if (error) { setFailed(sayPlainly(error)); setData(null); return; }
         setData(d || { opening: 0, rows: [] });
+        setStale(whole);
         setFailed('');
       } catch (e) {
         if (on) { setFailed(sayPlainly(e)); setData(null); }
@@ -93,12 +117,28 @@ export default function ItemMovesScreen({ route, navigation }) {
       }
     })();
     return () => { on = false; };
-  }, [itemId, range]));
+  }, [itemId, range, godownId]));
+
+  // He asked for one store but is being shown the firm — the old database.
+  const onWholeFirm = !!godownId && stale;
 
   // Running balance, worked out once, so every line carries the figure that
   // stood after it.
   const { rows, opening, inTotal, outTotal, closing } = useMemo(() => {
-    const raw = data?.rows || [];
+    let raw = data?.rows || [];
+
+    // MOVING YOUR OWN GOODS FROM ONE OF YOUR SHELVES TO ANOTHER IS NOT A
+    // MOVEMENT OF THE FIRM'S STOCK.
+    //
+    // Across the whole firm a transfer is two rows of the same quantity, one
+    // in and one out, and they cancel. Left in, they made the IN and OUT
+    // totals read like trade that never happened — a carton walked across
+    // the lane and the register called it a purchase and a sale. Inside ONE
+    // store they are real and stay: that shelf genuinely gained or lost.
+    if (!godownId || onWholeFirm) {
+      raw = raw.filter((r) => r.reason !== 'transfer_in' && r.reason !== 'transfer_out');
+    }
+
     let bal = num(data?.opening);
     let gotIn = 0, gotOut = 0;
     const out = raw.map((r) => {
@@ -112,7 +152,7 @@ export default function ItemMovesScreen({ route, navigation }) {
     // wants to see first is what moved today.
     return { rows: out.reverse(), opening: num(data?.opening), inTotal: n2(gotIn),
              outTotal: n2(gotOut), closing: bal };
-  }, [data]);
+  }, [data, godownId, onWholeFirm]);
 
   const u = uqcShort(unit);
 
@@ -131,6 +171,22 @@ export default function ItemMovesScreen({ route, navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title={itemName} />
+
+      {/* WHOSE SHELF THIS IS. Two registers of the same item read almost the
+          same, so the page has to say which one is open. */}
+      {(!!godownName || !!godownId) && (
+        <View style={{ paddingHorizontal: 16, paddingTop: 10 }}>
+          <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.accent }}>
+            {onWholeFirm ? 'Whole firm' : godownName || 'One store'}
+          </Text>
+          {onWholeFirm && (
+            <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2, lineHeight: 16 }}>
+              One store on its own needs the 1.9.20 update run on your database.
+              Until then this is every store together.
+            </Text>
+          )}
+        </View>
+      )}
 
       <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                      borderBottomWidth: 1, borderBottomColor: C.line }}>

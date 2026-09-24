@@ -815,7 +815,9 @@ export function tallyVouchersXml({ org, vouchers, linesByVoucher }) {
 
 // 2: money out is in the file. A backup taken by an older Skwik is still
 //    read — it simply has no expenses in it.
-export const BACKUP_VERSION = 2;
+// 3 — the godowns, the bank accounts and the stock movements no bill made.
+// A version-1 or 2 file still reads; it simply has none of them in it.
+export const BACKUP_VERSION = 3;
 
 // WHAT "TAKE A COPY FIRST" HAS TO MEAN.
 //
@@ -825,7 +827,32 @@ export const BACKUP_VERSION = 2;
 // transport, the lot. A shop that restored from it would have every sale it
 // ever made and no costs at all, and would believe it had earned far more
 // than it did.
-export function buildBackup({ org, items, parties, vouchers, lines, payments, expenses }) {
+// WHAT A BACKUP HAS TO CARRY, AND WHAT IT USED TO LEAVE BEHIND.
+//
+// Stock in hand is opening_stock plus every row of stock_moves. The bills'
+// own movements come back by themselves, because putting a bill back writes
+// them again — but three things were never in the file at all:
+//
+//   godowns        every bill and every movement carries a godown ID, and
+//                  the database has a foreign key on it. Restoring into a
+//                  fresh shop meant those IDs pointed at nothing, so the
+//                  very first bill with a godown on it was REFUSED and the
+//                  restore stopped there.
+//   bank_accounts  every receipt and payment carries an account ID. Without
+//                  them, which bank the money came through was lost — and
+//                  with it the bank book and the cash book.
+//   stock_moves    the ones no bill made: a transfer between godowns, and
+//                  opening stock. A transfer nets to nothing, so the TOTAL
+//                  stock still looked right while the godown-wise figures
+//                  were quietly wrong — the worst shape a wrong number can
+//                  take.
+//
+// Movements that a bill made are deliberately NOT written here: the bill
+// writes them on the way back in, and carrying them as well would count
+// everything twice.
+export function buildBackup({ org, items, parties, vouchers, lines, payments, expenses,
+                              godowns, banks, moves }) {
+  const ownMoves = (moves || []).filter((m) => !m.ref_voucher_id);
   return JSON.stringify({
     skwik_backup: BACKUP_VERSION,
     taken_at: new Date().toISOString(),
@@ -837,6 +864,9 @@ export function buildBackup({ org, items, parties, vouchers, lines, payments, ex
       lines: (lines || []).length,
       payments: (payments || []).length,
       expenses: (expenses || []).length,
+      godowns: (godowns || []).length,
+      banks: (banks || []).length,
+      moves: ownMoves.length,
     },
     org: org || null,
     items: items || [],
@@ -845,6 +875,9 @@ export function buildBackup({ org, items, parties, vouchers, lines, payments, ex
     lines: lines || [],
     payments: payments || [],
     expenses: expenses || [],
+    godowns: godowns || [],
+    banks: banks || [],
+    moves: ownMoves,
   }, null, 1);
 }
 
@@ -873,6 +906,10 @@ export function readBackup(text) {
     payments: d.payments || [],
     // absent from a version-1 file, which is still perfectly good
     expenses: d.expenses || [],
+    // absent from anything before version 3
+    godowns: d.godowns || [],
+    banks: d.banks || [],
+    moves: d.moves || [],
   };
 }
 

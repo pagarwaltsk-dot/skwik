@@ -1,7 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { View, Text, TouchableOpacity, Alert } from 'react-native';
 
-import { useApp } from '../AppContext';
 import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { Box, Head, Screen } from '../components/Chrome';
@@ -18,18 +17,9 @@ import { C, S } from '../theme';
 // invented on the day he signed up lost his books, and nobody could get them
 // back for him.
 //
-// Tapping the link now opens Skwik on skwik://reset, AppContext takes the
-// recovery login off the link, and this screen is what that login is for.
-//
-// WHILE IT IS UP IT IS THE WHOLE APP. A login that arrived through a reset
-// link must not reach the books: he would be looking at his shop holding a
-// password he still does not know, and the next time Skwik asked him for it
-// he would be locked out again with a link already spent. So App.js draws
-// this screen and nothing else until the password is actually changed —
-// which is why leaving goes through `finishRecovery` and `signOut` rather
-// than `navigation`, there being nowhere on this stack to go.
-export default function ResetScreen() {
-  const { finishRecovery, signOut } = useApp();
+// Tapping the link now opens Skwik on skwik://reset, Supabase hands the app a
+// recovery session, and this screen is what that session is for.
+export default function ResetScreen({ navigation }) {
   const [pw1, setPw1] = useState('');
   const [pw2, setPw2] = useState('');
   const [busy, setBusy] = useState(false);
@@ -48,7 +38,10 @@ export default function ResetScreen() {
       if (error) throw error;
       Alert.alert('Done',
         'Your new password is set. Use it the next time Skwik asks you to log in.',
-        [{ text: 'OK', onPress: () => finishRecovery() }]);
+        // He may have arrived here from the login screen, from the set-up
+        // screen or from inside a working shop, so there is no one screen to
+        // send him to. Back is back, wherever he came from.
+        [{ text: 'OK', onPress: () => { if (navigation.canGoBack()) navigation.goBack(); } }]);
     } catch (e) {
       // The commonest reason is a link that has been sitting in the inbox too
       // long, and that needs saying rather than the raw message.
@@ -63,10 +56,8 @@ export default function ResetScreen() {
 
   return (
     <Screen>
-      {/* Going back without setting one leaves him holding a recovery login
-          and no password, so it hands the login back rather than keeping it. */}
-      <Head title="Set a new password" more={false}
-        onBack={() => { signOut(); finishRecovery(); }} />
+      <Head title="Set a new password"
+            onBack={() => { if (navigation.canGoBack()) navigation.goBack(); }} />
       <View style={{ padding: 18 }}>
         <Text style={[S.hint, { marginTop: 0, marginBottom: 18 }]}>
           Choose something you will remember. Six letters or numbers at least.
