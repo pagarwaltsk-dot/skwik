@@ -49,12 +49,34 @@ export function looksMangled(text) {
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
+// A LOOKUP, NOT A SEARCH.
+//
+// This used to ask B64.indexOf() for the value of every single character —
+// a scan through a sixty-four character string, per character, over a file
+// that can run to millions of them, each one also allocating a one-character
+// string to do it with. Tally writes its XML as UTF-16, which the phone
+// always reads wrong the first time, so EVERY Tally import came through here.
+// That is the minutes he spent watching a spinner.
+//
+// A table of 128 slots, filled once, answers the same question by reading one
+// number out of an array.
+const B64AT = (() => {
+  const t = new Int16Array(128).fill(-1);
+  for (let i = 0; i < B64.length; i++) t[B64.charCodeAt(i)] = i;
+  return t;
+})();
+
 export function base64ToBytes(b64) {
-  const s = String(b64 || '').replace(/[^A-Za-z0-9+/]/g, '');
-  const out = new Uint8Array((s.length * 3) >> 2);
+  const s = String(b64 || '');
+  const out = new Uint8Array(((s.length * 3) >> 2) + 3);
   let o = 0, acc = 0, bits = 0;
   for (let i = 0; i < s.length; i++) {
-    acc = (acc << 6) | B64.indexOf(s[i]);
+    const c = s.charCodeAt(i);
+    // padding, newlines and anything else that is not base64 is skipped where
+    // it is found, which saves copying the whole string to strip it first
+    const v = c < 128 ? B64AT[c] : -1;
+    if (v < 0) continue;
+    acc = (acc << 6) | v;
     bits += 6;
     if (bits >= 8) { bits -= 8; out[o++] = (acc >> bits) & 0xFF; }
   }
@@ -492,6 +514,15 @@ function rateAt(rates, level) {
   return any ? any.rate : 0;
 }
 
+// The same rows, priced off a different list. Nothing is read again.
+export function applyPriceLevel(rows, level) {
+  return (rows || []).map((r) => {
+    if (!r._rates || !r._rates.length) return r;
+    const sale = rateAt(r._rates, level);
+    return { ...r, sale_price: sale || r.purchase_price };
+  });
+}
+
 export function itemsFromTallyXml(xml, opts = {}) {
   xml = cleanText(xml);
   const groups = groupsFromTallyXml(xml);
@@ -526,6 +557,19 @@ export function itemsFromTallyXml(xml, opts = {}) {
       gst_rate: gst,
       opening_stock: bal.value,
       group: parent,
+      // EVERY LEVEL'S RATE, KEPT ON THE ROW.
+      //
+      // Tapping a different price list used to read the whole file again from
+      // the beginning — for a shop with five hundred items and six lists that
+      // is the entire XML re-parsed on the phone's one thread, and for a
+      // second or two nothing on the screen answers a finger at all. It looks
+      // exactly like a chip that does not work, so he taps it again.
+      //
+      // The rates were already in hand when this row was built. Keeping them
+      // turns changing the list into arithmetic on what is already read.
+      // planImport builds its own body field by field, so this never reaches
+      // the database.
+      _rates: rates,
     });
   }
 

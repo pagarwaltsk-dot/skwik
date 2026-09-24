@@ -3,7 +3,7 @@
     "name": "Skwik",
     "slug": "skwik",
     "scheme": "skwik",
-    "version": "1.9.20",
+    "version": "1.9.22",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "backgroundColor": "#FAF9F5",
@@ -14,7 +14,7 @@
     ],
     "android": {
       "package": "com.skwik.billing",
-      "versionCode": 30,
+      "versionCode": 32,
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
