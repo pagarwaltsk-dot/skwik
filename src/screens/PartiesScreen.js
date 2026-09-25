@@ -7,7 +7,7 @@ import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { num, today } from '../lib/money';
 import { STATES } from '../lib/states';
-import { Box, Head, KeyForm, Screen } from '../components/Chrome';
+import { Box, Head, KeyForm, Screen, Sections } from '../components/Chrome';
 import { StateField } from '../components/Pickers';
 import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
@@ -28,7 +28,7 @@ const empty = {
 };
 
 export default function PartiesScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState('');
   const [edit, setEdit] = useState(null);
@@ -197,6 +197,7 @@ export default function PartiesScreen({ navigation }) {
           <Text style={{ fontSize: 15, fontWeight: '800', color: C.accent }}>+ NEW</Text>
         </TouchableOpacity>
       </Head>
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="parties" />
 
       <View style={[S.row, { paddingHorizontal: 16, paddingTop: 12, gap: 8 }]}>
         {[['customer', 'Customers'], ['supplier', 'Suppliers'], ['all', 'All']].map(([v, label]) => {

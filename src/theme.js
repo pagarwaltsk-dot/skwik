@@ -109,9 +109,19 @@ export const S = {
   amt:     { fontSize: 15.5, fontWeight: '700', color: C.ink, textAlign: 'right',
              fontFamily: MONO, fontVariant: ['tabular-nums'] },
 
-  tline:   { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  tlineK:  { fontSize: 13, color: C.muted, fontWeight: '600' },
-  tlineV:  { fontSize: 13, color: C.ink, fontFamily: MONO, fontVariant: ['tabular-nums'] },
+  // A COLUMN OF FIGURES HAS TO ADD UP BY EYE.
+  //
+  // These three make every ruled line in the app — the totals on a bill, a
+  // report card, the register. The label had no flex and the figure no
+  // alignment, so a long label pushed the figure about, a two-line label put
+  // the figure at the top of the row, and nothing sat under anything. Right
+  // aligned and given the room left over, the units fall under the units and
+  // the paise under the paise, which is the whole point of a monospaced figure.
+  tline:   { flexDirection: 'row', justifyContent: 'space-between',
+             alignItems: 'baseline', paddingVertical: 4 },
+  tlineK:  { flex: 1, paddingRight: 12, fontSize: 13, color: C.muted, fontWeight: '600' },
+  tlineV:  { fontSize: 13, color: C.ink, textAlign: 'right',
+             fontFamily: MONO, fontVariant: ['tabular-nums'] },
 
   foot:    { backgroundColor: C.surface, borderTopWidth: 1.5, borderTopColor: C.ink,
              paddingHorizontal: 14, paddingTop: 11, paddingBottom: 22,

@@ -350,7 +350,7 @@ export function itemsFromCsv(text) {
     out.push({
       name,
       alias: cell(rows[i], cols.alias),
-      hsn: cell(rows[i], cols.hsn).replace(/[^0-9]/g, ''),
+      hsn: tidyHsn(cell(rows[i], cols.hsn)),
       unit: asUqc(cell(rows[i], cols.unit)),
       sale_price: money(cell(rows[i], onlySecond ? cols.price2 : cols.sale_price)),
       price2: onlySecond ? 0 : money(cell(rows[i], cols.price2)),
@@ -519,8 +519,53 @@ function gstRateOf(chunk) {
   return igst || cgst * 2;
 }
 
-const hsnOf = (chunk) => String(tagOf(chunk, 'HSNCODE') || tagOf(chunk, 'GSTHSNCODE'))
-  .replace(/[^0-9]/g, '');
+// A code off a spreadsheet, cut to a length a GST bill accepts: 4, 6 and 8 are
+// legal, a longer stretch of digits is cut back to the heading it sits under,
+// and anything shorter than four is not an HSN code at all.
+export const tidyHsn = (v) => {
+  const d = String(v || '').replace(/[^0-9]/g, '');
+  if (d.length === 4 || d.length === 6 || d.length === 8) return d;
+  if (d.length >= 8) return d.slice(0, 8);
+  if (d.length >= 6) return d.slice(0, 6);
+  if (d.length >= 4) return d.slice(0, 4);
+  return '';
+};
+
+// THE HSN CODE, AT THE LENGTH TALLY ACTUALLY KNOWS IT.
+//
+// Every code came in at four digits, and he noticed. Tally writes the HSN in
+// more than one place inside a stock item: an <HSNCODE> on the item header,
+// which on a book carried over from an older Tally is often the old four-digit
+// heading, and another one inside <GSTDETAILS.LIST>, which is the one the
+// portal wants and is usually six or eight. Reading the FIRST one in the block
+// therefore threw the good code away and kept the short one.
+//
+// So every code in the block is collected and the longest proper one wins. A
+// four-digit code is still perfectly legal below five crore, so nothing is
+// invented and nothing is padded — if four digits is all Tally holds, four
+// digits is what comes in.
+const hsnOf = (chunk) => {
+  const found = [];
+  const re = /<(HSNCODE|GSTHSNCODE)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi;
+  let m;
+  while ((m = re.exec(String(chunk || '')))) {
+    const d = unesc(m[2]).replace(/[^0-9]/g, '');
+    if (d) found.push(d);
+  }
+  if (!found.length) return '';
+  // 4, 6 and 8 are the only lengths a GST bill accepts. Anything else in the
+  // file is somebody's own part number and is not an HSN at all.
+  const proper = found.filter((d) => d.length === 4 || d.length === 6 || d.length === 8);
+  if (proper.length) return proper.sort((a, b) => b.length - a.length)[0];
+  // Nothing of a legal length. A five or seven digit code is somebody's typing
+  // and cannot go on a GST bill as it stands — but an HSN is a hierarchy, so
+  // its first four or six digits ARE the heading it sits under, and that is a
+  // true, narrower answer rather than a wrong one. Shorter than four is not an
+  // HSN at all and is left alone.
+  const longest = found.sort((a, b) => b.length - a.length)[0];
+  const cut = longest.length >= 8 ? 8 : longest.length >= 6 ? 6 : longest.length >= 4 ? 4 : 0;
+  return cut ? longest.slice(0, cut) : '';
+};
 
 // What a stock group can lend its items: an HSN code and a GST rate.
 function groupsFromTallyXml(xml) {

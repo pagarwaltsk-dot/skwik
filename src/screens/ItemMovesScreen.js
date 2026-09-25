@@ -147,12 +147,45 @@ export default function ItemMovesScreen({ route, navigation }) {
       gotIn += qi; gotOut += qo;
       return { ...r, balance: bal };
     });
-    // The running balance can only be worked out from the oldest entry
-    // forward, so it is — and then the page is turned over, because what he
-    // wants to see first is what moved today.
-    return { rows: out.reverse(), opening: num(data?.opening), inTotal: n2(gotIn),
+    // A REGISTER READS DOWNWARDS, OLDEST FIRST.
+    //
+    // The page used to be turned over at this point so the newest movement sat
+    // on top. He has since said that reads wrong, and it does: a running
+    // balance printed next to each line only makes sense going down the page
+    // in the order things happened — upside down, each figure appears to be
+    // the balance BEFORE its own line.
+    return { rows: out, opening: num(data?.opening), inTotal: n2(gotIn),
              outTotal: n2(gotOut), closing: bal };
   }, [data, godownId, onWholeFirm]);
+
+  // ONLY THE NEWEST FEW, AND THE TWO DIRECTIONS COUNTED APART.
+  //
+  // An item bought once and sold two hundred times would show its one purchase
+  // and then bury it, so the answer to "when did this last come in" needs two
+  // hundred rows of scrolling. Counting in and out separately keeps at least
+  // the newest five of each on the page whatever the mix.
+  //
+  // The balances are already worked out, over EVERY movement, before any of
+  // this — so the figure beside a line is right whether or not the line above
+  // it is drawn. What the window changes is only how much is on the page.
+  const FIRST = 5, STEP = 15;
+  const [show, setShow] = useState(FIRST);
+  const visible = useMemo(() => {
+    // A register short enough to read in one go is left whole. Hiding three
+    // lines out of ten behind a button is a puzzle, not a kindness — even if
+    // the strict rule would trim a lopsided ten.
+    if (rows.length <= show * 2) return { list: rows, hidden: 0 };
+    let ins = 0, outs = 0;
+    const keep = new Set();
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const isIn = num(rows[i].qty_in) > 0;
+      if (isIn && ins < show) { ins++; keep.add(i); }
+      else if (!isIn && outs < show) { outs++; keep.add(i); }
+      if (ins >= show && outs >= show) break;
+    }
+    const list = rows.filter((_, i) => keep.has(i));
+    return { list, hidden: rows.length - list.length };
+  }, [rows, show]);
 
   const u = uqcShort(unit);
 
@@ -219,7 +252,7 @@ export default function ItemMovesScreen({ route, navigation }) {
         </View>
       ) : (
         <FlatList
-          data={rows}
+          data={visible.list}
           keyExtractor={(r) => String(r.id)}
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 30 }}
           ListHeaderComponent={
@@ -250,8 +283,23 @@ export default function ItemMovesScreen({ route, navigation }) {
               </View>
 
               <Text style={[S.eyebrow, { marginTop: 18, marginBottom: 4 }]}>
-                EVERY MOVEMENT
+                {visible.hidden ? 'THE LATEST MOVEMENTS' : 'EVERY MOVEMENT'}
               </Text>
+              {visible.hidden > 0 && (
+                <TouchableOpacity
+                  onPress={() => setShow((v) => (v === FIRST ? STEP : v + STEP))}
+                  style={{ paddingVertical: 12, alignItems: 'center', marginBottom: 4,
+                           borderWidth: 1, borderColor: C.line, borderRadius: 11,
+                           backgroundColor: C.surface }}>
+                  <Text style={{ fontSize: 13.5, fontWeight: '800', color: C.accent }}>
+                    ↑ Show older — {visible.hidden} more
+                  </Text>
+                  <Text style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                    newest {show} in and {show} out are shown; the balance beside
+                    each line counts every movement
+                  </Text>
+                </TouchableOpacity>
+              )}
             </>
           }
           renderItem={({ item }) => {

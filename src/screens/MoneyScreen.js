@@ -7,7 +7,7 @@ import { supabase, allRows } from '../lib/supabase';
 import { sayPlainly, withTimeout } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, num, settle, today } from '../lib/money';
-import { Box, Head, KeyForm, Screen } from '../components/Chrome';
+import { Box, Head, KeyForm, Screen, Sections } from '../components/Chrome';
 import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
@@ -380,6 +380,8 @@ export default function MoneyScreen({ route, navigation }) {
     <Screen>
       <Head navigation={navigation} title={received ? 'Money received' : 'Money paid'}
         onBack={batch === null ? undefined : () => setBatch(null)} />
+      <Sections navigation={navigation} org={org} isOwner={isOwner}
+                id={received ? 'in' : 'out'} />
       <KeyForm
                   contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
 

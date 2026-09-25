@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator,
 } from 'react-native';
@@ -6,7 +6,7 @@ import { useFocusEffect } from '@react-navigation/native';
 
 import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { computeBill, fmt0, num, taxModeFor } from '../lib/money';
+import { computeBill, fmt0, n2, num, taxModeFor } from '../lib/money';
 import { planSample } from '../lib/sample';
 import { sayPlainly } from '../lib/offline';
 import { Box, Head, Screen } from '../components/Chrome';
@@ -24,11 +24,17 @@ import { C, S } from '../theme';
 // billed, what is actually on his shelves, and his own customers.
 
 const p2 = (n) => String(n).padStart(2, '0');
+const ymd = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
 const firstOfMonth = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-01`;
 const lastOfMonth  = (d) => {
   const e = new Date(d.getFullYear(), d.getMonth() + 1, 0);
   return `${e.getFullYear()}-${p2(e.getMonth() + 1)}-${p2(e.getDate())}`;
 };
+const dmy = (v) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || ''));
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : String(v || '');
+};
+const clamp = (v, lo, hi) => (lo && v < lo ? lo : (hi && v > hi ? hi : v));
 
 export default function SampleScreen({ navigation }) {
   const { org } = useApp();
@@ -43,6 +49,22 @@ export default function SampleScreen({ navigation }) {
   const [runs, setRuns]   = useState([]);
   const [money, setMoney] = useState(null);     // what the bank ledger holds for the period
 
+  // THE LAST BILL HE HAS ALREADY WRITTEN.
+  //
+  // He put it plainly: if the last bill is No. 105 on 20 September, then filling
+  // a month has to start bill 106, and 106 cannot be dated before 105. Skwik
+  // numbers by a counter that only ever goes up, so a run over a period that
+  // ENDED before that date would write 106, 107, 108 with earlier dates than
+  // 105 — a series running backwards, which is the one thing a GST bill book
+  // may not do. It is not a warning either; it cannot be undone once the
+  // numbers are out.
+  //
+  // So the period is fenced: it cannot begin before the day of his last bill,
+  // and it cannot end after today. Nothing already in his books is touched.
+  const [lastBill, setLastBill] = useState(null);   // { vdate, no } or null
+  const todayYmd = ymd(new Date());
+  const floor = lastBill?.vdate || null;
+
   const fCount = useRef(null), fTotal = useRef(null);
 
   const loadRuns = useCallback(async () => {
@@ -51,7 +73,35 @@ export default function SampleScreen({ navigation }) {
     setRuns(data || []);
   }, []);
 
-  useFocusEffect(useCallback(() => { loadRuns(); }, [loadRuns]));
+  // The newest bill in his books, by the date on it. Read every time the
+  // screen is opened, because he may have billed since he last looked here.
+  const loadLastBill = useCallback(async () => {
+    const { data } = await supabase.from('vouchers')
+      .select('vdate, voucher_no')
+      .in('vtype', ['sale', 'estimate'])
+      .is('cancelled_at', null)
+      .order('vdate', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const v = (data || [])[0];
+    setLastBill(v?.vdate ? { vdate: v.vdate, no: v.voucher_no || '' } : null);
+    return v?.vdate || null;
+  }, []);
+
+  useFocusEffect(useCallback(() => { loadRuns(); loadLastBill(); }, [loadRuns, loadLastBill]));
+
+  // And the boxes move to fit, rather than sitting on a date the run will
+  // refuse — a period he cannot use is not a period worth showing him.
+  useEffect(() => {
+    // A WINDOW ENTIRELY BEHIND THE FENCE IS MOVED, NOT SQUASHED.
+    // Clamping each end on its own turned "all of last month" into one single
+    // day — the day of his last bill — and left him to widen it by hand. If
+    // the whole period is now out of reach, the period becomes what he CAN
+    // fill: from his last bill up to today.
+    setFrom((v) => (floor && to < floor ? floor : clamp(v, floor, todayYmd)));
+    setTo((v) => (floor && v < floor ? todayYmd : clamp(v, floor, todayYmd)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [floor, todayYmd]);
 
   // What he has taken in that period and not yet billed — straight out of his
   // own money-received entries. Nothing is uploaded and nothing is typed.
@@ -70,6 +120,31 @@ export default function SampleScreen({ navigation }) {
   };
 
   const makePlan = async () => {
+    // TYPED IN BY HAND, SO IT IS CHECKED BY HAND TOO. The calendar cannot
+    // offer a date outside the fence, but the box above it can be typed into,
+    // and a run is not something he can take back a number at a time.
+    // Read again rather than trusting what the screen has been holding — he may
+    // have billed on another phone since. With no signal the read comes back
+    // empty, and then the date this screen already knows about is the fence,
+    // rather than no fence at all.
+    const live = (await loadLastBill()) || floor;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      return Alert.alert('The dates', 'Both dates go in as 2026-08-01.');
+    }
+    if (to < from) {
+      return Alert.alert('The dates', 'The second date is before the first one.');
+    }
+    if (to > todayYmd) {
+      return Alert.alert('Not yet',
+        `A bill cannot be dated after today. Bring the end back to ${dmy(todayYmd)} or earlier.`);
+    }
+    if (live && from < live) {
+      return Alert.alert('That would number the bills backwards',
+        `Your last bill is dated ${dmy(live)}. Skwik carries straight on from it, so `
+        + 'these bills get the numbers AFTER it — and putting those numbers on '
+        + 'earlier dates would run your bill book backwards, which a GST series '
+        + `may not do.\n\nStart on ${dmy(live)} or later.`);
+    }
     setBusy('planning');
     try {
       const [items, parties, { data: stock }, recs] = await Promise.all([
@@ -216,10 +291,29 @@ export default function SampleScreen({ navigation }) {
 
   const s = plan?.summary;
   const moneyTotal = (money || []).reduce((a, x) => a + num(x.amount), 0);
-  // Money through the bank has to be explained by a bill; cash is the part
-  // that bends. Shown apart so he can see the bank side is covered.
+
+  // AND HOW MUCH OF IT ACTUALLY NEEDS A BILL.
+  //
+  // A receipt with no bill against it is not the same thing as a receipt that
+  // needs one. A customer who was carrying 1,25,000 from before and paid 70,000
+  // has explained his own payment; inventing 70,000 of goods for it left him
+  // owing money he had already paid. So each payment is measured against that
+  // customer's own credit — what Skwik cannot account for out of what he owes —
+  // and only that part is covered.
+  const needsBill = (x) => {
+    const amt = num(x.amount);
+    return x.room == null ? amt : Math.max(0, Math.min(amt, num(x.room)));
+  };
+  const moneyNeeded = (money || []).reduce((a, x) => a + needsBill(x), 0);
+  const moneyOwed   = Math.max(0, n2(moneyTotal - moneyNeeded));
+  // Money through the bank has to be explained by a bill; cash is the part that
+  // bends, so the two are shown apart and he can see the bank side is covered.
+  //
+  // Counted over the part that still NEEDS a bill. Over the whole receipt it
+  // said "₹70,000 came through the bank and is settled first" about the very
+  // ₹70,000 the line above had just said needs no bill at all.
   const moneyBank = (money || []).filter((x) => String(x.mode || '').toLowerCase() !== 'cash')
-    .reduce((a, x) => a + Number(x.amount || 0), 0);
+    .reduce((a, x) => a + needsBill(x), 0);
 
   const Line = ({ k, v, strong }) => (
     <View style={[S.tline, { paddingVertical: 6 }]}>
@@ -250,11 +344,26 @@ export default function SampleScreen({ navigation }) {
           </Text>
         </View>
 
+        {/* WHERE THE MONTH MAY START. Said before the boxes, not after he has
+            typed a date and been refused. */}
+        {!!lastBill && (
+          <View style={{ backgroundColor: C.accentSoft, borderRadius: 12, padding: 12,
+                         marginBottom: 4 }}>
+            <Text style={{ fontSize: 12.5, color: C.ink, lineHeight: 18 }}>
+              Your last bill is <Text style={{ fontWeight: '800' }}>
+                {lastBill.no ? `No. ${lastBill.no}` : 'dated'} {dmy(lastBill.vdate)}
+              </Text>. These bills carry on from it, so the month cannot start before
+              that day — otherwise the later numbers would sit on earlier dates.
+            </Text>
+          </View>
+        )}
+
         <Text style={S.label}>FROM</Text>
         <View style={[S.row, { marginTop: 6, gap: 8, alignItems: 'center' }]}>
           <Box style={[S.num, { flex: 1, marginBottom: 0 }]} value={from} onChangeText={setFrom}
             placeholder="2026-04-01" next={fCount} />
-          <CalButton value={from} onPick={setFrom} size={48} max={to || undefined}
+          <CalButton value={from} onPick={setFrom} size={48}
+            min={floor || undefined} max={to || todayYmd}
             title="Start of the month to fill" />
         </View>
 
@@ -262,7 +371,8 @@ export default function SampleScreen({ navigation }) {
         <View style={[S.row, { marginTop: 6, gap: 8, alignItems: 'center' }]}>
           <Box style={[S.num, { flex: 1, marginBottom: 0 }]} value={to} onChangeText={setTo}
             placeholder="2026-04-30" next={fCount} />
-          <CalButton value={to} onPick={setTo} size={48} min={from || undefined}
+          <CalButton value={to} onPick={setTo} size={48}
+            min={from || floor || undefined} max={todayYmd}
             title="End of the month to fill" />
         </View>
 
@@ -277,10 +387,19 @@ export default function SampleScreen({ navigation }) {
                          marginTop: 8, lineHeight: 18 }}>
             {money.length
               ? `${money.length} receipts, ₹${fmt0(moneyTotal)}, with no bill against them.`
-                + (moneyBank > 0
-                    ? `\n₹${fmt0(moneyBank)} of it came through the bank, and that is `
+                + (moneyOwed > 0
+                    ? `\n₹${fmt0(moneyOwed)} of it went against what those customers `
+                      + 'already owed you, so no bill is needed for that part.'
+                      + (moneyNeeded > 0
+                          ? `\n₹${fmt0(moneyNeeded)} is left for bills to explain.`
+                          : '\nNothing is left for bills to explain — the amounts below '
+                            + 'will be made up instead.')
+                    : '')
+                + (moneyNeeded > 0 && moneyBank > 0
+                    ? `\n₹${fmt0(moneyBank)} came through the bank, and that is `
                       + 'settled first — cash is only touched after.'
-                    : '\nBills will be built to match each one.')
+                    : (moneyNeeded > 0 && moneyOwed === 0
+                        ? '\nBills will be built to match each one.' : ''))
               : 'Nothing received in that period is waiting for a bill. The amounts '
                 + 'below will be made up instead.'}
           </Text>
@@ -344,6 +463,22 @@ export default function SampleScreen({ navigation }) {
                     v={`${s.fromReceipts} · ₹${fmt0(s.receiptValue)}`} />
             )}
             <Line k="Cash bills" v={s.cash} />
+
+            {/* MONEY IT DELIBERATELY DID NOT BILL FOR. He has to see this, or
+                it looks as though the run simply missed some receipts. */}
+            {(s.owedFirst > 0 || s.trimmed > 0) && (
+              <View style={{ backgroundColor: C.accentSoft, borderRadius: 10,
+                             padding: 10, marginTop: 10 }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink }}>
+                  ₹{fmt0(n2(Number(s.owedFirstValue || 0) + Number(s.trimmed || 0)))} needed no bill
+                </Text>
+                <Text style={{ fontSize: 12, color: C.ink, marginTop: 3, lineHeight: 17 }}>
+                  That much of the money you took went against dues those customers
+                  were already carrying, so nothing has been invented to explain it.
+                  Their ledgers come out where they should.
+                </Text>
+              </View>
+            )}
 
             {s.pooled != null && s.catalog > s.pooled && (
               <View style={{ backgroundColor: C.flagSoft, borderWidth: 1, borderColor: C.flagLine,

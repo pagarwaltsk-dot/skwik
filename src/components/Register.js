@@ -238,6 +238,21 @@ export function Glyph({ name, color = C.ink, size = 18 }) {
       </View>
     );
   }
+  // Settings has come onto the day book, so it needs a picture: a ring with
+  // four teeth, which is what a gear looks like at eighteen pixels.
+  if (name === 'gear') {
+    return (
+      <View style={{ width: s, height: s }}>
+        <View style={{ position: 'absolute', left: s * 0.24, top: s * 0.24,
+                       width: s * 0.52, height: s * 0.52, borderRadius: s * 0.26,
+                       borderWidth: 1.7, borderColor: color }} />
+        <View style={line({ left: s * 0.46, top: 0, width: 1.7, height: s * 0.2 })} />
+        <View style={line({ left: s * 0.46, bottom: 0, width: 1.7, height: s * 0.2 })} />
+        <View style={line({ left: 0, top: s * 0.46, width: s * 0.2, height: 1.7 })} />
+        <View style={line({ right: 0, top: s * 0.46, width: s * 0.2, height: 1.7 })} />
+      </View>
+    );
+  }
   // a dot, when something has no picture of its own yet
   return <View style={{ width: s * 0.5, height: s * 0.5, borderRadius: 2,
                         backgroundColor: color, marginVertical: s * 0.25 }} />;

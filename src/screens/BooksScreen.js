@@ -9,7 +9,7 @@ import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, n2, num, today } from '../lib/money';
 import { ColHead, Figure, Rule, Words } from '../components/Register';
-import { Head, Screen, Swipe, useTabSwipe } from '../components/Chrome';
+import { Head, Screen, Sections, Swipe, useTabSwipe } from '../components/Chrome';
 import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
@@ -66,7 +66,7 @@ function rangeOf(k, from, to) {
 const rupee = (x) => `${num(x) < 0 ? '−' : ''}${fmt0(Math.abs(num(x)))}`;
 
 export default function BooksScreen({ navigation, route }) {
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   // Opened from Ledgers, which says WHICH book he asked for. On its own it
   // still opens on the cash book, which is the one most shops want.
   const [tab, setTab]     = useState(
@@ -195,6 +195,7 @@ export default function BooksScreen({ navigation, route }) {
   return (
     <Screen>
       <Head navigation={navigation} title="The books" />
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="books" />
 
       <View style={{ flexDirection: 'row', backgroundColor: C.surface,
                      borderBottomWidth: 1, borderBottomColor: C.line }}>

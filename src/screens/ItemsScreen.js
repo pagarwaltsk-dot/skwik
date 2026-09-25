@@ -6,9 +6,9 @@ import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt0, num, settle, hsnApplies, SUPPLY_KINDS, supplyOf } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
-import { checkHsn, hsnExists, hsnDesc } from '../lib/hsn';
+import { checkHsn } from '../lib/hsn';
 import { HsnField, UomField } from '../components/Pickers';
-import { Box, Foot, Head, KeyForm, Screen } from '../components/Chrome';
+import { Box, Foot, Head, KeyForm, Screen, Sections } from '../components/Chrome';
 import { ScanSheet } from '../components/Scan';
 import { showVariants } from '../lib/features';
 import { C, S } from '../theme';
@@ -20,7 +20,7 @@ const FIELD = {
 };
 
 const empty = { name: '', search_words: '', alias: '', hsn: '', unit: 'PCS', barcode: '',
-  supply: 'taxable',
+  supply: 'taxable', priority: 0,
                 sale_price: '', price2: '', purchase_price: '', gst_rate: '', opening_stock: '' };
 
 // Has he already put something into one of the folded-away fields? If he has,
@@ -29,6 +29,7 @@ const empty = { name: '', search_words: '', alias: '', hsn: '', unit: 'PCS', bar
 const hasMore = (e) => !!e && !!(
   (e.alias || '').trim() || (e.search_words || '').trim() || (e.hsn || '').trim()
   || (e.barcode || '').trim() || (e.variant || '').trim() || e.variant_of
+  || num(e.priority)
   || num(e.gst_rate) || num(e.price2) || num(e.purchase_price) || num(e.opening_stock)
   || supplyOf(e) !== 'taxable');
 
@@ -243,10 +244,27 @@ export default function ItemsScreen({ navigation }) {
         purchase_price: num(edit.purchase_price),
         gst_rate: num(edit.gst_rate),
         opening_stock: num(edit.opening_stock),
+        // his own 1-10, or 0 for "you decide"
+        priority: Math.max(0, Math.min(10, Math.round(num(edit.priority)))),
       };
-      const { error } = edit.id
-        ? await supabase.from('items').update(body).eq('id', edit.id)
-        : await supabase.from('items').insert(body);
+      const put = (b) => (edit.id
+        ? supabase.from('items').update(b).eq('id', edit.id)
+        : supabase.from('items').insert(b));
+
+      let { error } = await put(body);
+
+      // SAVING AN ITEM MUST NOT DEPEND ON A PIECE OF SQL HE HAS NOT RUN YET.
+      //
+      // The 1-10 points need a new column. If this copy of Skwik reaches a
+      // firm whose database has not been brought forward yet, that column is
+      // not there — and sending it would have failed EVERY item save with a
+      // message about a column he has never heard of, over a field he probably
+      // did not even touch. So the save goes again without it, and the item
+      // lands. Only the points are lost, and only until the SQL is run.
+      if (error && /priority/i.test(error.message || '')) {
+        const { priority: _drop, ...rest } = body;
+        ({ error } = await put(rest));
+      }
       if (error) return Alert.alert('Could not save', sayPlainly(error));
       setEdit(null); load();
     };
@@ -268,14 +286,15 @@ export default function ItemsScreen({ navigation }) {
         [{ text: 'Go back' }, { text: 'It really is 0%', onPress: proceed }]);
     }
 
-    // Right shape, but not a code we know. Warn, do not block — the bundled
-    // list is not the whole master and he may have a genuine code.
-    if (hsnApplies(org) && edit.hsn && !hsnExists(edit.hsn)) {
-      setMore(true);
-      return Alert.alert('Check this HSN',
-        `${edit.hsn} is not in our list. Save it anyway?`,
-        [{ text: 'Let me check' }, { text: 'Save anyway', onPress: proceed }]);
-    }
+    // WE DO NOT SECOND-GUESS HIS HSN ANY MORE.
+    //
+    // Every item he had was stopped here with "is not in our list. Save it
+    // anyway?", because the bundled list is a couple of hundred four-digit
+    // headings and the real master runs to twenty thousand. A question Skwik
+    // asks about nearly every item is not a check, it is a nuisance, and it
+    // taught him to tap past a warning without reading it. The shape is still
+    // checked above — 4, 6 or 8 digits, and enough of them for his turnover —
+    // and that is the part Skwik actually knows the answer to.
     proceed();
   };
 
@@ -316,6 +335,7 @@ export default function ItemsScreen({ navigation }) {
           </TouchableOpacity>
         )}
       </Head>
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="items" />
 
       <View style={{ padding: 16, paddingBottom: bulk ? 10 : 16 }}>
         <TextInput style={S.input} placeholder="Search" placeholderTextColor={C.faint}
@@ -421,6 +441,7 @@ export default function ItemsScreen({ navigation }) {
               price2: String(item.price2 ?? ''),
               purchase_price: String(item.purchase_price ?? ''),
               gst_rate: String(item.gst_rate ?? ''),
+              priority: Number(item.priority) || 0,
               opening_stock: String(item.opening_stock ?? '') })}
             style={[S.row, { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.line }]}>
             <View style={{ flex: 1 }}>
@@ -559,6 +580,41 @@ export default function ItemsScreen({ navigation }) {
               <Text style={[S.label, { marginTop: 14 }]}>OTHER SEARCH WORDS</Text>
               <Box ref={fWords} next={fGst} style={{ marginTop: 6 }} placeholder="thali, plate, steel"
                 value={edit.search_words || ''} onChangeText={set('search_words')} />
+
+              {/* WHICH OF TWO ITEMS HE MEANT.
+                  "tel" finds the mustard oil he sells forty times a day and the
+                  brake oil he has sold twice this year, and Skwik has no way of
+                  knowing which — so it put the shorter name first and he
+                  scrolled. He knows, so he can say. It lives down here, behind
+                  a tap, because no shop should ever have to fill this in to
+                  sell anything: nothing set behaves exactly as it does now. */}
+              <Text style={[S.label, { marginTop: 18 }]}>SHOW IT NEAR THE TOP</Text>
+              <View style={[S.row, { marginTop: 6, gap: 6, flexWrap: 'wrap' }]}>
+                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => {
+                  const on = (Number(edit.priority) || 0) === n;
+                  return (
+                    <TouchableOpacity key={n} onPress={() => set('priority')(n)}
+                      hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                      style={{ minWidth: 36, paddingHorizontal: 8, paddingVertical: 9,
+                               borderRadius: 9, borderWidth: 1, alignItems: 'center',
+                               borderColor: on ? C.ink : C.greyB,
+                               backgroundColor: on ? C.ink : 'transparent' }}>
+                      <Text style={[{ fontSize: 13, fontWeight: '700',
+                                      color: on ? '#fff' : C.muted }, S.num]}>
+                        {n === 0 ? '–' : n}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 5, lineHeight: 17 }}>
+                {(Number(edit.priority) || 0) === 0
+                  ? 'Not set. Skwik decides the order, as it does now. Put 10 on the '
+                    + 'two or three lines you sell all day and they come up first.'
+                  : `${edit.priority} out of 10. Where two items both match what you `
+                    + 'type, this one comes up higher. Typing a name exactly still '
+                    + 'wins, whatever the number.'}
+              </Text>
 
               {hsnApplies(org) && (
                 <>
