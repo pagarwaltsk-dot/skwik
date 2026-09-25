@@ -84,6 +84,10 @@ export default function TransferScreen({ navigation }) {
   const [ready, setReady] = useState(null);   // what was read, waiting to be confirmed
   const [seeAll, setSeeAll] = useState(false); // the whole list of it, not five rows
   const [basisOk, setBasisOk] = useState(false); // he has told us these ARE closing figures
+  // Rename Skwik's two price lists after the Tally levels he picked. On by
+  // default when they differ, because "Wholesale / Retail" sitting over rates
+  // that came off "Dealer / Counter" is a label that lies.
+  const [renameLists, setRenameLists] = useState(true);
 
   /* ---------------- out ---------------- */
 
@@ -590,8 +594,28 @@ export default function TransferScreen({ navigation }) {
       if (!read.rows.length) return Alert.alert('Nothing found', 'That file had no rows we could use.');
 
       setBasisOk(false);
+
+      // WHAT IT IS ABOUT TO DO, BEFORE IT DOES IT.
+      //
+      // The sheet said how many rows were READ and nothing about what would
+      // become of them. So an import that quietly added five hundred new
+      // items beside the five hundred he already had — because not one name
+      // matched letter for letter — looked exactly like an import that
+      // updated them. He found out days later, from the rates being wrong.
+      //
+      // The same plan the save uses is worked out here and shown to him. If
+      // it says nothing will be updated, he knows before he taps anything.
+      let plan = null;
+      try {
+        const table = what === 'items' ? 'items' : 'parties';
+        const mine = await pageAll(() => supabase.from(table).select('id, name').order('id'));
+        plan = planImport({ rows: read.rows, have: mine, what, orgId: org.id });
+      } catch (e) { /* no signal: the sheet simply does not show the line */ }
+
       setReady({ what, rows: read.rows, name: asset.name || 'the file',
+                 plan,
                  noRate: read.noRate || 0, skipped: read.skipped || 0,
+                 level2: '',
                  kind: kind === 'csv' ? 'a spreadsheet' : 'a Tally export',
                  // The file itself is no longer held: changing the price
                  // list works off the rates already read, and keeping a
@@ -621,25 +645,46 @@ export default function TransferScreen({ navigation }) {
   //
   // The chosen list is still remembered on the firm, but quietly: reloading
   // the firm row here re-rendered the whole screen for nothing.
-  const useLevel = (level) => {
+  const useLevel = (level, which = 1) => {
     if (!ready) return;
     setReady((r) => {
-      const rows = applyPriceLevel(r.rows, level);
+      const lv1 = which === 1 ? level : (r.level || '');
+      const lv2 = which === 2 ? level : (r.level2 || '');
+      const rows = applyPriceLevel(r.rows, lv1, lv2);
       // The count of items with no rate belongs to the list he just picked,
       // not to the one the file was first read on.
-      return { ...r, level, rows, noRate: rows.filter((x) => !x.sale_price).length };
+      return { ...r, level: lv1, level2: lv2, rows,
+               noRate: rows.filter((x) => !x.sale_price).length };
     });
-    supabase.from('orgs').update({ tally_price_level: level || null })
-      .eq('id', org.id).then(() => {}, () => {});
+    if (which === 1) {
+      supabase.from('orgs').update({ tally_price_level: level || null })
+        .eq('id', org.id).then(() => {}, () => {});
+    }
   };
 
   // Names already in the book are updated, new ones are added. Nothing is
   // ever duplicated and nothing is ever removed.
   const commit = async () => {
-    const { what, rows } = ready;
+    const { what, rows, level, level2 } = ready;
     setReady(null);
     setBusy('saving');
     try {
+      // THE NAMES OF THE LISTS, NOT JUST THE RATES OFF THEM.
+      //
+      // The rates arrived under headings that said Wholesale and Retail
+      // whatever Tally called them, so the bill screen offered him two lists
+      // whose names had nothing to do with the prices behind them. If he
+      // picked Tally levels, Skwik takes their names as well.
+      if (what === 'items' && renameLists && (level || level2)) {
+        const patch = {};
+        if (level)  patch.price1_name = String(level).trim().slice(0, 24);
+        if (level2) patch.price2_name = String(level2).trim().slice(0, 24);
+        try {
+          await supabase.from('orgs').update(patch).eq('id', org.id);
+          await reloadOrg?.();
+        } catch (e) { /* the rates matter more than the labels */ }
+      }
+
       const table = what === 'items' ? 'items' : 'parties';
       // THE DE-DUPLICATOR HAS TO SEE EVERYTHING.
       // It loads what is already there to decide what the file is adding. It
@@ -814,28 +859,72 @@ export default function TransferScreen({ navigation }) {
                 <ScrollView style={{ flexShrink: 1 }} keyboardShouldPersistTaps="handled"
                   contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 8 }}>
 
-                {ready.levels?.length > 1 && (
+                {/* TALLY KEEPS AS MANY PRICE LEVELS AS HE LIKES. SKWIK BILLS
+                    ON TWO, and every customer sits on one of them. So the
+                    question is which Tally level is which — and the second one
+                    was never asked at all, which is why his second rate came
+                    in empty every single time. */}
+                {ready.levels?.length > 0 && (
                   <View style={{ marginTop: 14 }}>
-                    <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink }}>
-                      Which price list is your selling rate?
-                    </Text>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                      {['', ...ready.levels].map((lv) => {
-                        const on = (ready.level || '') === lv;
-                        return (
-                          <TouchableOpacity key={lv || 'newest'} onPress={() => useLevel(lv)}
-                            style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 9,
-                                     borderWidth: 1, borderColor: on ? C.accent : C.line,
-                                     backgroundColor: on ? C.accentSoft : C.surface }}>
-                            <Text style={{ fontSize: 13, fontWeight: '600',
-                                           color: on ? C.accent : C.muted }}>
-                              {lv || 'Newest rate'}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 16 }}>
+                    {[1, 2].map((slot) => {
+                      const picked = slot === 1 ? (ready.level || '') : (ready.level2 || '');
+                      const skwik = slot === 1 ? (org?.price1_name || 'Wholesale')
+                                               : (org?.price2_name || 'Retail');
+                      return (
+                        <View key={slot} style={{ marginBottom: 10 }}>
+                          <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink }}>
+                            {slot === 1 ? 'Rate 1' : 'Rate 2'} — now called “{skwik}” in Skwik
+                          </Text>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                            {[''].concat(ready.levels).map((lv) => {
+                              const on = picked === lv;
+                              return (
+                                <TouchableOpacity key={(lv || 'none') + slot}
+                                  onPress={() => useLevel(lv, slot)}
+                                  style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 9,
+                                           borderWidth: 1, borderColor: on ? C.accent : C.line,
+                                           backgroundColor: on ? C.accentSoft : C.surface }}>
+                                  <Text style={{ fontSize: 13, fontWeight: '600',
+                                                 color: on ? C.accent : C.muted }}>
+                                    {lv || (slot === 1 ? 'Newest rate' : 'Leave empty')}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        </View>
+                      );
+                    })}
+
+                    {/* HIS OWN WORDS: you already have the price list, put those
+                        names into Skwik's price list tab. */}
+                    {(!!ready.level || !!ready.level2) && (
+                      <TouchableOpacity onPress={() => setRenameLists((v) => !v)}
+                        style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 9,
+                                 marginTop: 2, marginBottom: 4 }}>
+                        <View style={{ width: 20, height: 20, borderRadius: 6, borderWidth: 1.5,
+                                       alignItems: 'center', justifyContent: 'center', marginTop: 1,
+                                       borderColor: renameLists ? C.accent : C.greyB,
+                                       backgroundColor: renameLists ? C.accent : 'transparent' }}>
+                          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                            {renameLists ? '✓' : ''}
+                          </Text>
+                        </View>
+                        <Text style={{ flex: 1, fontSize: 12.5, color: C.muted, lineHeight: 17 }}>
+                          Call Skwik's two price lists{' '}
+                          <Text style={{ fontWeight: '700', color: C.ink }}>
+                            {ready.level || 'Rate 1'}
+                          </Text>{' and '}
+                          <Text style={{ fontWeight: '700', color: C.ink }}>
+                            {ready.level2 || 'Rate 2'}
+                          </Text>
+                          , the same as in Tally, so the names on the bill screen
+                          match the rates behind them.
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+
+                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2, lineHeight: 16 }}>
                       Check a rate below against Tally before you bring them in.
                     </Text>
                   </View>
@@ -868,6 +957,37 @@ export default function TransferScreen({ navigation }) {
                   </View>
                 )}
 
+                {/* THE ONE LINE THAT MATTERS BEFORE HE TAPS SAVE. */}
+                {!!ready.plan && (
+                  <View style={{ marginTop: 14, padding: 12, borderRadius: 12,
+                                 borderWidth: 1.5,
+                                 borderColor: ready.plan.updated ? C.line : C.flagLine,
+                                 backgroundColor: ready.plan.updated ? C.surface : C.flagSoft }}>
+                    <Text style={{ fontSize: 14.5, fontWeight: '800',
+                                   color: ready.plan.updated ? C.ink : C.flagInk }}>
+                      {fmt0(ready.plan.updated)} updated  ·  {fmt0(ready.plan.added)} added as new
+                    </Text>
+                    {!ready.plan.updated && ready.plan.added > 0 ? (
+                      <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 4, lineHeight: 17 }}>
+                        Nothing in your book matches a name in this file, so all of
+                        these come in as NEW rows beside what you already have —
+                        and the ones you bill on keep their old figures. If these
+                        are the same {ready.what === 'items' ? 'items' : 'names'} under
+                        different spellings, rename them in Tally or in Skwik so
+                        they line up, then bring the file in again.
+                      </Text>
+                    ) : (
+                      <Text style={{ fontSize: 12, color: C.muted, marginTop: 4, lineHeight: 17 }}>
+                        Updated means {ready.what === 'items' ? 'an item' : 'a name'} already
+                        in your book takes this file's figures. Nothing is ever removed.
+                        {ready.plan.loose
+                          ? ` ${fmt0(ready.plan.loose)} matched on spelling alone — “Steel (A)” to “STEEL A”.`
+                          : ''}
+                      </Text>
+                    )}
+                  </View>
+                )}
+
                 {/* WHAT THE FILE DID NOT HAVE.
                     Both of these used to happen in silence — items arriving
                     with the purchase price standing in for a selling price,
@@ -882,12 +1002,13 @@ export default function TransferScreen({ navigation }) {
                       {ready.level ? ` on your “${ready.level}” list` : ' in the file'}
                     </Text>
                     <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 4, lineHeight: 17 }}>
-                      They come in with the rate blank rather than with what you
-                      PAID for them, which is what Skwik used to do — a bill
-                      written off that price gives the goods away. Put a rate
-                      against them in Items, or pick a different list above.
+                      Anything already in your book KEEPS the selling price you
+                      set yourself — the file is silent about these, and silence
+                      does not overwrite. Ones that are new to you arrive with
+                      the rate blank, rather than with what you PAID for them: a
+                      bill written off that price gives the goods away.
                       {ready.levels?.length > 1
-                        ? ' Tally only holds a rate on the lists you actually set.'
+                        ? ' Tally only holds a rate on the lists you actually set, so try another list above.'
                         : ''}
                     </Text>
                   </View>

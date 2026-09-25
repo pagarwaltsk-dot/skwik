@@ -379,6 +379,28 @@ const unesc = (s) => String(s)
   .replace(/&#\d+;/g, ' ')            // Tally's own markers, e.g. &#4;
   .replace(/\s+/g, ' ').trim();
 
+// A FIGURE FROM THE LEDGER, NOT FROM ONE OF ITS BILLS.
+//
+// "They say receipt as opening balance — maybe the highest receipt from that
+// party." Almost: the highest BILL. A Tally ledger kept bill-by-bill carries
+// one BILLALLOCATIONS.LIST per outstanding bill, each with its own
+// <OPENINGBALANCE>, and Tally writes those lists BEFORE the ledger's own
+// figure. tagOf takes the first match anywhere in the block — so a customer
+// standing at 1,27,500 across two bills was imported at 96,000, the larger of
+// the two, and there was no way to tell from the screen.
+//
+// The same trap sits under stock items, whose batch and price lists carry
+// their own OPENINGBALANCE and OPENINGRATE.
+//
+// So the figures and the identity are read from the TOP LEVEL of the block —
+// every nested <SOMETHING.LIST> taken out first. Anything that genuinely
+// lives in a list, an address or a price level, is still read from the whole
+// block by the code that knows to look there.
+const stripLists = (chunk) => String(chunk)
+  .replace(/<([A-Za-z0-9_]+\.LIST)(?:\s[^>]*)?>[\s\S]*?<\/\1>/gi, '');
+
+const tagTop = (chunk, tag) => tagOf(stripLists(chunk), tag);
+
 const blocksOf = (xml, tag) => {
   const out = [];
   const re = new RegExp(`<${rx(tag)}(?:\\s[^>]*)?>[\\s\\S]*?</${rx(tag)}>`, 'gi');
@@ -451,12 +473,12 @@ const hsnOf = (chunk) => String(tagOf(chunk, 'HSNCODE') || tagOf(chunk, 'GSTHSNC
 function groupsFromTallyXml(xml) {
   const map = {};
   for (const b of blocksOf(xml, 'STOCKGROUP')) {
-    const name = nameAttr(b) || tagOf(b, 'NAME');
+    const name = nameAttr(b) || tagTop(b, 'NAME');
     if (!name) continue;
     map[name.toLowerCase()] = {
       hsn: hsnOf(b),
       gst_rate: gstRateOf(b),
-      parent: tagOf(b, 'PARENT'),
+      parent: tagTop(b, 'PARENT'),
     };
   }
   return map;
@@ -483,9 +505,10 @@ function inherited(groups, parent, field, depth = 0) {
 // importing the wrong one silently is how a whole ledger goes wrong.
 function balanceOf(block, isQty = false) {
   const read = isQty ? qtyOf : numOf;
-  const cl = tagOf(block, 'CLOSINGBALANCE');
+  const top = stripLists(block);
+  const cl = tagOf(top, 'CLOSINGBALANCE');
   if (cl !== '') return { value: read(cl), basis: 'closing' };
-  return { value: read(tagOf(block, 'OPENINGBALANCE')), basis: 'opening' };
+  return { value: read(tagOf(top, 'OPENINGBALANCE')), basis: 'opening' };
 }
 
 // Every price level named anywhere in the file. A shop that keeps a wholesale
@@ -551,14 +574,23 @@ function rateAt(rates, level) {
   return any ? any.rate : 0;
 }
 
-// The same rows, priced off a different list. Nothing is read again.
-export function applyPriceLevel(rows, level) {
+// The same rows, priced off different lists. Nothing is read again.
+//
+// TWO LISTS, BECAUSE SKWIK HAS TWO.
+//
+// Tally holds as many price levels as a shop cares to make; Skwik bills on
+// two, and every customer sits on one of them. So the import asks which Tally
+// level is which — and the second one was never asked for at all, which is
+// why his second price came in empty every time.
+export function applyPriceLevel(rows, level, level2) {
   return (rows || []).map((r) => {
     if (!r._rates) return r;
     // Same order as the first read: his list, then the plain selling rate,
     // and NEVER the purchase price — see sale_price below.
     const sale = rateAt(r._rates, level) || r._std || 0;
-    return { ...r, sale_price: sale };
+    const two  = level2 ? rateAt(r._rates, level2) : 0;
+    return { ...r, sale_price: sale, price2: two,
+             _has: { ...(r._has || {}), sale_price: !!sale, price2: !!two } };
   });
 }
 
@@ -569,10 +601,10 @@ export function itemsFromTallyXml(xml, opts = {}) {
   let sawClosing = false, sawOpening = false, noRate = 0;
 
   for (const b of blocksOf(xml, 'STOCKITEM')) {
-    const name = nameAttr(b) || tagOf(b, 'NAME');
+    const name = nameAttr(b) || tagTop(b, 'NAME');
     if (!name) continue;
 
-    const parent = tagOf(b, 'PARENT');
+    const parent = tagTop(b, 'PARENT');
     const hsn = hsnOf(b) || inherited(groups, parent, 'hsn');
     const gst = gstRateOf(b) || inherited(groups, parent, 'gst_rate');
 
@@ -597,15 +629,15 @@ export function itemsFromTallyXml(xml, opts = {}) {
     // is counted in, by construction. That is the figure that makes Skwik's
     // stock total agree with his Stock Summary instead of merely resembling
     // it. The plain rate stays as the answer when there is no value to divide.
-    const val  = numOf(tagOf(b, 'OPENINGVALUE'));
-    const rate = numOf(tagOf(b, 'OPENINGRATE'));
+    const val  = numOf(tagTop(b, 'OPENINGVALUE'));
+    const rate = numOf(tagTop(b, 'OPENINGRATE'));
     const cost = (bal.value && val) ? n2(Math.abs(val) / Math.abs(bal.value)) : rate;
 
     out.push({
       name,
       alias: '',
       hsn,
-      unit: asUqc(tagOf(b, 'BASEUNITS')),
+      unit: asUqc(tagTop(b, 'BASEUNITS')),
       // A SELLING PRICE THAT IS SECRETLY THE PURCHASE PRICE IS A SHOP
       // SELLING AT COST.
       //
@@ -637,6 +669,25 @@ export function itemsFromTallyXml(xml, opts = {}) {
       // the database.
       _rates: rates,
       _std: standardRate(b),
+      // WHAT THIS FILE ACTUALLY SAYS, as opposed to what it leaves blank.
+      //
+      // A nought coming out of a parser means one of two completely
+      // different things: "Tally says zero" or "Tally did not say". Until now
+      // they were the same number and the update wrote both, so an item Tally
+      // had no rate for arrived as 0 and that 0 went over a selling price he
+      // had typed in himself. The screen promises nothing is ever removed.
+      // This is how that promise is kept.
+      _has: {
+        sale_price:     !!sale,
+        price2:         !!two,
+        purchase_price: !!cost,
+        gst_rate:       !!gst,
+        hsn:            !!hsn,
+        unit:           !!tagTop(b, 'BASEUNITS'),
+        // Tally always writes the stock figure, so a nought here is a real
+        // nought: he has none of it, and that must be allowed to overwrite.
+        opening_stock:  true,
+      },
     });
   }
 
@@ -667,11 +718,11 @@ export function itemsFromTallyXml(xml, opts = {}) {
 function ledgerGroupsFromTallyXml(xml) {
   const map = {};
   for (const b of blocksOf(xml, 'GROUP')) {
-    const name = nameAttr(b) || tagOf(b, 'NAME');
+    const name = nameAttr(b) || tagTop(b, 'NAME');
     if (!name) continue;
     map[name.toLowerCase()] = {
-      parent: tagOf(b, 'PARENT'),
-      primary: tagOf(b, 'PRIMARYGROUP') || tagOf(b, 'RESERVEDNAME'),
+      parent: tagTop(b, 'PARENT'),
+      primary: tagTop(b, 'PRIMARYGROUP') || tagTop(b, 'RESERVEDNAME'),
     };
   }
   return map;
@@ -702,17 +753,17 @@ export function partiesFromTallyXml(xml) {
   const groups = ledgerGroupsFromTallyXml(xml);
 
   for (const b of blocksOf(xml, 'LEDGER')) {
-    const name = nameAttr(b) || tagOf(b, 'NAME');
+    const name = nameAttr(b) || tagTop(b, 'NAME');
     if (!name) continue;
 
     // only people who owe money or are owed it — not Sales, Duties, Bank.
     // Some exports put the answer straight on the ledger; otherwise the
     // chain of groups above it is walked.
-    const parent = tagOf(b, 'PARENT');
-    const side = sideOf(groups, tagOf(b, 'PRIMARYGROUP')) || sideOf(groups, parent);
+    const parent = tagTop(b, 'PARENT');
+    const side = sideOf(groups, tagTop(b, 'PRIMARYGROUP')) || sideOf(groups, parent);
     if (!side) { skipped++; continue; }
 
-    const gstin = (tagOf(b, 'PARTYGSTIN') || tagOf(b, 'GSTIN')).toUpperCase().replace(/\s/g, '');
+    const gstin = (tagTop(b, 'PARTYGSTIN') || tagTop(b, 'GSTIN')).toUpperCase().replace(/\s/g, '');
     const code  = gstin.slice(0, 2);
     const b2    = balanceOf(b);
     const bal   = b2.value;
@@ -722,13 +773,29 @@ export function partiesFromTallyXml(xml) {
       name,
       kind: side,
       gstin: gstin.length === 15 ? gstin : '',
-      phone: String(tagOf(b, 'LEDGERPHONE') || tagOf(b, 'LEDGERMOBILE')).replace(/[^0-9]/g, '').slice(-10),
+      phone: String(tagTop(b, 'LEDGERPHONE') || tagTop(b, 'LEDGERMOBILE')).replace(/[^0-9]/g, '').slice(-10),
       address: tagOf(b, 'ADDRESS'),
       state_code: STATES[code] ? code : '',
-      state_name: STATES[code] || tagOf(b, 'LEDSTATENAME') || tagOf(b, 'STATENAME'),
+      state_name: STATES[code] || tagTop(b, 'LEDSTATENAME') || tagTop(b, 'STATENAME'),
       // Tally writes what a customer owes you as a negative opening balance
       opening_balance: Math.abs(bal),
       opening_type: bal > 0 ? 'you_owe' : 'owes_you',
+      // The same account of what the file really carried. A phone number or
+      // an address he typed into Skwik is not thrown away because Tally has
+      // never been told it — but a ledger standing at nought in Tally IS a
+      // nought, and must be allowed to say so.
+      _has: {
+        kind:            true,
+        gstin:           gstin.length === 15,
+        is_registered:   gstin.length === 15,
+        phone:           !!tagTop(b, 'LEDGERPHONE') || !!tagTop(b, 'LEDGERMOBILE'),
+        address:         !!tagOf(b, 'ADDRESS'),
+        state_code:      !!(STATES && STATES[code]),
+        state_name:      !!(tagTop(b, 'LEDSTATENAME') || tagTop(b, 'STATENAME')
+                            || (STATES && STATES[code])),
+        opening_balance: true,
+        opening_type:    true,
+      },
     });
   }
 
@@ -1146,18 +1213,66 @@ export function backupVoucherPayload(v, linesFor) {
 //
 // It is a plain function over two lists now, so it can be checked without a
 // database, and the screen does nothing but carry out what it decides.
+
+// The fields an UPDATE may touch: the ones the file genuinely carried.
+//
+// `_has` is the parser's own account of that. Without it — a spreadsheet, or
+// a row from an older build — the rule is the only other one available: a
+// value that is present is a value the file has, and a blank or a nought is
+// the file saying nothing. `name` always goes, because it is what matched.
+const ALWAYS = { org_id: 1, name: 1 };
+function onlyWhatItKnows(body, row) {
+  const has = row && row._has;
+  const out = {};
+  for (const k of Object.keys(body)) {
+    if (ALWAYS[k]) { out[k] = body[k]; continue; }
+    const v = body[k];
+    const known = has ? !!has[k]
+      : !(v === null || v === undefined || v === '' || v === 0);
+    if (known) out[k] = v;
+  }
+  return out;
+}
+
 export function planImport({ rows, have, what, orgId }) {
-  const byName = {};
-  for (const r of (have || [])) byName[String(r.name || '').trim().toLowerCase()] = r.id;
+  // THE MATCH THAT NEVER MATCHED.
+  //
+  // "Names already in the book are updated, new ones are added" — that is
+  // what this screen has always promised, and it compared the two names
+  // letter for letter, spaces and brackets and all. Tally writes STEEL THALI
+  // 10" and the book says Steel Thali 10 inch. Not equal. So the import did
+  // not update a single existing item: it added five hundred NEW ones beside
+  // them, every one of them carrying the right rate, while the items he
+  // actually bills on sat there with their old rates untouched.
+  //
+  // From the outside that is exactly "no rate list updated" and exactly
+  // "ledger figures still wrong" — the opening balances went onto brand new
+  // customers, not onto the ones with his bills against them. One cause,
+  // both complaints.
+  //
+  // So a name is now compared the way the rest of this app already compares
+  // names: stripped to its letters and digits. Steel Thali 10" and steel
+  // thali 10 are the same shelf. An exact match still wins outright, and
+  // when two rows in the book strip down to the SAME thing there is no
+  // honest way to choose between them, so neither is touched.
+  const byName = {}, byTidy = {}, tidyDupe = {};
+  for (const r of (have || [])) {
+    const raw = String(r.name || '').trim();
+    byName[raw.toLowerCase()] = r.id;
+    const t = tidy(raw);
+    if (!t) continue;
+    if (byTidy[t] && byTidy[t] !== r.id) tidyDupe[t] = true;
+    else byTidy[t] = r.id;
+  }
 
   const toAdd = [], toUpdate = [], addedAt = {};
-  let repeated = 0, noState = 0;
+  let repeated = 0, noState = 0, loose = 0;
 
   for (const r of (rows || [])) {
     const name = String(r.name || '').trim();
     if (!name) continue;
 
-    const body = what === 'items'
+    const fullBody = what === 'items'
       ? { org_id: orgId, name, alias: r.alias || null, hsn: r.hsn || null,
           unit: r.unit || 'PCS', sale_price: r.sale_price, price2: r.price2,
           purchase_price: r.purchase_price, gst_rate: r.gst_rate,
@@ -1177,10 +1292,24 @@ export function planImport({ rows, have, what, orgId }) {
           opening_balance: r.opening_balance || 0,
           opening_type: r.opening_type || 'owes_you' };
 
-    if (what !== 'items' && !body.state_code) noState++;
+    if (what !== 'items' && !fullBody.state_code) noState++;
 
     const key = name.toLowerCase();
-    const id = byName[key];
+    const t = tidy(name);
+    let id = byName[key];
+    if (!id && t && byTidy[t] && !tidyDupe[t]) { id = byTidy[t]; loose++; }
+
+    // UPDATING IS NOT THE SAME AS REPLACING.
+    //
+    // A new row can take every field, blanks and all — there was nothing
+    // there to lose. An existing row must only be told what the file
+    // actually knows. Anything the file is silent about is left exactly as
+    // he set it: his own selling price, his second price, an HSN he looked
+    // up by hand. `_has` is the parser saying which of these the file really
+    // carried; a parser that says nothing (an older one, or a plain
+    // spreadsheet) falls back to "a value that is there is a value it has",
+    // which is the same rule written the only other way it can be.
+    const body = id ? onlyWhatItKnows(fullBody, r) : fullBody;
     if (id) {
       const at = toUpdate.findIndex((u) => u.id === id);
       if (at >= 0) { toUpdate[at] = { id, body }; repeated++; }   // named twice in the file
@@ -1195,7 +1324,7 @@ export function planImport({ rows, have, what, orgId }) {
   }
 
   return { toAdd, toUpdate, added: toAdd.length, updated: toUpdate.length,
-           repeated, noState };
+           repeated, noState, loose };
 }
 
 /* ===================== the blank forms ===================== */
