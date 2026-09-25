@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Keyboard, Platform,
   UIManager, useWindowDimensions, PanResponder } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { groupOf } from '../lib/sections';
 import { C, S } from '../theme';
 
 // THE EDGES OF THE SCREEN.
@@ -135,9 +136,22 @@ export function Screen({ children, style, ruler }) {
 
 // THE WAY OUT OF ANYWHERE.
 //
-// Every screen used to be a cul-de-sac: the only way from one to another was
-// back to the home screen first. This sits in the top bar of each screen and
-// goes straight to the list of everything.
+// THE THREE DOTS ARE GONE.
+//
+// They sat in the corner of every screen in the app and led to a list called
+// "Everything" — a second front door, holding some things that were also on
+// the day book and some that were nowhere else. Two doors to the same room
+// make an app look twice as big as it is, and a shopkeeper who taps a corner
+// button hoping for the thing he wants and gets a list of ten others has been
+// given a puzzle instead of an answer.
+//
+// What was only behind it — cash and bank accounts, godowns, import and
+// export, who can bill, fill a month, log out, close the account — now lives
+// under Settings, and Settings has a key on the day book. So there is one way
+// to everything and it is the way he already knows.
+//
+// This is left here, unused, because it costs nothing and removing an export
+// is how a stale import somewhere becomes a blank screen on his phone.
 export function MoreButton({ navigation, light = true }) {
   return (
     <TouchableOpacity onPress={() => navigation.navigate('More')}
@@ -165,14 +179,51 @@ export function BackButton({ navigation, onPress, light = true }) {
 // left, the name of the screen, whatever that screen needs, and the way out on
 // the right. It leaves room for the notch at the top, which the old headers
 // did by guessing 50 and getting it wrong on tall phones.
-export function Head({ navigation, title, onBack, children, more = true }) {
+export function Head({ navigation, title, onBack, children }) {
   const insets = useSafeAreaInsets();
   return (
     <View style={[S.header, { paddingTop: Math.max(insets.top, 12) + 10 }]}>
       <BackButton navigation={navigation} onPress={onBack} light={false} />
       <Text numberOfLines={1} style={S.h1}>{title}</Text>
       {children}
-      {more && <MoreButton navigation={navigation} light={false} />}
+    </View>
+  );
+}
+
+// THE OTHER SCREENS THAT BELONG WITH THIS ONE.
+//
+// Receipt, payment and money out are one job; ledgers, udhar, parties, past
+// bills and the books are another. They used to be a key each down the side of
+// the day book, eleven of them, and he asked for that to stop. So each job has
+// ONE key now, and every screen in a job carries this strip of its brothers —
+// one tap to the thing he does daily, one more to anything beside it.
+//
+// It replaces rather than pushes, so hopping between two of them a dozen times
+// does not build a back stack a dozen deep with nothing but siblings in it.
+export function Sections({ navigation, org, isOwner, id }) {
+  const g = groupOf(org, isOwner, id);
+  if (!g || g.members.length < 2) return null;
+  const go = (m) => {
+    if (m.id === id) return;
+    if (navigation.replace) navigation.replace(m.route, m.params);
+    else navigation.navigate(m.route, m.params);
+  };
+  return (
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6,
+                   backgroundColor: C.soft, paddingHorizontal: 12, paddingVertical: 8,
+                   borderBottomWidth: 1, borderBottomColor: C.line }}>
+      {g.members.map((m) => {
+        const on = m.id === id;
+        return (
+          <TouchableOpacity key={m.id} onPress={() => go(m)}
+            style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 9,
+                     borderWidth: 1, borderColor: on ? C.accent : C.line,
+                     backgroundColor: on ? C.accentSoft : C.surface }}>
+            <Text style={{ fontSize: 12.5, fontWeight: '700',
+                           color: on ? C.accent : C.muted }}>{m.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 }

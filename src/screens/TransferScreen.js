@@ -20,7 +20,7 @@ import {
   buildBackup, readBackup, backupVoucherPayload,
   ITEMS_TEMPLATE, PARTIES_TEMPLATE,
 } from '../lib/transfer';
-import { BackButton, Bar, Foot, Head, MoreButton, Screen } from '../components/Chrome';
+import { BackButton, Bar, Foot, Head, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // BRINGING BOOKS IN, AND SENDING THEM OUT.
@@ -851,7 +851,6 @@ export default function TransferScreen({ navigation }) {
           <Text style={S.barName}>Import & export</Text>
           <Text style={S.barSub}>Tally and spreadsheets</Text>
         </View>
-        <MoreButton navigation={navigation} />
       </Bar>
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
@@ -1280,7 +1279,7 @@ export default function TransferScreen({ navigation }) {
       <Modal visible={!!seeAll && !!ready} animationType="slide"
              onRequestClose={() => setSeeAll(false)}>
         <Screen>
-          <Head more={false} onBack={() => setSeeAll(false)}
+          <Head onBack={() => setSeeAll(false)}
                 title={ready
                   ? `${fmt0(ready.rows.length)} ${showsItems ? 'items' : 'names'}`
                   : ''} />

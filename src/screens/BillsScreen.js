@@ -12,10 +12,10 @@ import { fmt0 } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
-import { BackButton, Bar, Foot, MoreButton, Screen, Swipe, useTabSwipe } from '../components/Chrome';
+import { BackButton, Bar, Foot, Screen, Sections, Swipe, useTabSwipe } from '../components/Chrome';
 import { showPurchase, showReturns } from '../lib/features';
 import { C, S } from '../theme';
-import { pdfName, sharePdf } from '../lib/pdf';
+import { folderName, pdfName, saveToDownloads, sharePdf } from '../lib/pdf';
 import { sayPlainly } from '../lib/offline';
 
 // EVERY BILL EVER WRITTEN. Find one, read it, send it again, fix it, remove it.
@@ -151,6 +151,35 @@ export default function BillsScreen({ navigation }) {
     catch (e) { Alert.alert('Could not print', sayPlainly(e)); }
   };
 
+  // A bill he wants to KEEP, not send again — the same Download the bill
+  // screen offers the moment a bill is saved, offered here too, because most
+  // of the time he wants a copy of one he wrote last week.
+  const download = async () => {
+    if (!lines) return;
+    setWorking(true);
+    try {
+      const name = pdfName({
+        who: open?.parties?.name || open?.printed_name || org?.name,
+        no: open?.voucher_no,
+        fallback: org?.name || 'Bill',
+      });
+      const { uri } = await Print.printToFileAsync({ html: html() });
+      const r = await saveToDownloads(uri, name);
+      if (r.saved) {
+        return Alert.alert('Saved on this phone',
+          `${name} is in your ${folderName(r.where)} folder.`);
+      }
+      if (r.why === 'cancelled') return;
+      Alert.alert('Choose where to keep it',
+        'This phone will not let Skwik write into a folder by itself, so pick '
+        + 'where the bill should go.',
+        [{ text: 'Not now' },
+         { text: 'Choose', onPress: () => sharePdf(uri, name).catch(() => {}) }]);
+    } catch (e) {
+      Alert.alert('Could not save the bill', sayPlainly(e));
+    } finally { setWorking(false); }
+  };
+
   const edit = () => {
     const v = open;
     setOpen(null); setLines(null);
@@ -195,8 +224,8 @@ export default function BillsScreen({ navigation }) {
           <Text style={S.barTotL}>SALES SHOWN</Text>
           <Text style={[S.barTot, S.num]}>₹{fmt0(dayTotal)}</Text>
         </View>
-        <MoreButton navigation={navigation} />
       </Bar>
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="bills" />
 
       <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                      borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -345,6 +374,10 @@ export default function BillsScreen({ navigation }) {
                   <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
                     onPress={reprint} disabled={!lines}>
                     <Text style={[S.ghostText, { fontSize: 15 }]}>Print</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
+                    onPress={download} disabled={working || !lines}>
+                    <Text style={[S.ghostText, { fontSize: 15 }]}>Download</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
                     onPress={edit}>

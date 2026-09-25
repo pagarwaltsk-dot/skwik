@@ -19,12 +19,12 @@ import {
   taxModeFor, today, topRate,
   SUPPLY_KINDS, supplyOf, supplyShort,
 } from '../lib/money';
-import { pdfName, renamed, sharePdf } from '../lib/pdf';
+import { folderName, pdfName, renamed, saveToDownloads, sharePdf } from '../lib/pdf';
 import { STATES } from '../lib/states';
 import { showBatch, showExpiry, showGodowns, showRcmIn, showRcmOut, showStock, showThumbRail } from '../lib/features';
 import { searchItems, parseQuery, highlightParts, tok, itemsWithCode } from '../lib/search';
 import { uqcShort } from '../lib/uqc';
-import { checkHsn, hsnExists } from '../lib/hsn';
+import { checkHsn } from '../lib/hsn';
 import { HsnField, UomField, StateField } from '../components/Pickers';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
@@ -33,7 +33,7 @@ import {
   cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue, sayPlainly,
 } from '../lib/offline';
 import {
-  BackButton, Bar, Box, Foot, KeyForm, MoreButton, Screen, useKeyboardGap, NumCell } from '../components/Chrome';
+  BackButton, Bar, Box, Foot, KeyForm, Screen, useKeyboardGap, NumCell } from '../components/Chrome';
 import { ScanSheet, ScanButton } from '../components/Scan';
 import { ColHead } from '../components/Register';
 import { CalButton, Calendar } from '../components/DatePick';
@@ -170,6 +170,11 @@ export default function BillScreen({ route, navigation }) {
   // It is cleared once a bill is safely away, so the next bill is its own.
   const billId = useRef(null);
   const priceAsQty = useRef(false);        // the "is that a price?" nudge, asked once
+  // WHAT THIS BILL ALREADY TOOK OFF THE SHELF, as it stands SAVED.
+  //
+  // Only filled when a saved bill is opened for editing. See the stock check
+  // at save time for why it has to exist.
+  const wasOut = useRef({});
   // Every qty and rate box on the bill, so the keyboard's next key can
   // walk from one to the next without anybody tapping.
   const cell = useRef({});
@@ -276,6 +281,15 @@ export default function BillScreen({ route, navigation }) {
                   return Alert.alert('Nothing on this bill',
                     'This bill has no items on it. Open it again when you have '
                     + 'signal; if it is still empty, it was saved that way.'); }
+
+      // Remembered BEFORE anything is changed on screen: the quantities that
+      // are already sitting in his stock figures because of this very bill.
+      const took = {};
+      (ls || []).forEach((l) => {
+        if (!l.item_id) return;
+        took[l.item_id] = (took[l.item_id] || 0) + Number(l.qty || 0);
+      });
+      wasOut.current = took;
 
       setLoadedType(v.vtype);
       setLoadedNo(v.voucher_no || '');
@@ -536,11 +550,23 @@ export default function BillScreen({ route, navigation }) {
       // have been offered anyway.
     }
 
+    // SAID IN WORDS HE CAN ACT ON.
+    //
+    // "No item in your book carries that code. Add it to an item now?" told
+    // him a fact about Skwik's insides and then asked a question he could not
+    // answer — add it to WHICH item? And a shop that has just brought its
+    // goods over from Tally sees this on the FIRST packet it scans, because
+    // Tally holds no barcodes at all, so nothing in the list has one yet. The
+    // packet is not the problem and neither is he; the code has simply never
+    // been written down. So say that, and say what happens next.
     setScanOpen(false);
-    Alert.alert('New barcode',
-      'No item in your book carries that code. Add it to an item now?',
+    Alert.alert('This packet has no code against it yet',
+      'Nothing in your item list carries this barcode. Find the item by name, '
+      + 'and Skwik keeps the code on it — from then on, scanning that packet '
+      + 'puts it straight on the bill.',
       [{ text: 'Not now' },
-       { text: 'Yes', onPress: () => { setPendingCode(code); setQ(''); qRef.current?.focus(); } }]);
+       { text: 'Find the item',
+         onPress: () => { setPendingCode(code); setQ(''); qRef.current?.focus(); } }]);
   };
 
   const addHit = (h) => {
@@ -560,6 +586,12 @@ export default function BillScreen({ route, navigation }) {
         try { await supabase.from('items').update({ barcode: code }).eq('id', h.p.id); }
         catch (_) { /* no signal: the next scan asks again, which is honest */ }
       })();
+    } else if (pendingCode) {
+      // He picked an item that ALREADY carries a code — a different packet of
+      // the same goods, most likely. The waiting code cannot go there without
+      // overwriting one he chose himself, so it is dropped rather than left
+      // hanging over every item he picks for the rest of the bill.
+      setPendingCode('');
     }
 
     const rate = listRate(h.p);
@@ -828,11 +860,6 @@ export default function BillScreen({ route, navigation }) {
         [{ text: 'Go back' }, { text: 'It really is 0%', onPress: write }]);
     }
 
-    if (hsnApplies(org) && quick.hsn && !hsnExists(quick.hsn)) {
-      return Alert.alert('Check this HSN', `${quick.hsn} is not in our list. Save it anyway?`,
-        [{ text: 'Let me check' }, { text: 'Save anyway', onPress: write }]);
-    }
-
     // An item bought but never priced is a rate typed by hand on every sale
     // bill for the rest of its life, and it is missing from anything that
     // reads the shelf by value. Asked once, here, while it is cheap to answer.
@@ -946,8 +973,23 @@ export default function BillScreen({ route, navigation }) {
         if (ids.length) {
           const { data: have } = await supabase.from('stock_in_hand')
             .select('item_id, qty').in('item_id', ids);
+          // A BILL BEING EDITED HAS ALREADY TAKEN ITS OWN GOODS OFF THE SHELF.
+          //
+          // He had two dozen of two items and sold exactly two dozen of each.
+          // His stock is now nought — correctly. Then he opened that bill to
+          // change something else entirely, and Skwik said the stock was zero
+          // and did he want to go ahead, about lines he had not touched.
+          //
+          // Of course it did: it asked "is there two dozen on the shelf?" when
+          // the two dozen on the bill in front of it are the very ones that
+          // left. What it has to ask is whether there is enough IF this bill
+          // were taken back out first — so what this bill already took is added
+          // back before the comparison. On a new bill nothing was taken and
+          // this changes nothing at all.
           const inHand = {};
-          (have || []).forEach((r) => { inHand[r.item_id] = num(r.qty); });
+          (have || []).forEach((r) => {
+            inHand[r.item_id] = num(r.qty) + num(wasOut.current[r.item_id] || 0);
+          });
           const want = {};
           good.forEach((l) => { if (l.item_id)
             want[l.item_id] = num(want[l.item_id]) + num(l.qty); });
@@ -1148,6 +1190,37 @@ export default function BillScreen({ route, navigation }) {
   const onShare = async () => {
     const { uri } = await Print.printToFileAsync({ html: html() });
     await sharePdf(uri, billFileName());
+  };
+
+  // DOWNLOAD MEANS THE FILE IS ON HIS PHONE, NOT THAT A SHEET OPENED.
+  //
+  // This button used to do exactly what Send does: open the sharing sheet and
+  // leave him to find something in it that means "keep it". Now the bill goes
+  // into his Download folder and the message says where. Android asks him to
+  // point at the folder once, ever; after that it is silent.
+  const onDownload = async () => {
+    try {
+      const name = billFileName();
+      const { uri } = await Print.printToFileAsync({ html: html() });
+      const r = await saveToDownloads(uri, name);
+      if (r.saved) {
+        return Alert.alert('Saved on this phone',
+          `${name} is in your ${folderName(r.where)} folder.`);
+      }
+      if (r.why === 'cancelled') return;      // he backed out; he knows he did
+      // No folder to write into — an iPhone, or the phone refused. The sheet
+      // is the honest fallback, and he is told why he is looking at it.
+      Alert.alert('Choose where to keep it',
+        r.why === 'unsupported'
+          ? 'This phone does not let an app write into a folder by itself, so '
+            + 'pick where the bill should go.'
+          : `The bill could not be written to the folder — ${r.why}. Pick where `
+            + 'it should go instead.',
+        [{ text: 'Not now' },
+         { text: 'Choose', onPress: () => sharePdf(uri, name).catch(() => {}) }]);
+    } catch (e) {
+      Alert.alert('Could not save the bill', sayPlainly(e));
+    }
   };
 
   // THE PDF, STRAIGHT INTO WHATSAPP.
@@ -1427,6 +1500,27 @@ export default function BillScreen({ route, navigation }) {
               if (k === 'Tab') { e.preventDefault?.(); takeSel(); }
               else if (k === 'ArrowDown') { e.preventDefault?.(); walk(); }
             }} />
+
+          {/* A CODE STILL LOOKING FOR ITS ITEM.
+              He said "find the item", the sheet shut, and then there was
+              nothing on the screen to say why he was being asked to type a
+              name — so he typed one, the code went quietly onto that item, and
+              he never knew it had. Now it says so while he looks, and he can
+              drop it if he picked up the wrong packet. */}
+          {!!pendingCode && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10,
+                           marginTop: 7 }}>
+              <Text style={{ flex: 1, fontSize: 11.5, color: C.edit, lineHeight: 16 }}>
+                Barcode <Text style={S.num}>{pendingCode}</Text> goes onto whichever
+                item you pick next.
+              </Text>
+              <TouchableOpacity onPress={() => setPendingCode('')}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={{ fontSize: 11.5, fontWeight: '800', color: C.muted }}>DROP IT</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           {/* THE PRICE LIST IS NOT A QUESTION ABOUT THIS BILL.
               Two buttons sat here, above the goods, on every counter sale —
               and the answer was the same every time, because it is a fact
@@ -1615,12 +1709,29 @@ export default function BillScreen({ route, navigation }) {
               <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8 }}>
                 <View style={{ flex: 1 }}>
                   <Text style={S.cellLabel}>Qty</Text>
+                  {/* THE KEY AFTER THE QUANTITY GOES BACK TO THE SEARCH BOX.
+                      It used to jump to Rate, and that was Skwik deciding
+                      something it has no business deciding: the rate is
+                      already there, off his own price list, and on nineteen
+                      lines out of twenty he does not touch it. What he does
+                      next is name the next item. So the tick goes where his
+                      hand was going anyway, and the rate is still one tap away
+                      on the odd line that needs it. */}
                   <NumCell style={[S.cell, S.num]} value={String(l.qty)}
                     ref={(r) => { cell.current[`${l.key}:qty`] = r; }}
                     selectTextOnFocus
                     onType={(t) => setLine(l.key, { qty: t })}
                     onDone={(t) => { const v = settle(t); setLine(l.key, { qty: v }); return v; }}
-                    onSubmit={() => focusCell(l.key, 'rate')} />
+                    // and the real Tab key on a plugged-in keyboard does the
+                    // same thing as the tick, because he asked for Tab
+                    onKeyPress={(e) => {
+                      if (e?.nativeEvent?.key === 'Tab') {
+                        e.preventDefault?.();
+                        setLine(l.key, { qty: settle(String(l.qty)) });
+                        qRef.current?.focus();
+                      }
+                    }}
+                    onSubmit={() => qRef.current?.focus()} />
                 </View>
                 <Text style={{ fontSize: 14, color: C.muted, paddingBottom: 11 }}>×</Text>
                 <View style={{ flex: 1 }}>
@@ -2056,11 +2167,32 @@ export default function BillScreen({ route, navigation }) {
         </>
       )}
 
-      {/* ---------- customer picker ---------- */}
-      <Modal visible={custOpen} animationType="slide" onRequestClose={() => setCustOpen(false)}>
-        <View style={[S.screen, { paddingTop: 50, paddingHorizontal: 16 }]}>
+      {/* ---------- customer picker ----------
+
+          IT STAYS ON THE BILL. He wrote an estimate, tapped the customer line,
+          and was thrown onto what looked like a different screen — his bill
+          gone, a BACK button where CLOSE should be. It was a full-screen modal,
+          and there was never any reason for it to be: the only thing it needs
+          is a box to type a name into and the names underneath.
+
+          So it is a sheet now, the same shape as the new-customer sheet next to
+          it. The bill stays visible above it, tapping the dark part puts it
+          away, and nothing about where he is has changed. */}
+      <Modal visible={custOpen} transparent animationType="slide"
+             onRequestClose={() => setCustOpen(false)}>
+        <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end' }}>
+          {/* the bill, showing through. Tapping it closes the sheet — but only
+              once there IS a customer, so a new bill cannot be left with
+              nobody on it by a stray tap. */}
+          <TouchableOpacity activeOpacity={1} style={{ flex: 1 }}
+            onPress={() => { if (cust) setCustOpen(false); }} />
+          <View style={{ backgroundColor: C.bg, borderTopLeftRadius: 26,
+                         borderTopRightRadius: 26, paddingHorizontal: 16,
+                         paddingTop: 18, paddingBottom: 12,
+                         maxHeight: '80%', flexShrink: 1,
+                         marginBottom: keyGap }}>
           <View style={S.row}>
-            <Text style={S.h1}>{isBuy ? 'Who did you buy from?' : 'Who is it for?'}</Text>
+            <Text style={[S.h1, { flex: 1 }]}>{isBuy ? 'Who did you buy from?' : 'Who is it for?'}</Text>
             <TouchableOpacity hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               onPress={() => { if (cust) setCustOpen(false); else navigation.goBack(); }}>
               <Text style={{ fontWeight: '800', color: C.muted }}>
@@ -2098,7 +2230,8 @@ export default function BillScreen({ route, navigation }) {
             </Text>
           )}
 
-          <ScrollView keyboardShouldPersistTaps="handled" style={{ marginTop: 12 }}>
+          <ScrollView keyboardShouldPersistTaps="handled"
+                      style={{ marginTop: 12, flexShrink: 1 }}>
             {custHits.map((p) => (
               <TouchableOpacity key={p.id} onPress={() => chooseCust(p)}
                 style={{ paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -2130,6 +2263,7 @@ export default function BillScreen({ route, navigation }) {
               </TouchableOpacity>
             )}
           </ScrollView>
+          </View>
         </View>
       </Modal>
 
@@ -2444,8 +2578,12 @@ export default function BillScreen({ route, navigation }) {
                 <Text style={[S.ghostText, { fontSize: 15 }]}>Print</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
-                onPress={onShare}>
+                onPress={onDownload}>
                 <Text style={[S.ghostText, { fontSize: 15 }]}>Download</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
+                onPress={onShare}>
+                <Text style={[S.ghostText, { fontSize: 15 }]}>Send</Text>
               </TouchableOpacity>
             </View>
             <TouchableOpacity onPress={() => { setSaved(null); navigation.navigate('Home'); }}

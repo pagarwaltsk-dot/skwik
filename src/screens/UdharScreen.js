@@ -6,7 +6,7 @@ import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt0 } from '../lib/money';
 import { sayPlainly } from '../lib/offline';
-import { Head, Screen } from '../components/Chrome';
+import { Head, Screen, Sections } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // WHO OWES YOU, AND ASKING THEM.
@@ -38,7 +38,7 @@ const whenWas = (d) => {
 };
 
 export default function UdharScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   const [rows, setRows] = useState([]);
   const [q, setQ]       = useState('');
   const [side, setSide] = useState('owes_you');
@@ -123,6 +123,7 @@ export default function UdharScreen({ navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title="Udhar" />
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="udhar" />
 
       <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                      borderBottomWidth: 1, borderBottomColor: C.line }}>

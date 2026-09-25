@@ -103,6 +103,20 @@ export function UomField({ value, onChange }) {
 
 // ---------------- HSN ----------------
 
+// HIS OWN CODE, TYPED IN, LIKE ANY OTHER FIELD.
+//
+// This was a dropdown and NOTHING BUT a dropdown: to put an HSN on an item he
+// had to open a sheet, and the sheet offered a starter list of a couple of
+// hundred four-digit headings. A shop whose goods are not in that list — and
+// most shops have something that is not — could not save the item at all
+// without hunting for the "my own code" line hidden at the foot of the list.
+// That is backwards. HE knows his HSN; it is printed on his purchase bills and
+// sitting in his Tally. The list is a HELP for the one he cannot remember, not
+// a gate.
+//
+// So the field is now an ordinary numeric box he types into, and the list has
+// moved to a small FIND button beside it for when he wants to look something
+// up by its description. Whatever he types is what the item carries.
 export function HsnField({ value, onChange, org, onRate, hint }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -116,25 +130,41 @@ export function HsnField({ value, onChange, org, onRate, hint }) {
     setOpen(false);
   };
 
+  // What he has typed so far, said plainly underneath. A code on its way to
+  // six digits is not a mistake, so it is never called one while he types.
+  const typed = String(value || '').replace(/[^0-9]/g, '');
+  const settled = typed.length === 4 || typed.length === 6 || typed.length === 8;
+  const known = settled ? hsnDesc(typed) : '';
+
   return (
     <>
-      <TouchableOpacity onPress={() => { setQ(''); setOpen(true); }}
-        style={[S.input, { flexDirection: 'row', alignItems: 'center' }]}>
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 17, fontWeight: '700', color: value ? C.ink : C.faint }}>
-            {value || `Find HSN (${need} digits or more)`}
-          </Text>
-          {!!value && !!hsnDesc(value) && (
-            <Text numberOfLines={1} style={{ fontSize: 11.5, fontWeight: '600', color: C.muted, marginTop: 2 }}>
-              {hsnDesc(value)}
-            </Text>
-          )}
-        </View>
-        <Text style={{ fontSize: 15, color: C.muted }}>▾</Text>
-      </TouchableOpacity>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <TextInput
+          style={[S.input, { flex: 1, marginBottom: 0 }, S.num]}
+          keyboardType="number-pad"
+          maxLength={8}
+          placeholder={`${need} digits, or more`}
+          placeholderTextColor={C.faint}
+          value={String(value || '')}
+          onChangeText={(t) => onChange(t.replace(/[^0-9]/g, '').slice(0, 8))} />
+        <TouchableOpacity onPress={() => { setQ(''); setOpen(true); }}
+          style={{ paddingHorizontal: 14, paddingVertical: 14, borderRadius: 12,
+                   borderWidth: 1, borderColor: C.line, backgroundColor: C.card }}>
+          <Text style={{ fontSize: 13, fontWeight: '800', color: C.accent }}>FIND</Text>
+        </TouchableOpacity>
+      </View>
+      {!!typed && (
+        <Text style={{ fontSize: 11.5, fontWeight: '600', marginTop: 5, lineHeight: 16,
+                       color: settled ? C.muted : C.edit }}>
+          {known
+            || (settled
+                 ? `${typed.length} digits — your own code`
+                 : `An HSN code is 4, 6 or 8 digits. You have typed ${typed.length}.`)}
+        </Text>
+      )}
 
       <Sheet visible={open} title="HSN code" onClose={() => setOpen(false)}
-             hint={hint || `Type what the goods are — "bucket", "steel plate" — or the number itself. Your firm needs at least ${need} digits.`}>
+             hint={hint || `Only a help for a code you cannot remember — type what the goods are, "bucket" or "steel plate". This is a short list, not the full master, so if your code is not here just type it into the box instead.`}>
         <TextInput style={S.input} autoFocus placeholder="bucket, steel, 3924…"
           value={q} onChangeText={setQ}
           returnKeyType="next" submitBehavior="submit"

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, Modal, Linking } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { C, S } from '../theme';
@@ -17,18 +17,38 @@ const KINDS = ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128', 'code39', 'code93',
 
 export function ScanSheet({ visible, onClose, onCode, title = 'Point at the barcode', note }) {
   const [permission, ask] = useCameraPermissions();
-  const [last, setLast] = useState('');
+
+  // THE SAME PACKET, SCANNED AGAIN.
+  //
+  // The camera fires many times a second, so one reading has to be turned into
+  // one item — and the way that was done was to remember the last code and
+  // ignore it FOR EVER. Which broke the two things this sheet is for:
+  //
+  //   * "scan the same packet twice and the quantity goes up" — printed on
+  //     this very screen — could not happen, because the second scan of the
+  //     same packet was the code it was ignoring.
+  //   * a code nothing carries put up "add it to an item now?", and if he came
+  //     back and scanned that packet again the camera sat there doing nothing
+  //     at all, because the sheet had been closed without being reset.
+  //
+  // So a repeat is only ignored for a moment — long enough for the twenty
+  // frames of one wave of the packet, not long enough to stop him scanning it
+  // again on purpose. And it forgets everything each time the sheet opens.
+  const last = useRef({ code: '', at: 0 });
+  const SAME_AGAIN_MS = 1200;
+
+  useEffect(() => { if (visible) last.current = { code: '', at: 0 }; }, [visible]);
 
   const got = ({ data }) => {
     const code = String(data || '').trim();
-    // The camera fires many times a second on the same packet. One reading is
-    // one item; the next has to be a different code, or a new sheet.
-    if (!code || code === last) return;
-    setLast(code);
+    if (!code) return;
+    const now = Date.now();
+    if (code === last.current.code && now - last.current.at < SAME_AGAIN_MS) return;
+    last.current = { code, at: now };
     onCode(code);
   };
 
-  const close = () => { setLast(''); onClose(); };
+  const close = () => { last.current = { code: '', at: 0 }; onClose(); };
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={close}>

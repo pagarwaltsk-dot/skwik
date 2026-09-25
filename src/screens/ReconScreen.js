@@ -10,7 +10,7 @@ import { fmt0, today } from '../lib/money';
 import { readPickedFile } from '../lib/pickfile';
 import { parse2b, reconcile, bySupplier } from '../lib/gstr2b';
 import { sayPlainly } from '../lib/offline';
-import { Bar, BackButton, MoreButton, Screen } from '../components/Chrome';
+import { Bar, BackButton, Screen, Sections } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // WHICH OF MY SUPPLIERS HAS NOT FILED.
@@ -45,7 +45,7 @@ const BACK = [
 ];
 
 export default function ReconScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   const [busy, setBusy]   = useState('');
   const [back, setBack]   = useState(3);
   const [res, setRes]     = useState(null);
@@ -140,8 +140,8 @@ export default function ReconScreen({ navigation }) {
           <Text style={S.barName}>Supplier credit</Text>
           <Text style={S.barSub}>{period ? `GSTR-2B ${period}` : 'GSTR-2B against your books'}</Text>
         </View>
-        <MoreButton navigation={navigation} />
       </Bar>
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="recon" />
 
       <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 40 }}>
         {!res && (

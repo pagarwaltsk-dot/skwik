@@ -26,6 +26,20 @@ const Section = ({ title, note, children }) => (
   </View>
 );
 
+// A row that goes somewhere else, for the things that are screens rather than
+// switches. Same shape as the list that used to sit behind the three dots.
+const Door = ({ label, sub, onPress, danger }) => (
+  <TouchableOpacity onPress={onPress}
+    style={{ paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: C.line }}>
+    <Text style={{ fontSize: 16, fontWeight: '700', color: danger ? C.danger : C.ink }}>
+      {label}
+    </Text>
+    {!!sub && (
+      <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2, lineHeight: 16 }}>{sub}</Text>
+    )}
+  </TouchableOpacity>
+);
+
 // Every settings field is a Box, so the arrow key walks down the form and the
 // tapped field is scrolled clear of the keyboard.
 const Field = React.forwardRef(function Field({ label, value, onChange, next, ...rest }, ref) {
@@ -53,7 +67,69 @@ const Toggle = ({ label, note, value, disabled, onValueChange }) => (
 );
 
 export default function SettingsScreen({ navigation }) {
-  const { org, reloadOrg, isOwner, joinShop } = useApp();
+  const { org, reloadOrg, isOwner, joinShop, signOut } = useApp();
+
+  // CLOSING AN ACCOUNT FOR GOOD.
+  //
+  // There was no way to do this. "Wipe the books" emptied the ledgers and left
+  // the login, the phone number, the shop name, the address and the GST number
+  // exactly where they were — which is not deletion, and the Play Store does
+  // not list an app that has no way to delete an account.
+  //
+  // He is warned about section 36 first, because a shopkeeper who closes his
+  // account has destroyed records the law says he must keep for seventy-two
+  // months from the due date of his annual return, and only he can decide
+  // whether he has them elsewhere. The owner is sent to Import & export to
+  // take a copy before he is allowed to go on.
+  const closeAccount = () => {
+    Alert.alert(
+      'Close your Skwik account?',
+      (isOwner
+        ? 'Your shop, every bill, every customer and every entry in it are '
+          + 'deleted. Nothing is kept anywhere and nobody can get it back — '
+          + 'not you, not us.\n\n'
+        : 'Your login is deleted. The shop and its books stay with the owner.\n\n')
+      + 'The GST law (section 36) says you must keep your records for 72 '
+      + 'months from the due date of your annual return. Take a copy under '
+      + 'Import & export first if you do not have one.',
+      // THE DESTROY BUTTON DOES NOT SIT NEXT TO A HARMLESS ONE.
+      //
+      // Three buttons in a row on a small phone, with the copy-my-books one in
+      // the middle and the delete-everything one beside it, is a thumb-width
+      // away from a shop that no longer exists. Offer the copy on its own
+      // first; going on is a separate, deliberate answer.
+      [{ text: 'Keep my account' },
+       { text: isOwner ? 'Take a copy first' : ' ',
+         onPress: isOwner ? () => navigation.navigate('Transfer') : undefined },
+       { text: 'Go on', style: 'destructive', onPress: confirmClose }]
+        .filter((b) => b.text.trim()));
+  };
+
+  // The last thing he reads before his books stop existing names the shop, so
+  // it cannot be answered out of habit. Emptying the firm already asks for a
+  // password and a typed word; closing the account destroys strictly more and
+  // asked for neither.
+  const confirmClose = () => {
+    Alert.alert('Last check',
+      (isOwner && org?.name
+        ? `${org.name} and everything in it will be deleted.\n\n`
+        : 'Your login will be deleted.\n\n')
+      + 'This cannot be undone by anyone. Nobody can get it back.',
+      [{ text: 'Cancel' },
+       { text: 'Delete it all', style: 'destructive', onPress: doClose }]);
+  };
+
+  const doClose = async () => {
+    try {
+      const { error } = await supabase.rpc('delete_my_account', { p_confirm: 'DELETE' });
+      if (error) throw error;
+      Alert.alert('Closed', 'Your Skwik account has been deleted.');
+      await signOut();
+    } catch (e) {
+      Alert.alert('Could not close it', sayPlainly(e));
+    }
+  };
+
 
   // THE WAY BACK OUT OF A SHOP MADE BY ACCIDENT.
   //
@@ -668,6 +744,47 @@ export default function SettingsScreen({ navigation }) {
             }}
             trackColor={{ true: C.accent }} />
         </View>
+      </Section>
+
+      {/* EVERYTHING THAT USED TO BE BEHIND THE THREE DOTS.
+          The dots were a second front door: some of what they held was also on
+          the day book, and some was nowhere else. They have gone, and what was
+          only there is here, which is where he was already looking for it. */}
+      <Section title="The rest of the shop"
+               note="Set up once, or touched once a month.">
+        {isOwner && (
+          <Door label="Cash & bank accounts"
+                sub="the drawer, and each bank the money goes through"
+                onPress={() => navigation.navigate('Banks')} />
+        )}
+        {showGodowns(org) && isOwner && (
+          <Door label="Godowns" sub="the stores your goods sit in"
+                onPress={() => navigation.navigate('Godowns')} />
+        )}
+        {showTransfer(org) && isOwner && (
+          <Door label="Import & export"
+                sub="bring your Tally masters in, or take a copy of your books out"
+                onPress={() => navigation.navigate('Transfer')} />
+        )}
+        <Door label="Who can bill" sub="the people who may write on your books"
+              onPress={() => navigation.navigate('Staff')} />
+        {isOwner && (
+          <Door label="Fill a month"
+                sub="see your own month written out before you bill a day of it"
+                onPress={() => navigation.navigate('Sample')} />
+        )}
+      </Section>
+
+      <Section title="This login">
+        <Door label="Log out" sub="you will need your number and password again"
+              onPress={() => Alert.alert('Log out?',
+                'You will need your number and password again.',
+                [{ text: 'Cancel' }, { text: 'Log out', onPress: signOut }])} />
+        <Door label="Close my Skwik account" danger
+              sub={isOwner
+                ? 'your shop and every bill in it go with it, for good'
+                : 'your login is removed; the shop stays with the owner'}
+              onPress={closeAccount} />
       </Section>
 
       {/* The one thing in the app that cannot be undone lives at the very

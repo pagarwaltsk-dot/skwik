@@ -13,7 +13,7 @@ import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
 import { uuid, sayPlainly } from '../lib/offline';
 import { pdfName, sharePdf } from '../lib/pdf';
-import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
+import { BackButton, Bar, Foot, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // GOODS COMING BACK.

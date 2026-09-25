@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import React, { useCallback, useRef, useState } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, Alert, Modal } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -14,6 +14,34 @@ import { Head, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 import { pdfName, sharePdf } from '../lib/pdf';
 
+const p2 = (n) => String(n).padStart(2, '0');
+const ymd = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+
+const PERIODS = [
+  { k: 'month', label: 'This month',   sub: 'from the 1st to today',       file: 'this-month' },
+  { k: 'last',  label: 'Last month',   sub: 'the whole of it',             file: 'last-month' },
+  { k: 'three', label: 'Last 3 months', sub: 'the usual reminder',         file: '3-months' },
+  { k: 'fy',    label: 'This year',    sub: 'since 1 April',               file: 'this-year' },
+  { k: 'all',   label: 'Everything',   sub: 'the account from the start',  file: 'account' },
+];
+
+function spanOf(k) {
+  const now = new Date();
+  const to = ymd(now);
+  if (k === 'month') return [ymd(new Date(now.getFullYear(), now.getMonth(), 1)), to];
+  if (k === 'last') {
+    const a = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const b = new Date(now.getFullYear(), now.getMonth(), 0);
+    return [ymd(a), ymd(b)];
+  }
+  if (k === 'three') return [ymd(new Date(now.getFullYear(), now.getMonth() - 2, 1)), to];
+  if (k === 'fy') {
+    const y = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+    return [`${y}-04-01`, to];
+  }
+  return [null, null];
+}
+
 export default function LedgerScreen({ route, navigation }) {
   const partyId = route.params?.partyId;
   const { org, isOwner } = useApp();
@@ -24,6 +52,23 @@ export default function LedgerScreen({ route, navigation }) {
   const [failed, setFailed] = useState(false);
   const [making, setMaking] = useState(null);   // which bill's PDF is being built
   const [busy, setBusy] = useState(false);
+  // HOW MANY OF EACH COLUMN ARE DRAWN.
+  //
+  // Five to begin with — the newest five, which is what he came to look at —
+  // and each tap of Load more brings the window to fifteen and then fifteen
+  // further back each time. Counted per column, so a customer with forty bills
+  // against him and two receipts still shows both receipts.
+  const FIRST = 5, STEP = 15;
+  const [showL, setShowL] = useState(FIRST);
+  const [showR, setShowR] = useState(FIRST);
+  const [period, setPeriod] = useState(false);   // the "which months?" sheet
+  // Back to five whenever a different account is opened.
+  const seenParty = useRef(partyId);
+  if (seenParty.current !== partyId) {
+    seenParty.current = partyId;
+    if (showL !== FIRST) setShowL(FIRST);
+    if (showR !== FIRST) setShowR(FIRST);
+  }
 
   const load = useCallback(async () => {
     try {
@@ -43,14 +88,22 @@ export default function LedgerScreen({ route, navigation }) {
   const rows = data.rows || [];
   const open = Number(data.opening || 0);
 
-  // NEWEST AT THE TOP.
+  // A LEDGER READS DOWNWARDS, OLDEST FIRST.
   //
-  // A shopkeeper opening an account wants the bill he raised this morning,
-  // not the one from April. The opening balance is the oldest thing there is,
-  // so it goes to the FOOT of its column rather than the head of it.
-  const byNewest = (a, b) => String(b.d || '').localeCompare(String(a.d || ''));
-  const left  = rows.filter((r) => r.side === 'left').sort(byNewest);
-  const right = rows.filter((r) => r.side === 'right').sort(byNewest);
+  // It was the other way round — newest at the top — and that was my doing,
+  // on his instruction, and he has since said it reads wrong. He is right: an
+  // account with the opening at the bottom and April under September is not a
+  // ledger, it is a list. Every book he has ever kept runs down the page in
+  // the order things happened, and the balance at the foot is the answer.
+  //
+  // So it runs oldest to newest, the opening sits at the HEAD of its column
+  // where it belongs, and the page is kept short a different way: only the
+  // newest few entries of each column are drawn, with the older ones a tap
+  // away. The two columns are counted apart, because a customer with forty
+  // bills and two payments should still show both payments.
+  const byOldest = (a, b) => String(a.d || '').localeCompare(String(b.d || ''));
+  const left  = rows.filter((r) => r.side === 'left').sort(byOldest);
+  const right = rows.filter((r) => r.side === 'right').sort(byOldest);
   // A NEGATIVE OPENING IS STILL AN OPENING.
   //
   // The direction lives in opening_type, and the amount should be a plain
@@ -62,7 +115,7 @@ export default function LedgerScreen({ route, navigation }) {
     const theyOwe = open < 0 ? data.opening_type === 'you_owe'
                              : data.opening_type !== 'you_owe';
     (theyOwe ? left : right)
-      .push({ d: party?.opening_date || '', label: 'Opening', amt: Math.abs(open) });
+      .unshift({ d: party?.opening_date || '', label: 'Opening', amt: Math.abs(open) });
   }
 
   const sum = (a) => a.reduce((s, r) => s + Number(r.amt || 0), 0);
@@ -95,24 +148,75 @@ export default function LedgerScreen({ route, navigation }) {
          } }]);
   };
 
-  const share = async () => {
+  // WHICH MONTHS ARE ON THE STATEMENT.
+  //
+  // It sent the whole account, every time, back to the first entry. For a
+  // customer of three years that is a document nobody reads, and it is not
+  // what he is usually asking for — he wants "what you bought this month and
+  // what you paid". So the period is asked before the PDF is made.
+  //
+  // A statement of part of an account is only honest if it opens with what was
+  // carried into it, so everything before the period is added up and printed
+  // as the opening figure. The closing balance is then the same number as the
+  // box at the top of this screen, which is the one thing he will check.
+  const periodRows = (from, to) => {
+    const inIt = (d) => (!from || String(d || '') >= from) && (!to || String(d || '') <= to);
+    // the account as it stood the day before the period began
+    const signed = (() => {
+      if (open === 0) return 0;
+      const theyOwe = open < 0 ? data.opening_type === 'you_owe'
+                               : data.opening_type !== 'you_owe';
+      return theyOwe ? Math.abs(open) : -Math.abs(open);
+    })();
+    let carried = signed;
+    rows.forEach((r) => {
+      if (inIt(r.d)) return;
+      if (from && String(r.d || '') >= from) return;      // after the period, not before it
+      carried += (r.side === 'left' ? 1 : -1) * Number(r.amt || 0);
+    });
+    // AND THE CLOSING FIGURE IS THE PERIOD'S OWN.
+    //
+    // This very nearly went out printing TODAY'S balance at the foot of a
+    // statement of last month — an opening from before the month, the month's
+    // own entries, and then a closing figure that does not follow from either
+    // of them. A customer checking the arithmetic would find it wrong, and he
+    // would be right. So the closing is worked out from the same rows that are
+    // on the page.
+    const inPeriod = rows.filter((r) => inIt(r.d));
+    const shut = inPeriod.reduce(
+      (a, r) => a + (r.side === 'left' ? 1 : -1) * Number(r.amt || 0), carried);
+    return {
+      rows: inPeriod,
+      opening: Math.abs(n2(carried)),
+      openingType: carried >= 0 ? 'owes_you' : 'you_owe',
+      closing: n2(shut),
+    };
+  };
+
+  const sendFor = async (from, to, label) => {
     try {
-      if (!party) {
-        return Alert.alert('Not loaded yet', 'This account has not come down from the '
-          + 'server yet. Check your internet and open it again.');
-      }
-      const html = ledgerHtml({ org, party, rows, opening: open,
-                                openingType: data.opening_type, balance });
+      const cut = periodRows(from, to);
+      const html = ledgerHtml({ org, party,
+        rows: cut.rows, opening: cut.opening,
+        openingType: cut.openingType, balance: cut.closing });
       const { uri } = await Print.printToFileAsync({ html });
       if (!(await Sharing.isAvailableAsync())) {
         return Alert.alert('Nothing to share with',
           'This phone has no app set up to receive the file.');
       }
-      await sharePdf(uri, pdfName({ who: party?.name, what: 'account',
+      await sharePdf(uri, pdfName({ who: party?.name, what: label || 'account',
                                     fallback: org?.name || 'Account' }), 'Send account');
     } catch (e) {
       Alert.alert('Could not send', sayPlainly(e));
+    } finally { setPeriod(false); }
+  };
+
+  const share = () => {
+    if (!party) {
+      return Alert.alert('Not loaded yet', 'This account has not come down from the '
+        + 'server yet. Check your internet and open it again.');
     }
+    setPeriod(true);
   };
 
   // EVERY LINE GOES SOMEWHERE.
@@ -169,17 +273,36 @@ export default function LedgerScreen({ route, navigation }) {
     } finally { setMaking(null); }
   };
 
-  const Col = ({ list, right: alignRight }) => (
+  const Col = ({ list, right: alignRight, show, more }) => {
+    // The newest `show` of them, still in the order they happened. Older ones
+    // are above, behind the button at the top of the column.
+    const hidden = Math.max(0, list.length - show);
+    const shown = hidden ? list.slice(hidden) : list;
+    return (
     <View style={{ flex: 1, paddingHorizontal: 10,
                    borderRightWidth: alignRight ? 0 : 1.5, borderRightColor: C.line }}>
       {list.length === 0 && <Text style={{ color: C.faint }}>—</Text>}
-      {list.map((r, i) => {
+      {hidden > 0 && (
+        <TouchableOpacity onPress={more}
+          style={{ marginBottom: 14, paddingVertical: 8,
+                   alignItems: alignRight ? 'flex-end' : 'flex-start' }}>
+          <Text style={{ fontSize: 12.5, fontWeight: '800', color: C.accent }}>
+            ↑ {hidden} older
+          </Text>
+          <Text style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+            tap to show {Math.min(hidden, show === FIRST ? STEP - FIRST : STEP)} more
+          </Text>
+        </TouchableOpacity>
+      )}
+      {shown.map((r, i) => {
         const goes = !!r.id;
         return (
           <TouchableOpacity key={i} disabled={!goes} onPress={() => openRow(r)}
             style={{ marginBottom: 14, alignItems: alignRight ? 'flex-end' : 'flex-start' }}>
             <Text style={{ fontSize: 11.5, fontWeight: '600', color: C.muted }}>
-              {String(r.d).slice(8, 10)}/{String(r.d).slice(5, 7)} · {r.label}
+              {/* An opening with no date on it read as "/ · Opening", which is
+                  a shrug where a date should be. No date, no date. */}
+              {r.d ? `${String(r.d).slice(8, 10)}/${String(r.d).slice(5, 7)} · ` : ''}{r.label}
             </Text>
             <Text style={[{ fontSize: 17, fontWeight: '800',
                             color: alignRight ? C.greenD : C.ink },
@@ -202,7 +325,8 @@ export default function LedgerScreen({ route, navigation }) {
         );
       })}
     </View>
-  );
+    );
+  };
 
   return (
     <Screen>
@@ -270,11 +394,17 @@ export default function LedgerScreen({ route, navigation }) {
 
       <ScrollView contentContainerStyle={{ paddingHorizontal: 6, paddingTop: 14 }}>
         <View style={{ flexDirection: 'row' }}>
-          <Col list={left} />
-          <Col list={right} right />
+          <Col list={left} show={showL}
+               more={() => setShowL((v) => (v === FIRST ? STEP : v + STEP))} />
+          <Col list={right} right show={showR}
+               more={() => setShowR((v) => (v === FIRST ? STEP : v + STEP))} />
         </View>
       </ScrollView>
 
+      {/* THE TOTALS ARE OF THE WHOLE ACCOUNT, NOT OF WHAT IS ON SCREEN.
+          Only the newest few entries are drawn, so a figure at the foot that
+          added up only those would disagree with the balance in the box at the
+          top — and he would have no way of telling which was the truth. */}
       <View style={[S.row, { marginHorizontal: 16, borderTopWidth: 2,
                              borderTopColor: C.ink, paddingVertical: 10 }]}>
         <Text style={[{ flex: 1, fontSize: 18, fontWeight: '800', color: C.ink }, S.num]}>
@@ -284,12 +414,51 @@ export default function LedgerScreen({ route, navigation }) {
           {fmt0(sum(right))}
         </Text>
       </View>
+      {(left.length > showL || right.length > showR) && (
+        <Text style={{ fontSize: 11, color: C.muted, textAlign: 'center', marginTop: -4 }}>
+          Both figures are for the whole account, not only the entries shown.
+        </Text>
+      )}
 
       <View style={{ padding: 16, paddingBottom: 26 }}>
         <TouchableOpacity style={S.btn} onPress={share}>
           <Text style={S.btnText}>SEND THIS ACCOUNT</Text>
         </TouchableOpacity>
       </View>
+
+      {/* WHICH MONTHS TO SEND. Asked once, before the PDF is built, because a
+          statement running back three years is not what he meant by "send his
+          account" and a customer will not read it. */}
+      <Modal visible={period} transparent animationType="slide"
+             onRequestClose={() => setPeriod(false)}>
+        <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end' }}>
+          <TouchableOpacity activeOpacity={1} style={{ flex: 1 }}
+            onPress={() => setPeriod(false)} />
+          <View style={{ backgroundColor: C.bg, borderTopLeftRadius: 26,
+                         borderTopRightRadius: 26, padding: 20, paddingBottom: 28 }}>
+            <Text style={{ fontSize: 20, fontWeight: '800', color: C.ink }}>
+              How much of the account?
+            </Text>
+            <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 5, lineHeight: 18 }}>
+              Whatever you choose, the statement opens with the balance carried
+              into it and closes on the balance at the end of it — so it adds up
+              on its own, whichever months you send.
+            </Text>
+            {PERIODS.map((k) => (
+              <TouchableOpacity key={k.k}
+                onPress={() => { const [a, b] = spanOf(k.k); sendFor(a, b, k.file); }}
+                style={{ paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: C.line }}>
+                <Text style={{ fontSize: 16, fontWeight: '700', color: C.ink }}>{k.label}</Text>
+                <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>{k.sub}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity onPress={() => setPeriod(false)}
+              style={{ marginTop: 14, alignItems: 'center', paddingVertical: 10 }}>
+              <Text style={{ fontSize: 16, fontWeight: '700', color: C.muted }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </Screen>
   );
 }

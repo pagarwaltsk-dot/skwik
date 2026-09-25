@@ -5,10 +5,11 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 
 import { supabase } from '../lib/supabase';
+import { useApp } from '../AppContext';
 import { sayPlainly } from '../lib/offline';
 import { fmt0, n2, num } from '../lib/money';
 import { ColHead, Figure, Rule, Words } from '../components/Register';
-import { Head, Screen } from '../components/Chrome';
+import { Head, Screen, Sections } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // EVERY ACCOUNT, ON ONE PAGE.
@@ -21,15 +22,27 @@ import { C, S } from '../theme';
 // Tapping a name opens its account, where each bill can now be handed over as
 // a PDF without leaving the screen.
 
+// EVERY ACCOUNT FIRST, THE TWO SIDES AFTER.
+//
+// This opened on "They owe you", so a customer whose account had settled to
+// nothing was nowhere: not on that tab, not on "You owe them", and he had to
+// know there was a third tab to find him. A ledger list that leaves out the
+// people who have paid up is not a ledger list.
+//
+// So All comes first and is where it opens, and the two sides are filters he
+// reaches for rather than the thing he lands on.
 const TABS = [
+  { k: 'all',   label: 'All' },
   { k: 'owed',  label: 'They owe you' },
   { k: 'owing', label: 'You owe them' },
-  { k: 'all',   label: 'All' },
 ];
 
 export default function LedgersScreen({ navigation }) {
+  const { org, isOwner } = useApp();
   const [rows, setRows] = useState(null);
-  const [tab, setTab]   = useState('owed');
+  const [tab, setTab]   = useState('all');
+  // And on All, nil accounts can be put away — his choice, not Skwik's.
+  const [hideNil, setHideNil] = useState(false);
   const [q, setQ]       = useState('');
   const [failed, setFailed] = useState('');
 
@@ -56,13 +69,13 @@ export default function LedgersScreen({ navigation }) {
         const b = num(r.balance);
         if (tab === 'owed')  return b > 0;
         if (tab === 'owing') return b < 0;
-        return true;
+        return !hideNil || b !== 0;
       })
       .filter((r) => !t || `${r.name} ${r.area || ''} ${r.phone || ''}`
         .toLowerCase().includes(t))
       // the biggest first: those are the ones worth a telephone call
       .sort((a, b) => Math.abs(num(b.balance)) - Math.abs(num(a.balance)));
-  }, [rows, tab, q]);
+  }, [rows, tab, q, hideNil]);
 
   const totals = useMemo(() => {
     const owed  = (rows || []).reduce((a, r) => a + Math.max(0, num(r.balance)), 0);
@@ -73,6 +86,7 @@ export default function LedgersScreen({ navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title="Ledgers" />
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="ledgers" />
 
       <View style={{ backgroundColor: C.soft, paddingHorizontal: 12, paddingVertical: 8,
                      borderBottomWidth: 1, borderBottomColor: C.line, gap: 8 }}>
@@ -94,6 +108,21 @@ export default function LedgersScreen({ navigation }) {
         </View>
         <TextInput style={[S.input, { paddingVertical: 9 }]} placeholder="Search a name"
           placeholderTextColor={C.faint} value={q} onChangeText={setQ} returnKeyType="search" />
+        {tab === 'all' && (
+          <TouchableOpacity onPress={() => setHideNil((v) => !v)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={[S.row, { gap: 9 }]}>
+            <View style={{ width: 19, height: 19, borderRadius: 6, borderWidth: 1.5,
+                           alignItems: 'center', justifyContent: 'center',
+                           borderColor: hideNil ? C.accent : C.greyB,
+                           backgroundColor: hideNil ? C.accent : 'transparent' }}>
+              {hideNil && <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800' }}>✓</Text>}
+            </View>
+            <Text style={{ flex: 1, fontSize: 12.5, fontWeight: '600', color: C.ink }}>
+              Hide accounts that have settled to nothing
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* THE CASH BOOK AND THE BANK BOOK WERE BUILT AND THEN LEFT UNREACHABLE.

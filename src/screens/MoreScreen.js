@@ -91,7 +91,7 @@ export default function MoreScreen({ navigation }) {
 
   return (
     <Screen>
-      <Head navigation={navigation} title="Everything" more={false} />
+      <Head navigation={navigation} title="Everything" />
       <ScrollView contentContainerStyle={{ padding: 16,
                     paddingBottom: Math.max(insets.bottom, 12) + 24 }}>
 

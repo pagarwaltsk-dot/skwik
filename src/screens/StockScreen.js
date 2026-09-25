@@ -6,7 +6,7 @@ import { useApp } from '../AppContext';
 import { num, qty as qtyText } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { showBatch, showExpiry, showGodowns, showVariants } from '../lib/features';
-import { Head, Screen } from '../components/Chrome';
+import { Head, Screen, Sections } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // WHAT IS LEFT, AND WHERE IT IS.
@@ -46,13 +46,25 @@ const dmy = (d) => (d ? `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${St
 const n = (v) => Number(v) || 0;
 
 export default function StockScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   const [rows, setRows] = useState([]);
   const [godowns, setGodowns] = useState([]);
   const [kin, setKin] = useState([]);
   const [open, setOpen] = useState({});
   const [where, setWhere] = useState('all');
   const [q, setQ] = useState('');
+  // AN ITEM WITH NOTHING LEFT IS STILL AN ITEM.
+  //
+  // He said it plainly: a stock item with a nil balance should still find a
+  // place in the stock list, and hiding it should be HIS choice. It was not.
+  // Two things were dropping them, and both are dealt with below: the detailed
+  // list threw away any item that added up to nought, and the detailed view
+  // itself only knows about items that have opening stock or have moved — an
+  // item that has never had either was not in it at all.
+  //
+  // Shown by default now, because a shopkeeper looks for an item in this list
+  // precisely to find out it is finished.
+  const [hideNil, setHideNil] = useState(false);
 
   const detailed = showGodowns(org) || showBatch(org) || showExpiry(org);
   const bySize = showVariants(org);
@@ -64,8 +76,14 @@ export default function StockScreen({ navigation }) {
       // Neither stock_in_hand nor stock_in_hand_detail carries variant_of or
       // variant, and both are read by other screens, so they are left alone
       // and the parentage is fetched beside them and joined here in memory.
-      const kinAsk = bySize
-        ? allRows(() => supabase.from('items').select('id, variant_of, variant').order('id'))
+      // Wanted for two reasons now: the parentage when sizes are on, and — when
+      // the detailed view is in use — the only place an item with no stock and
+      // no movement at all can come from. The plain view already lists every
+      // item, so a shop with neither does not pay for this.
+      const kinAsk = (bySize || detailed)
+        ? allRows(() => supabase.from('items')
+            .select('id, name, unit, variant_of, variant')
+            .eq('is_active', true).order('id'))
         : Promise.resolve([]);
 
       if (!detailed) {
@@ -109,10 +127,15 @@ export default function StockScreen({ navigation }) {
   const tree = useMemo(() => {
     const text = q.trim().toLowerCase();
     const byBatch = detailed && (showBatch(org) || showExpiry(org));
-    // The plain list has always shown an item with nothing in hand, because a
-    // shopkeeper looks for it there to find out it is finished. The detailed
-    // list drops a batch once it is sold out, or every old batch stays forever.
-    const keepEmpty = !detailed;
+    // ITEMS ARE HIS TO HIDE; BATCHES ARE NOT.
+    //
+    // An item with nothing left is still one of his items and belongs on the
+    // list unless he says otherwise. A BATCH with nothing left is different:
+    // it is a lot that has been sold out, and keeping every one of them under
+    // an item for ever turns a two-line item into forty. So the switch governs
+    // items, and a spent batch still drops off the detailed view as it did.
+    const keepEmpty = !hideNil;
+    const keepBatch = !detailed;
     const today = new Date().toISOString().slice(0, 10);
 
     const src = detailed
@@ -121,6 +144,31 @@ export default function StockScreen({ navigation }) {
 
     // one bucket per item, with its batches inside it
     const items = new Map();
+
+    // EVERY ITEM HE HAS, FIRST — THEN WHAT HAS MOVED.
+    //
+    // The stock views are built from movements and opening figures, so an item
+    // that has never had either is simply not in them. That is an item he
+    // created this morning and has not bought yet, and it was invisible on the
+    // stock screen: he would go looking for it, not find it, and wonder whether
+    // he had really saved it.
+    //
+    // So the buckets are laid out from his own item list, and the figures are
+    // added into them. An item nothing has happened to sits there at nought,
+    // which is the true answer.
+    //
+    // Only while he is looking at everything: with one godown picked out, the
+    // question is what is in THAT godown, and listing his whole catalogue
+    // under it at nought would answer a question he did not ask.
+    if (!detailed || where === 'all') {
+      kin.forEach((k) => {
+        if (!k?.id || items.has(k.id)) return;
+        items.set(k.id, { id: k.id, name: k.name, unit: k.unit,
+                          own: 0, total: null, places: new Set(),
+                          batches: new Map(), kids: [] });
+      });
+    }
+
     src.forEach((r) => {
       const id = r.item_id || r.id;
       let it = items.get(id);
@@ -198,7 +246,7 @@ export default function StockScreen({ navigation }) {
 
     const liveBatches = (it) => {
       const bs = [];
-      it.batches.forEach((b) => { if (keepEmpty || n(b.qty) !== 0) bs.push(b); });
+      it.batches.forEach((b) => { if (keepBatch || n(b.qty) !== 0) bs.push(b); });
       // soonest to expire first, because that is the one to sell
       // An item that has never been given a batch comes out of the view as one
       // unlabelled line holding the whole figure. Repeating the total under
@@ -236,7 +284,7 @@ export default function StockScreen({ navigation }) {
       const out = [mine];
       if (kids.length) {
         // the parent's own loose stock, so the totals still tally
-        if (n(it.own) !== 0 || (keepEmpty && bs.length)) {
+        if (n(it.own) !== 0 || (keepBatch && bs.length)) {
           out.push({
             key: `${id}|own`,
             depth: depth + 1,
@@ -262,7 +310,7 @@ export default function StockScreen({ navigation }) {
     });
 
     return { lines, today, shut: bySize && byBatch };
-  }, [rows, kinBy, q, where, detailed, bySize, org]);
+  }, [rows, kin, kinBy, q, where, detailed, bySize, hideNil, org]);
 
   // The flattening is separate from the adding up so that opening one item's
   // batches does not re-total the whole shop.
@@ -305,6 +353,7 @@ export default function StockScreen({ navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title="Stock in hand" />
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="stock" />
 
       {godowns.length > 1 && (
         <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
@@ -329,6 +378,24 @@ export default function StockScreen({ navigation }) {
       <View style={{ padding: 16, paddingBottom: 10 }}>
         <TextInput style={S.input} placeholder="Search" value={q} onChangeText={setQ}
           placeholderTextColor={C.faint} returnKeyType="search" />
+
+        {/* HIS SWITCH, NOT SKWIK'S RULE. Off, and every item he has is on the
+            list whether or not there is any of it left — which is how he finds
+            out something is finished. */}
+        <TouchableOpacity onPress={() => setHideNil((v) => !v)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={[S.row, { marginTop: 10, gap: 9 }]}>
+          <View style={{ width: 20, height: 20, borderRadius: 6, borderWidth: 1.5,
+                         alignItems: 'center', justifyContent: 'center',
+                         borderColor: hideNil ? C.accent : C.greyB,
+                         backgroundColor: hideNil ? C.accent : 'transparent' }}>
+            {hideNil && <Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }}>✓</Text>}
+          </View>
+          <Text style={{ flex: 1, fontSize: 13, fontWeight: '600', color: C.ink }}>
+            Hide what I have none of
+          </Text>
+        </TouchableOpacity>
+
         <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 8 }}>
           {tree.shut
             ? 'Tap any item to see every movement in and out of it. Tap Batches to open its batches.'

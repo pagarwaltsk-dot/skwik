@@ -384,6 +384,33 @@ export function planSample({
   let shortDays = false;              // a receipt needed more days than the period has
   const roof = poolValue(pool);       // what the shelf is worth
 
+  // MONEY THAT PAID OFF AN OLD DUE IS NOT MONEY WAITING FOR A BILL.
+  //
+  // He had a customer carrying 1,25,000 from before Skwik who paid 70,000 in
+  // the month. That receipt has no bill against it, so Skwik wrote 70,000 of
+  // goods to explain it — and the customer was left owing money he had already
+  // paid down, on the strength of a month of trade that never happened.
+  //
+  // The receipt was not unexplained at all. THE OPENING DUE EXPLAINS IT. What
+  // actually needs a bill is only the part that pushes an account into CREDIT:
+  // money in hand that nothing he owes can account for. So each customer is
+  // allowed no more than his own credit as at the end of the period, and a
+  // customer who still owed money on that date is left alone entirely.
+  //
+  // `room` comes off his own ledger, worked out by the database. A receipt with
+  // no customer on it has no ledger to check against, so it is not limited.
+  const roomLeft = {};
+  const roomFor = (rec) => {
+    if (!rec.party_id) return Infinity;
+    if (!(rec.party_id in roomLeft)) {
+      roomLeft[rec.party_id] = rec.room == null ? Infinity : Math.max(0, num(rec.room));
+    }
+    return roomLeft[rec.party_id];
+  };
+  const owedFirst = [];     // receipts left alone: that customer still owed money
+  let trimmed = 0;          // rupees of receipt covered by an old due, not billed
+  const billedAgainst = {}; // receipt id -> rupees of bills actually raised for it
+
   // 1. Bills against money he has already taken. These come first: they are
   //    the real ones, and they have to match to the rupee.
   //
@@ -418,8 +445,15 @@ export function planSample({
   const HARD_STOP = 500;
   for (const rec of ordered) {
     if (bills.length >= HARD_STOP) break;
-    const amt = num(rec.amount);
-    if (amt <= 0) continue;
+    const paid = num(rec.amount);
+    if (paid <= 0) continue;
+
+    // How much of this receipt his account cannot already account for.
+    const room = roomFor(rec);
+    if (room <= 0) { owedFirst.push(rec); continue; }
+    const amt = room === Infinity ? paid : Math.min(paid, room);
+    if (amt < 1) { owedFirst.push(rec); continue; }
+
     const party = rec.party_id
       ? { id: rec.party_id, name: rec.party, gstin: rec.gstin,
           state_code: rec.state_code, price_list: rec.price_list }
@@ -515,6 +549,18 @@ export function planSample({
       target: m.target,
     }));
     used.push(rec);
+    billedAgainst[rec.id] = n2((billedAgainst[rec.id] || 0) + amt);
+    // COUNTED HERE, NOT WHERE IT WAS WORKED OUT. A receipt can still fall over
+    // further down — the shelf will not carry it, or the period has too few
+    // days — and it then goes to `missed`, not to the old-dues figure. Adding
+    // it up above meant the plan told him money had gone against an old due
+    // when in fact no bill had been raised for any of it.
+    if (amt < paid) trimmed = n2(trimmed + (paid - amt));
+    // and that much of his credit is now spoken for, so a second receipt from
+    // the same customer cannot be billed against the same room twice
+    if (rec.party_id && roomLeft[rec.party_id] !== Infinity) {
+      roomLeft[rec.party_id] = Math.max(0, n2(roomLeft[rec.party_id] - amt));
+    }
   }
 
   // 2. The rest, up to the count and the total he asked for.
@@ -587,23 +633,35 @@ export function planSample({
       // the period does not hold enough separate days for what is owed
       shortDays,
       fromReceipts: used.length,
-      receiptValue: n2(used.reduce((a, x) => a + num(x.amount), 0)),
+      // THE PART BILLED FOR, NOT THE WHOLE RECEIPT. Where some of a payment
+      // went against an old due, only the rest of it has bills behind it, and
+      // saying otherwise would make the plan's own arithmetic disagree.
+      receiptValue: n2(used.reduce((a, x) => a + (billedAgainst[x.id] || 0), 0)),
       // told apart, because he needs to see the bank side is fully covered
       bankReceipts: used.filter((x) => inBank(x.mode)).length,
       bankValue: n2(used.filter((x) => inBank(x.mode))
-                        .reduce((a, x) => a + num(x.amount), 0)),
+                        .reduce((a, x) => a + (billedAgainst[x.id] || 0), 0)),
       cashReceipts: used.filter((x) => !inBank(x.mode)).length,
       cashValue: n2(used.filter((x) => !inBank(x.mode))
-                        .reduce((a, x) => a + num(x.amount), 0)),
+                        .reduce((a, x) => a + (billedAgainst[x.id] || 0), 0)),
       // and what is left over once every receipt has been settled
-      overAndAbove: n2(Math.max(0, value - used.reduce((a, x) => a + num(x.amount), 0))),
-      // bank money in the period that this run could NOT reach
+      overAndAbove: n2(Math.max(0, value
+                        - used.reduce((a, x) => a + (billedAgainst[x.id] || 0), 0))),
+      // MONEY THAT NEEDED NO BILL. These customers were still in debt on the
+      // last day of the period, so their payments are explained by what they
+      // already owed and nothing was invented to cover them.
+      owedFirst: owedFirst.length,
+      owedFirstValue: n2(owedFirst.reduce((a, x) => a + num(x.amount), 0)),
+      trimmed: n2(trimmed),
       // receipts this run could not raise a bill for, whatever the mode:
-      // almost always because the shelf cannot carry that much
+      // almost always because the shelf cannot carry that much. The ones left
+      // alone on purpose above are not failures and are not counted here.
       missed: receipts.filter((x) => num(x.amount) > 0
-                          && !used.some((u) => u.id === x.id)).length,
+                          && !used.some((u) => u.id === x.id)
+                          && !owedFirst.some((o) => o.id === x.id)).length,
       bankLeftOver: n2(receipts.filter((x) => inBank(x.mode)
-                          && !used.some((u) => u.id === x.id))
+                          && !used.some((u) => u.id === x.id)
+                          && !owedFirst.some((o) => o.id === x.id))
                         .reduce((a, x) => a + num(x.amount), 0)),
       cash: bills.filter((b) => b.is_cash).length,
       days: [...new Set(bills.map((b) => b.vdate))].length,

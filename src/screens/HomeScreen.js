@@ -6,12 +6,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt0, n2, num, today } from '../lib/money';
-import { Bar, Foot, MoreButton, Screen } from '../components/Chrome';
+import { Bar, Foot, Screen } from '../components/Chrome';
+import { groupsFor } from '../lib/sections';
 import { ColHead, DoKey, Figure, Glyph, Rule, Words } from '../components/Register';
 import { Calendar } from '../components/DatePick';
-import {
-  showExpenses, showRecon, showReports, showStock,
-} from '../lib/features';
 import { C, S } from '../theme';
 
 // THE DAY BOOK.
@@ -292,22 +290,25 @@ export default function HomeScreen({ navigation }) {
       go: () => navigation.navigate('Bill', { vtype: 'purchase' }) },
   ];
 
+  // ELEVEN KEYS BECAME FOUR.
+  //
+  // Receipt, Payment, Udhar, Ledgers, Stock, Parties, Items, Books, Reports,
+  // Money out and Credit all had a key of their own down this strip, and he
+  // said to stop showing so many things. They are not eleven jobs; they are
+  // three — money, khata, stock — with reports beside them. So there is one
+  // key per job, each opening the screen he wants most often, and every screen
+  // in a job carries a row of its brothers along the top. Nothing has been
+  // taken away and nothing is further than two taps.
+  //
+  // The room this frees is what Settings now sits in. It was behind the three
+  // dots, which have gone.
   const keys = [
-    { label: 'Receipt', icon: 'in',  go: () => navigation.navigate('Money', { ptype: 'receipt' }) },
-    { label: 'Payment', icon: 'out', go: () => navigation.navigate('Money', { ptype: 'payment' }) },
-    { label: 'Udhar',   icon: 'book', go: () => navigation.navigate('Udhar') },
-    { label: 'Ledgers', icon: 'book', go: () => navigation.navigate('Ledgers') },
-    showStock(org)   && { label: 'Stock',   icon: 'stock',   go: () => navigation.navigate('Stock') },
-    { label: 'Parties', icon: 'people', go: () => navigation.navigate('Parties') },
-    { label: 'Items',   icon: 'tag', go: () => navigation.navigate('Items') },
-    showReports(org) && isOwner && { label: 'Books', icon: 'book',
-      go: () => navigation.navigate('Books') },
-    showReports(org) && isOwner && { label: 'Reports', icon: 'reports',
-      go: () => navigation.navigate('Reports') },
-    showExpenses(org) && isOwner && { label: 'Money out', icon: 'out',
-      go: () => navigation.navigate('Expenses') },
-    showRecon(org) && isOwner && { label: 'Credit', icon: 'reports',
-      go: () => navigation.navigate('Recon') },
+    ...groupsFor(org, isOwner).map((g) => ({
+      label: g.label, icon: g.icon,
+      go: () => navigation.navigate(g.members[0].route, g.members[0].params),
+    })),
+    isOwner && { label: 'Settings', icon: 'gear',
+      go: () => navigation.navigate('Settings') },
   ].filter(Boolean);
 
   // WHERE THE SUBSCRIPTION STANDS, ASKED OF THE SERVER.
@@ -389,7 +390,6 @@ export default function HomeScreen({ navigation }) {
                 `FY ${fyLabel()}`].join(' · ')}
             </Text>
           </View>
-          <MoreButton navigation={navigation} />
         </Bar>
 
         <View style={{ paddingHorizontal: 14, paddingBottom: 12 }}>

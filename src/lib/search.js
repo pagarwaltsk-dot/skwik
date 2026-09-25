@@ -53,9 +53,59 @@ export function parseQuery(raw) {
 const hay = (p) => `${p.name || ''} ${p.search_words || ''} ${p.alias || ''} ${p.hsn || ''} ${p.unit || ''}`
   .toLowerCase();
 
+// THE WAY A SIZE IS WRITTEN IS NOT PART OF THE NAME.
+//
+// One item, written six ways by six different people, all of them right:
+//
+//   TIFFIN CLIP 9X2      TIFFIN CLIP 9 X 2     TIFFIN CLIP 9*2
+//   SS PIPE 1/2"         SS PIPE 1/2           SS PIPE 12
+//   ANGLE 25-25-3        ANGLE 25X25X3         ANGLE 25 25 3
+//
+// (A word for the same thing — "half inch" for 1/2 — is a DIFFERENT word, and
+// no amount of flattening will join those two up. That is what ALSO CALLED on
+// the item is for, and it always was.)
+//
+// He types one of them and Skwik holds another, so nothing comes up and he
+// deletes it and tries again. That is not a search problem, it is a
+// PUNCTUATION problem, and punctuation carries no meaning here at all.
+//
+// So every item is also held in a flattened form: no spaces, no quotes, no
+// hyphens, no slashes, no stars, and no "x" sitting between two numbers. What
+// he types is flattened the same way and looked for in that. It is a SECOND
+// chance, never a replacement — every match the old rules found is still found,
+// this only adds the ones they missed.
+//
+// Note what is NOT thrown away: an x that is part of a word. "extra" must stay
+// "extra" or it would match "etra", and "box" must not become "bo".
+const flat = (s) => String(s || '')
+  .toLowerCase()
+  .replace(/[“”"'’‘]/g, '')                 // 1/2" and 1/2 are one size
+  .replace(/(\d)\s*[x*×]\s*(\d)/g, '$1$2')   // 9x2, 9 x 2, 9*2  ->  92
+  .replace(/[^a-z0-9]+/g, '');              // spaces, hyphens, slashes, dots, brackets
+
+// BOTH FORMS ARE WORKED OUT ONCE PER ITEM, NOT ONCE PER KEYSTROKE.
+//
+// The plain haystack was rebuilt from five fields for every item on every
+// letter he typed, and the search now looks three ways instead of one, which
+// would have been three times the work on a list of six thousand. Held against
+// the row instead: the shop pays for it on the first letter of the first search
+// and never again. A WeakMap, so nothing is kept alive by being remembered.
+const HAY = new WeakMap();
+const both = (p) => {
+  let v = HAY.get(p);
+  if (v === undefined) { const h = hay(p); v = { h, f: flat(h) }; HAY.set(p, v); }
+  return v;
+};
+
 const matches = (items, toks) => {
   if (!toks.length) return [];
-  return items.filter((p) => { const h = hay(p); return toks.every((t) => h.indexOf(t) > -1); });
+  const flats = toks.map(flat).filter(Boolean);
+  return items.filter((p) => {
+    const { h, f } = both(p);
+    if (toks.every((t) => h.indexOf(t) > -1)) return true;
+    if (!flats.length) return false;
+    return flats.every((t) => f.indexOf(t) > -1);
+  });
 };
 
 // A FRACTION MEANS IT IS WEIGHED. Whole numbers say nothing either way.
@@ -70,6 +120,26 @@ function unitBoost(p, qty) {
   return 0;
 }
 
+// WHAT HE SELLS ALL DAY, AT THE TOP.
+//
+// Two items match "tel" — the mustard oil he sells forty times a day and the
+// brake oil he has sold twice this year — and Skwik had no way of knowing which,
+// so it put the shorter name first. He does know, so he can say: a number from 1
+// to 10 on the item, 10 meaning show it first.
+//
+// It is worth 25 points a step, which is deliberate. It outweighs everything
+// Skwik guesses at — name length, the fraction-means-weighed nudge — so his
+// answer beats Skwik's. It does NOT outweigh an exact name match, worth 1000,
+// because when he has typed the name exactly he has already said which item he
+// means and no ranking should argue with that.
+//
+// Nothing set is 0, and 0 behaves exactly as before: this changes nothing for a
+// shop that never touches it.
+const points = (p) => {
+  const v = Math.round(Number(p.priority) || 0);
+  return v > 0 ? Math.min(v, 10) * 25 : 0;
+};
+
 function score(hit) {
   const p = hit.p;
   const q = (hit.toks || []).join(' ');
@@ -78,6 +148,7 @@ function score(hit) {
   let s = 0;
   if (q && names.indexOf(q) > -1) s += 1000;                          // exact name
   if (q && names.some((n) => n.indexOf(q) === 0)) s += 5;             // starts with
+  s += points(p);                                                     // his own 1-10
   s += unitBoost(p, hit.qty);
   s -= Math.min(String(p.name || '').length, 90) / 100;               // shorter wins ties
   return s;
@@ -131,22 +202,70 @@ export function searchItems(items, raw, limit = 20) {
 
   const seen = {};
   const hits = [];
-  const run = (toks, qty) => {
+  // Which reading found it. Readings are shown in order — the one Skwik is
+  // surest about first — and only sorted by score inside their own group, so a
+  // later reading can never elbow its way above an earlier one.
+  const run = (toks, qty, pass) => {
     matches(items, toks).forEach((pr) => {
       if (seen[pr.id]) return;
       seen[pr.id] = 1;
-      hits.push({ p: pr, qty, toks });
+      hits.push({ p: pr, qty, toks, pass });
     });
   };
 
-  // One reading first: the trailing number is the quantity. Only if that finds
-  // nothing does the whole line get tried literally, so a product whose name
-  // really does end in a number can still be reached.
-  if (p.qty == null) run(tok(p.full), null);
-  else run(tok(p.base), p.qty);
-  if (!hits.length && p.bare) run(tok(p.full), null);
+  // A SIZE ON THE PACKET IS NOT A SUM.
+  //
+  // "clip 9x2" reads as eighteen clips, and for most of what he sells that is
+  // exactly right. But a shop that keeps TIFFIN CLIP 9X2 means the packet, and
+  // it was unreachable: the 9x2 was eaten as the quantity before the name was
+  // ever looked for. Same for SS PIPE 1/2, ANGLE 25X25X3, WIRE 7/20.
+  //
+  // Skwik does not guess which it is — it ASKS HIS OWN LIST. Only if the whole
+  // line, punctuation and all flattened away, sits inside one of his item names
+  // as a single piece is it a name rather than a sum. Nothing is invented: a
+  // shop with no such item still gets its eighteen clips.
+  //
+  // The line read literally is wanted twice below, so the list is walked for it
+  // ONCE. On six thousand items that is the difference between a search that
+  // keeps up with his typing and one that does not.
+  const litToks = tok(p.full);
+  const lit = p.qty == null ? null : matches(items, litToks);
 
-  hits.sort((a, b) => score(b) - score(a));
+  if (lit) {
+    const whole = flat(p.full);
+    if (whole.length >= 3) {
+      lit.forEach((pr) => {
+        const nm = flat(`${pr.name || ''} ${pr.alias || ''} ${pr.search_words || ''}`);
+        if (nm.indexOf(whole) > -1 && !seen[pr.id]) {
+          seen[pr.id] = 1;
+          hits.push({ p: pr, qty: null, toks: litToks, pass: 0 });
+        }
+      });
+    }
+  }
+
+  // Then the ordinary reading: the trailing number is the quantity.
+  if (p.qty == null) run(litToks, null, 1);
+  else run(tok(p.base), p.qty, 1);
+
+  // And last, the whole line taken literally, for a product whose name really
+  // does end in a number. This used to be tried only when nothing at all had
+  // been found AND the number was a plain one; now it always gets its turn, at
+  // the bottom, so it can add to the list without ever reordering it.
+  if (lit) {
+    lit.forEach((pr) => {
+      if (seen[pr.id]) return;
+      seen[pr.id] = 1;
+      hits.push({ p: pr, qty: null, toks: litToks, pass: 2 });
+    });
+  }
+
+  // Scored once each, not once per comparison. A shop where six thousand items
+  // all carry the same search word has six thousand hits to order, and calling
+  // score inside the comparator meant working the same item out a dozen times
+  // over — which is most of what a search costs on a list that size.
+  hits.forEach((h) => { h.rank = score(h); });
+  hits.sort((a, b) => (a.pass - b.pass) || (b.rank - a.rank));
   return hits.slice(0, limit);
 }
 

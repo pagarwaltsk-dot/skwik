@@ -10,7 +10,7 @@ import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt, fmt0, n2, today } from '../lib/money';
 import { buildGstr1 } from '../lib/gstr1';
-import { BackButton, Bar, Foot, MoreButton, Screen } from '../components/Chrome';
+import { BackButton, Bar, Foot, Screen, Sections } from '../components/Chrome';
 import { C, S } from '../theme';
 import { sayPlainly } from '../lib/offline';
 
@@ -73,8 +73,44 @@ function rangeOf(k) {
 
 const dmy = (d) => `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}`;
 
+/* ---------------- one ruled line of a report ----------------
+
+   THE RUPEE SIGN WAS SITTING IN THE DIGIT COLUMN.
+
+   Every figure on a report card is monospaced so a column adds up by eye — and
+   then the total, and only the total, had a ₹ stuck on the front of it. One
+   character was enough to shift that row a character left of every row above
+   it, which is exactly the thing monospacing is for. Worse, the totals were
+   written without paise and the lines above them with, so nothing lined up with
+   anything.
+
+   So the ₹ has a narrow cell of its own, the digits have theirs, and every
+   money figure in a card carries paise. Units under units, paise under paise.
+
+   It also lives out here now rather than inside the screen, so React sees one
+   component instead of a brand new kind of component on every redraw.         */
+const Line = ({ k, v, strong, tone }) => {
+  const t = String(v ?? '');
+  const money = t.startsWith('₹');
+  return (
+    <View style={[S.tline, strong && { borderTopWidth: 1, borderTopColor: C.line,
+                                       marginTop: 6, paddingTop: 8 }]}>
+      <Text style={[S.tlineK, strong && { fontWeight: '700', color: C.ink },
+                    tone && { color: tone }]}>{k}</Text>
+      <Text style={[S.tlineV, S.num, { width: 13, textAlign: 'left' },
+                    strong && { fontWeight: '700' }, tone && { color: tone }]}>
+        {money ? '₹' : ''}
+      </Text>
+      <Text style={[S.tlineV, S.num, { flexShrink: 0 },
+                    strong && { fontWeight: '700' }, tone && { color: tone }]}>
+        {money ? t.slice(1) : t}
+      </Text>
+    </View>
+  );
+};
+
 export default function ReportsScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   const [range, setRange] = useState('month');
   const [busy, setBusy]   = useState(true);
   const [vouchers, setVouchers] = useState([]);
@@ -409,14 +445,6 @@ export default function ReportsScreen({ navigation }) {
 
   /* ---------------- screen ---------------- */
 
-  const Line = ({ k, v, strong, tone }) => (
-    <View style={[S.tline, strong && { borderTopWidth: 1, borderTopColor: C.line,
-                                       marginTop: 6, paddingTop: 8 }]}>
-      <Text style={[S.tlineK, strong && { fontWeight: '700', color: C.ink },
-                    tone && { color: tone }]}>{k}</Text>
-      <Text style={[S.tlineV, S.num, strong && { fontWeight: '700' }, tone && { color: tone }]}>{v}</Text>
-    </View>
-  );
 
   const Card = ({ title, children }) => (
     <View style={S.card}>
@@ -436,8 +464,8 @@ export default function ReportsScreen({ navigation }) {
         <TouchableOpacity onPress={share} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
           <Text style={{ fontSize: 13, fontWeight: '700', color: '#fff', opacity: 0.9 }}>SEND</Text>
         </TouchableOpacity>
-        <MoreButton navigation={navigation} />
       </Bar>
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="reports" />
 
       <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                      borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -492,13 +520,13 @@ export default function ReportsScreen({ navigation }) {
                 {!!sums.sales.cgst && <Line k="CGST" v={fmt(sums.sales.cgst)} />}
                 {!!sums.sales.sgst && <Line k="SGST" v={fmt(sums.sales.sgst)} />}
                 {!!sums.sales.igst && <Line k="IGST" v={fmt(sums.sales.igst)} />}
-                <Line k="Total" v={`₹${fmt0(sums.sales.total)}`} strong />
+                <Line k="Total" v={`₹${fmt(sums.sales.total)}`} strong />
               </Card>
 
               {!!sums.estimates.n && (
                 <Card title="Estimates">
                   <Line k={`${sums.estimates.n} estimate${sums.estimates.n === 1 ? '' : 's'}`}
-                        v={`₹${fmt0(sums.estimates.total)}`} />
+                        v={`₹${fmt(sums.estimates.total)}`} />
                 </Card>
               )}
 
@@ -506,7 +534,7 @@ export default function ReportsScreen({ navigation }) {
                 <Card title="Purchases">
                   <Line k={`${sums.purchases.n} bill${sums.purchases.n === 1 ? '' : 's'}`} v="" />
                   <Line k="Goods" v={fmt(sums.purchases.taxable)} />
-                  <Line k="Total" v={`₹${fmt0(sums.purchases.total)}`} strong />
+                  <Line k="Total" v={`₹${fmt(sums.purchases.total)}`} strong />
                 </Card>
               )}
 
@@ -517,7 +545,7 @@ export default function ReportsScreen({ navigation }) {
                   <Line k="Gross profit" v={fmt(n2(Number(pnl.sale) - Number(pnl.cost)))} />
                   {!!Number(pnl.expenses) && <Line k="Money out" v={fmt(pnl.expenses)} />}
                   <Line k="Left" strong
-                        v={`₹${fmt0(n2(Number(pnl.sale) - Number(pnl.cost) - Number(pnl.expenses)))}`} />
+                        v={`₹${fmt(n2(Number(pnl.sale) - Number(pnl.cost) - Number(pnl.expenses)))}`} />
                   {(pnl.heads || []).map((h) => (
                     <Line key={h.head} k={`   ${h.head}`} v={fmt(h.amount)} />
                   ))}
@@ -675,15 +703,23 @@ export default function ReportsScreen({ navigation }) {
 
               {!!sums.items.length && (
                 <Card title="What sold">
+                  {/* THREE COLUMNS, NOT THREE THINGS IN A ROW.
+                      The quantity had no width of its own, so it started
+                      wherever the name happened to end and the amount started
+                      wherever the quantity happened to end — two ragged columns
+                      of figures down a card whose whole job is to be read down.
+                      Both are given a width and right aligned. */}
                   {sums.items.map((i) => (
-                    <View key={i.name} style={[S.row, { marginBottom: 6 }]}>
+                    <View key={i.name} style={[S.row, { marginBottom: 6, alignItems: 'baseline' }]}>
                       <Text numberOfLines={1} style={{ flex: 1, fontSize: 14, color: C.ink }}>
                         {i.name}
                       </Text>
-                      <Text style={[{ fontSize: 12.5, color: C.muted, marginRight: 10 }, S.num]}>
+                      <Text style={[{ fontSize: 12.5, color: C.muted, width: 62,
+                                      textAlign: 'right' }, S.num]}>
                         {i.qty}
                       </Text>
-                      <Text style={[{ fontSize: 14, fontWeight: '700', color: C.ink }, S.num]}>
+                      <Text style={[{ fontSize: 14, fontWeight: '700', color: C.ink,
+                                      minWidth: 78, textAlign: 'right' }, S.num]}>
                         {fmt0(i.value)}
                       </Text>
                     </View>
@@ -694,9 +730,10 @@ export default function ReportsScreen({ navigation }) {
               {!!sums.days.length && (
                 <Card title="Day by day">
                   {sums.days.map(([d, total]) => (
-                    <View key={d} style={[S.row, { marginBottom: 5 }]}>
+                    <View key={d} style={[S.row, { marginBottom: 5, alignItems: 'baseline' }]}>
                       <Text style={{ flex: 1, fontSize: 13.5, color: C.muted }}>{dmy(d)}</Text>
-                      <Text style={[{ fontSize: 14, fontWeight: '600', color: C.ink }, S.num]}>
+                      <Text style={[{ fontSize: 14, fontWeight: '600', color: C.ink,
+                                      minWidth: 90, textAlign: 'right' }, S.num]}>
                         {fmt0(total)}
                       </Text>
                     </View>

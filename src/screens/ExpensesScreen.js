@@ -7,7 +7,7 @@ import { useApp } from '../AppContext';
 import { fmt0, n2, num, settle, today } from '../lib/money';
 import { showRcmIn } from '../lib/features';
 import { sayPlainly } from '../lib/offline';
-import { Box, Head, Screen, Foot } from '../components/Chrome';
+import { Box, Head, Screen, Sections, Foot } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // MONEY THAT GOES OUT AND IS NOT A PURCHASE.
@@ -22,7 +22,7 @@ const COMMON = ['Rent', 'Salary', 'Transport', 'Electricity', 'Tea & food',
 const dmy = (d) => `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(2, 4)}`;
 
 export default function ExpensesScreen({ navigation }) {
-  const { org } = useApp();
+  const { org, isOwner } = useApp();
   const [rows, setRows]   = useState([]);
   const [heads, setHeads] = useState([]);
   const [head, setHead]   = useState('');
@@ -137,6 +137,7 @@ export default function ExpensesScreen({ navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title="Money out" />
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id="spent" />
 
       <FlatList
         data={rows}
