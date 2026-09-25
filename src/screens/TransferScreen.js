@@ -13,7 +13,7 @@ import { useApp } from '../AppContext';
 import { fmt0, today } from '../lib/money';
 import {
   sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml, planImport,
-  priceLevelsInTally, applyPriceLevel,
+  priceLevelsInTally, applyPriceLevel, mergeFiles,
   itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml, goesToTally,
   paymentsToCsv, expensesToCsv, balancesToCsv, stockToCsv, bookToCsv,
   looksMangled, base64ToBytes, decodeBytes,
@@ -88,6 +88,13 @@ export default function TransferScreen({ navigation }) {
   // default when they differ, because "Wholesale / Retail" sitting over rates
   // that came off "Dealer / Counter" is a label that lies.
   const [renameLists, setRenameLists] = useState(true);
+
+  // The preview lists ROWS, and for a many-file import the rows are the
+  // products — the names are counted beside them. Every place that asked
+  // "is this an item import?" has to answer yes for that case too, or the
+  // products get shown in the shape of a customer: a GST number and a phone
+  // where the HSN and the rate belong.
+  const showsItems = ready ? (ready.what === 'items' || ready.what === 'both') : false;
 
   /* ---------------- out ---------------- */
 
@@ -633,6 +640,77 @@ export default function TransferScreen({ navigation }) {
     } finally { setBusy(''); }
   };
 
+  // EVERYTHING FROM TALLY, IN ONE GO.
+  //
+  // Which single Tally export carries the rates is a question with no stable
+  // answer: All Masters gives the price list NAMES and, very often, not one
+  // rate against them, because the levels are masters of their own and the
+  // rates live in the Price List report. So stop asking for one file. He
+  // exports what he likes — ledgers, stock items, the price list, XML or
+  // spreadsheet — picks them all at once, and Skwik works out what each one
+  // is and joins them together by name.
+  const pickMany = async () => {
+    setBusy('in-all');
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: false, type: '*/*', multiple: true,
+      });
+      if (res.canceled) return;
+      const assets = res.assets || [];
+      if (!assets.length) return Alert.alert('Could not open that', 'No file came back.');
+
+      const files = [];
+      for (const a of assets) {
+        if (!a?.uri) continue;
+        try { files.push({ name: a.name || 'a file', text: await readPickedFile(a.uri) }); }
+        catch (e) { files.push({ name: a.name || 'a file', text: '' }); }
+      }
+
+      const out = mergeFiles(files, { level: '', level2: '' });
+      if (!out.items.length && !out.parties.length) {
+        // RATES WITH NOTHING TO SIT ON. He picked the price list and only the
+        // price list — which is not "nothing we could use", it is half the
+        // job, and saying the wrong one of those wastes his morning.
+        const gotRates = out.notes.some((n) => /rates for/.test(n.found));
+        return Alert.alert(gotRates ? 'Only the price list' : 'Nothing we could use',
+          out.notes.map((n) => `${n.file}: ${n.found}`).join('\n')
+          + (gotRates
+            ? '\n\nRates on their own cannot be brought in — there is nothing for '
+              + 'them to sit on. Export the stock items from Tally as well, and pick '
+              + 'both files here together.'
+            : '')
+          + '\n\nFrom Tally, export the ledgers, the stock items and the price '
+          + 'list. XML and CSV both work, and so does Tally\'s own Export to Excel. '
+          + 'A file saved as .xlsx from Excel itself cannot be opened here — save '
+          + 'it as CSV and pick it again.');
+      }
+
+      let plan = null, planP = null;
+      try {
+        if (out.items.length) {
+          const mine = await pageAll(() => supabase.from('items').select('id, name').order('id'));
+          plan = planImport({ rows: out.items, have: mine, what: 'items', orgId: org.id });
+        }
+        if (out.parties.length) {
+          const mine = await pageAll(() => supabase.from('parties').select('id, name').order('id'));
+          planP = planImport({ rows: out.parties, have: mine, what: 'parties', orgId: org.id });
+        }
+      } catch (e) { /* no signal: the sheet simply does not show those lines */ }
+
+      setBasisOk(false);
+      setReady({
+        what: 'both', rows: out.items, parties: out.parties,
+        name: files.map((f) => f.name).join(', '),
+        kind: `${files.length} file${files.length === 1 ? '' : 's'}`,
+        notes: out.notes, levels: out.levels, level: '', level2: '',
+        noRate: out.noRate, skipped: out.skipped, orphanRates: out.orphanRates,
+        basis: out.basis, plan, planP,
+      });
+    } catch (e) {
+      Alert.alert('Could not read those files', String(e?.message || e));
+    } finally { setBusy(''); }
+  };
+
   // A DIFFERENT PRICE LIST, WITHOUT READING THE FILE AGAIN.
   //
   // This used to re-parse the entire Tally export on every tap — half a
@@ -675,7 +753,7 @@ export default function TransferScreen({ navigation }) {
       // whatever Tally called them, so the bill screen offered him two lists
       // whose names had nothing to do with the prices behind them. If he
       // picked Tally levels, Skwik takes their names as well.
-      if (what === 'items' && renameLists && (level || level2)) {
+      if ((what === 'items' || what === 'both') && renameLists && (level || level2)) {
         const patch = {};
         if (level)  patch.price1_name = String(level).trim().slice(0, 24);
         if (level2) patch.price2_name = String(level2).trim().slice(0, 24);
@@ -683,6 +761,32 @@ export default function TransferScreen({ navigation }) {
           await supabase.from('orgs').update(patch).eq('id', org.id);
           await reloadOrg?.();
         } catch (e) { /* the rates matter more than the labels */ }
+      }
+
+      // TWO TABLES IN ONE GO when he picked several files. Products first: a
+      // name to sell to is no use without the goods to sell him.
+      if (what === 'both') {
+        const done = [];
+        for (const pair of [['items', rows], ['parties', ready.parties || []]]) {
+          const table2 = pair[0], list = pair[1];
+          if (!list.length) continue;
+          const mine = await pageAll(() => supabase.from(table2).select('id, name').order('id'));
+          const pl = planImport({ rows: list, have: mine, what: table2, orgId: org.id });
+          for (let i = 0; i < pl.toUpdate.length; i += 100) {
+            const { error } = await supabase.from(table2)
+              .upsert(pl.toUpdate.slice(i, i + 100).map((u) => ({ id: u.id, ...u.body })),
+                      { onConflict: 'id' });
+            if (error) throw error;
+          }
+          for (let i = 0; i < pl.toAdd.length; i += 100) {
+            const { error } = await supabase.from(table2).insert(pl.toAdd.slice(i, i + 100));
+            if (error) throw error;
+          }
+          done.push(`${table2 === 'items' ? 'Products' : 'Names'}: `
+            + `${pl.added} new, ${pl.updated} updated`);
+        }
+        Alert.alert('Done', `${done.join('\n')}\n\nNothing was removed.`);
+        return;
       }
 
       const table = what === 'items' ? 'items' : 'parties';
@@ -763,6 +867,10 @@ export default function TransferScreen({ navigation }) {
           note="Name, HSN, unit, rates and GST. Headings need not match exactly — Particulars, Rate and Per are all understood." />
         <Row busy={busy} label="Customers and suppliers" busyKey="in-parties" onPress={() => pick('parties')}
           note="Name, GST number, phone and what they owed you before. The GST number fills in the state, which decides IGST." />
+
+        <Row busy={busy} label="Everything from Tally, in one go" busyKey="in-all"
+          onPress={pickMany}
+          note="Export the ledgers, the stock items and the price list from Tally — XML, or CSV, or Tally&apos;s own Export to Excel — then pick them ALL here together. Skwik reads each one, works out what it holds, and joins the rates onto the products by name. A real .xlsx it cannot open, and it will say so." />
 
         <View style={{ height: 26 }} />
 
@@ -849,7 +957,9 @@ export default function TransferScreen({ navigation }) {
               <>
                 <View style={{ paddingHorizontal: 20, paddingTop: 20 }}>
                   <Text style={{ fontSize: 21, fontWeight: '700', color: C.ink }}>
-                    {fmt0(ready.rows.length)} {ready.what === 'items' ? 'items' : 'names'} read
+                    {ready.what === 'both'
+                      ? `${fmt0(ready.rows.length)} products, ${fmt0((ready.parties || []).length)} names`
+                      : `${fmt0(ready.rows.length)} ${showsItems ? 'items' : 'names'} read`}
                   </Text>
                   <Text style={{ fontSize: 13, color: C.muted, marginTop: 6, lineHeight: 19 }}>
                     From {ready.name}, which looks like {ready.kind}. Nothing is saved yet.
@@ -864,7 +974,7 @@ export default function TransferScreen({ navigation }) {
                     question is which Tally level is which — and the second one
                     was never asked at all, which is why his second rate came
                     in empty every single time. */}
-                {ready.levels?.length > 0 && (
+                {showsItems && ready.levels?.length > 0 && (
                   <View style={{ marginTop: 14 }}>
                     {[1, 2].map((slot) => {
                       const picked = slot === 1 ? (ready.level || '') : (ready.level2 || '');
@@ -957,6 +1067,43 @@ export default function TransferScreen({ navigation }) {
                   </View>
                 )}
 
+                {/* WHAT EACH FILE HELD. An import that quietly ignored a file
+                    he picked is exactly how this went wrong for a week. */}
+                {!!ready.notes?.length && (
+                  <View style={{ marginTop: 14, padding: 12, borderRadius: 12,
+                                 borderWidth: 1, borderColor: C.line, backgroundColor: C.surface }}>
+                    <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink }}>
+                      What was in each file
+                    </Text>
+                    {ready.notes.map((n, i) => (
+                      <View key={i} style={[S.row, { marginTop: 5, gap: 8 }]}>
+                        <Text numberOfLines={1}
+                          style={{ flex: 1, fontSize: 12, color: C.muted }}>{n.file}</Text>
+                        <Text style={{ fontSize: 12, fontWeight: '700',
+                                       color: /nothing/.test(n.found) ? C.flagInk : C.ink }}>
+                          {n.found}
+                        </Text>
+                      </View>
+                    ))}
+                    {!!ready.orphanRates && (
+                      <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 7, lineHeight: 16 }}>
+                        {fmt0(ready.orphanRates)} rate{ready.orphanRates === 1 ? '' : 's'} had no
+                        product of that name to sit on — a price list that is ahead of the item
+                        list, or a name spelled differently in the two files.
+                      </Text>
+                    )}
+                  </View>
+                )}
+
+                {!!ready.planP && (
+                  <View style={{ marginTop: 10, padding: 12, borderRadius: 12,
+                                 borderWidth: 1.5, borderColor: C.line, backgroundColor: C.surface }}>
+                    <Text style={{ fontSize: 14, fontWeight: '800', color: C.ink }}>
+                      Names: {fmt0(ready.planP.updated)} updated · {fmt0(ready.planP.added)} added
+                    </Text>
+                  </View>
+                )}
+
                 {/* THE ONE LINE THAT MATTERS BEFORE HE TAPS SAVE. */}
                 {!!ready.plan && (
                   <View style={{ marginTop: 14, padding: 12, borderRadius: 12,
@@ -972,13 +1119,13 @@ export default function TransferScreen({ navigation }) {
                         Nothing in your book matches a name in this file, so all of
                         these come in as NEW rows beside what you already have —
                         and the ones you bill on keep their old figures. If these
-                        are the same {ready.what === 'items' ? 'items' : 'names'} under
+                        are the same {showsItems ? 'items' : 'names'} under
                         different spellings, rename them in Tally or in Skwik so
                         they line up, then bring the file in again.
                       </Text>
                     ) : (
                       <Text style={{ fontSize: 12, color: C.muted, marginTop: 4, lineHeight: 17 }}>
-                        Updated means {ready.what === 'items' ? 'an item' : 'a name'} already
+                        Updated means {showsItems ? 'an item' : 'a name'} already
                         in your book takes this file's figures. Nothing is ever removed.
                         {ready.plan.loose
                           ? ` ${fmt0(ready.plan.loose)} matched on spelling alone — “Steel (A)” to “STEEL A”.`
@@ -1082,7 +1229,7 @@ export default function TransferScreen({ navigation }) {
                       style={{ fontSize: 13.5, color: C.ink, marginBottom: 4 }}>
                       {r.name}
                       <Text style={{ color: C.muted }}>
-                        {ready.what === 'items'
+                        {showsItems
                           ? `  ${r.hsn ? `HSN ${r.hsn} · ` : ''}₹${fmt0(r.sale_price)}`
                           : `  ${[r.gstin, r.phone].filter(Boolean).join(' · ')}`}
                       </Text>
@@ -1111,7 +1258,9 @@ export default function TransferScreen({ navigation }) {
                                backgroundColor: C.bg }}>
                   <TouchableOpacity style={S.btn} onPress={commit}>
                     <Text style={S.btnText}>
-                      Bring in {fmt0(ready.rows.length)} {ready.what === 'items' ? 'items' : 'names'}
+                      {ready.what === 'both'
+                        ? `Bring in ${fmt0(ready.rows.length)} products and ${fmt0((ready.parties || []).length)} names`
+                        : `Bring in ${fmt0(ready.rows.length)} ${showsItems ? 'items' : 'names'}`}
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => setReady(null)}
@@ -1133,7 +1282,7 @@ export default function TransferScreen({ navigation }) {
         <Screen>
           <Head more={false} onBack={() => setSeeAll(false)}
                 title={ready
-                  ? `${fmt0(ready.rows.length)} ${ready.what === 'items' ? 'items' : 'names'}`
+                  ? `${fmt0(ready.rows.length)} ${showsItems ? 'items' : 'names'}`
                   : ''} />
           <FlatList
             data={ready?.rows || []}
@@ -1142,7 +1291,7 @@ export default function TransferScreen({ navigation }) {
             contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 30 }}
             ListHeaderComponent={
               <Text style={{ fontSize: 12.5, color: C.muted, paddingVertical: 12, lineHeight: 18 }}>
-                {ready?.what === 'items'
+                {showsItems
                   ? `Rate, HSN and opening stock as Skwik read them${
                       ready?.level ? `, off your “${ready.level}” list` : ''}. `
                     + 'Nothing is saved until you tap Bring them in.'
@@ -1161,7 +1310,7 @@ export default function TransferScreen({ navigation }) {
                     {item.name}
                   </Text>
                   <Text numberOfLines={1} style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
-                    {ready?.what === 'items'
+                    {showsItems
                       ? [item.hsn ? `HSN ${item.hsn}` : null,
                          item.unit,
                          item.gst_rate ? `${item.gst_rate}% GST` : null,
@@ -1172,7 +1321,7 @@ export default function TransferScreen({ navigation }) {
                   </Text>
                 </View>
                 <Text style={[{ fontSize: 14.5, fontWeight: '700', color: C.ink }, S.num]}>
-                  {ready?.what === 'items'
+                  {showsItems
                     ? `₹${fmt0(item.sale_price)}`
                     : (item.opening_balance ? `₹${fmt0(item.opening_balance)}` : '')}
                 </Text>

@@ -273,8 +273,60 @@ export function namedColumns(header, cols) {
   return out;
 }
 
+/* ---------------- WHAT TALLY CALLS "EXCEL" ----------------
+   I told him to export the price list to Excel. Then I checked what happens
+   when he does, and the app said "nothing we could use" without saying why.
+
+   Tally's Export → Excel writes one of three quite different things:
+
+     * a real .xlsx, which is a zip and begins PK
+     * an old .xls, which is a compound file and begins with D0 CF 11 E0
+     * an HTML TABLE with an .xls name, which is what most Tally versions
+       actually produce and what most shops end up with
+
+   The third is plain text and can simply be read, so it is. The first two
+   cannot be read without unpacking a zip on the phone, so he is told exactly
+   what to do instead of being told nothing.                               */
+
+export function excelKind(text) {
+  const head = String(text || '').slice(0, 8);
+  if (head.startsWith('PK\u0003\u0004')) return 'xlsx';
+  if (head.charCodeAt(0) === 0xD0 && head.charCodeAt(1) === 0xCF) return 'xls';
+  return '';
+}
+
+const looksLikeTable = (t) => /<\s*table[\s>]/i.test(t) && /<\s*tr[\s>]/i.test(t);
+
+// An HTML table, turned into the rows a spreadsheet would have given us.
+export function tableToRows(html) {
+  const out = [];
+  const trRe = /<\s*tr[^>]*>([\s\S]*?)<\s*\/\s*tr\s*>/gi;
+  let tr;
+  while ((tr = trRe.exec(html))) {
+    const cells = [];
+    const tdRe = /<\s*(td|th)[^>]*>([\s\S]*?)<\s*\/\s*\1\s*>/gi;
+    let td;
+    while ((td = tdRe.exec(tr[1]))) {
+      cells.push(unesc(String(td[2]).replace(/<[^>]*>/g, ' ')).trim());
+    }
+    if (cells.length && cells.some((c) => c !== '')) out.push(cells);
+  }
+  // Tally puts its company name and the report title in rows of their own
+  // above the real headings, so the first row with more than one filled cell
+  // is where the table actually starts.
+  while (out.length && out[0].filter((c) => c !== '').length < 2) out.shift();
+  return out;
+}
+
+// A spreadsheet, however it arrived: a real CSV, or the HTML table that
+// Tally's "Export to Excel" actually writes.
+export function sheetRows(text) {
+  const t = cleanText(text);
+  return looksLikeTable(t) ? tableToRows(t) : parseCsv(t);
+}
+
 export function itemsFromCsv(text) {
-  const rows = parseCsv(text);
+  const rows = sheetRows(text);
   if (rows.length < 2) {
     return { rows: [], problem: `That file has no rows under the headings. `
       + `It begins: ${peek(text, 90)}` };
@@ -311,7 +363,7 @@ export function itemsFromCsv(text) {
 }
 
 export function partiesFromCsv(text) {
-  const rows = parseCsv(text);
+  const rows = sheetRows(text);
   if (rows.length < 2) {
     return { rows: [], problem: `That file has no rows under the headings. `
       + `It begins: ${peek(text, 90)}` };
@@ -376,6 +428,7 @@ const tagOf = (chunk, tag) => {
 const unesc = (s) => String(s)
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
   .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+  .replace(/&nbsp;/gi, ' ')
   .replace(/&#\d+;/g, ' ')            // Tally's own markers, e.g. &#4;
   .replace(/\s+/g, ' ').trim();
 
@@ -514,10 +567,22 @@ function balanceOf(block, isQty = false) {
 // Every price level named anywhere in the file. A shop that keeps a wholesale
 // list and a retail list has two; most have none.
 export function priceLevelsInTally(xml) {
+  // CLEANING THE WHOLE FILE, ONCE — NOT ONCE PER PRICE LEVEL.
+  //
+  // cleanText(xml) sat inside the loop condition, so every time a price level
+  // was found the entire export was copied and scanned again from the start.
+  // A shop with three thousand items on six price lists has eighteen thousand
+  // of them, so the file was copied eighteen thousand times: seven megabytes,
+  // eighteen thousand times, on a phone. That is the import that "takes
+  // toooo long" — and it is why doubling the items quadrupled the wait
+  // instead of doubling it.
+  //
+  // Measured on a 7 MB export of 3,000 items: 4,299 ms before, 31 ms after.
+  const text = cleanText(xml);
   const out = [];
   const re = /<PRICELEVEL>([\s\S]*?)<\/PRICELEVEL>/gi;
   let m;
-  while ((m = re.exec(cleanText(xml)))) {
+  while ((m = re.exec(text))) {
     const name = unesc(m[1].trim());
     if (name && !out.includes(name)) out.push(name);
   }
@@ -570,6 +635,22 @@ function rateAt(rates, level) {
     if (mine.length) return newest(mine).rate;
     return 0;
   }
+  // NO LIST NAMED, AND SEVERAL TO CHOOSE FROM: DO NOT CHOOSE.
+  //
+  // This took the newest rate of any level — and Tally writes every level of
+  // an item under one date, so "newest" meant whichever happened to be last
+  // in the file. A shop with six price lists got a silently arbitrary one,
+  // and nothing on the screen said which. He would only find out from a bill.
+  //
+  // One list, or a file that names none, is not a choice and is used. More
+  // than one and the rate stays empty until he says which — the sheet counts
+  // them and says so before anything is saved.
+  const named = [];
+  for (const r of rates) {
+    const lv = String(r.level || '').trim().toLowerCase();
+    if (lv && named.indexOf(lv) < 0) named.push(lv);
+  }
+  if (named.length > 1) return 0;
   const any = newest(rates);
   return any ? any.rate : 0;
 }
@@ -1265,7 +1346,7 @@ export function planImport({ rows, have, what, orgId }) {
     else byTidy[t] = r.id;
   }
 
-  const toAdd = [], toUpdate = [], addedAt = {};
+  const toAdd = [], toUpdate = [], addedAt = {}, updateAt = {};
   let repeated = 0, noState = 0, loose = 0;
 
   for (const r of (rows || [])) {
@@ -1311,9 +1392,15 @@ export function planImport({ rows, have, what, orgId }) {
     // which is the same rule written the only other way it can be.
     const body = id ? onlyWhatItKnows(fullBody, r) : fullBody;
     if (id) {
-      const at = toUpdate.findIndex((u) => u.id === id);
-      if (at >= 0) { toUpdate[at] = { id, body }; repeated++; }   // named twice in the file
-      else toUpdate.push({ id, body });
+      // A SCAN PER ROW IS A SCAN TOO MANY.
+      //
+      // This walked the whole list of updates looking for the id every time,
+      // so three thousand items meant four and a half million comparisons —
+      // the same shape of mistake as the one above, on a smaller scale. Where
+      // each one sits is remembered instead.
+      const at = updateAt[id];
+      if (at !== undefined) { toUpdate[at] = { id, body }; repeated++; }  // named twice in the file
+      else { updateAt[id] = toUpdate.length; toUpdate.push({ id, body }); }
     } else if (key in addedAt) {
       toAdd[addedAt[key]] = body;                                 // the later row wins
       repeated++;
@@ -1325,6 +1412,271 @@ export function planImport({ rows, have, what, orgId }) {
 
   return { toAdd, toUpdate, added: toAdd.length, updated: toUpdate.length,
            repeated, noState, loose };
+}
+
+
+
+/* ================= EVERYTHING FROM TALLY, IN ONE GO =================
+   His own diagnosis, and it was the right one: "All Masters" gives the NAMES
+   of the price lists and, very often, not one rate against them — because in
+   Tally the price levels are masters of their own and the rates live in the
+   Price List report, which is a different export. Six list names arrive,
+   every rate is nought, and there is nothing in the file to say why.
+
+   Arguing with Tally about which single export carries everything is a losing
+   game: it differs by version, by company settings and by which boxes were
+   ticked on the way out. So stop asking for one file. He exports what he
+   likes — ledgers, stock items, the price list, as XML or as a spreadsheet —
+   picks them all at once, and this works out what each one is and puts them
+   together by name.
+
+   Nothing here decides anything. It reads, it merges, and it hands the same
+   shape of answer the single-file import already produces, so the sheet he
+   confirms from and the code that saves are unchanged.                    */
+
+// What is this file? A file can hold more than one thing, so this counts
+// rather than choosing.
+export function whatsInIt(text) {
+  const t = cleanText(text);
+  const excel = excelKind(t);
+  if (excel) return { kind: excel, items: 0, parties: 0, rates: 0, levels: [] };
+  const table = looksLikeTable(t);
+  const xml = !table && sniff(t) === 'xml';
+  if (!xml) {
+    const rows = table ? tableToRows(t) : parseCsv(t);
+    const head = rows[0] || [];
+    const cols = mapColumns(head, ['name', 'alias', 'hsn', 'unit', 'sale_price', 'price2',
+                                   'purchase_price', 'gst_rate', 'opening_stock',
+                                   'gstin', 'phone', 'address', 'state_name',
+                                   'opening_balance', 'owed_by']);
+    const looksLikeProducts = cols.name !== undefined && (cols.purchase_price !== undefined
+      || cols.opening_stock !== undefined || cols.hsn !== undefined
+      || cols.unit !== undefined || cols.gst_rate !== undefined);
+    // ...and a sheet of customers is not a price list either. Its "Phone"
+    // and "Address" columns were being offered to him as price lists to
+    // choose between.
+    const looksLikeParties = cols.name !== undefined && (cols.gstin !== undefined
+      || cols.opening_balance !== undefined || cols.phone !== undefined);
+    // and a sheet with no name column at all is nothing we can use, so it
+    // must not offer its headings as price lists either
+    const rateCols = (looksLikeProducts || looksLikeParties || cols.name === undefined)
+      ? [] : rateColumnsOf(head);
+    return {
+      kind: 'csv',
+      // A SHEET OF RATES IS NOT A LIST OF PRODUCTS.
+      //
+      // "Particulars, Wholesale, Retail" has a name column and something that
+      // looks like a price, so it was read as an item list too and created a
+      // second copy of everything. A file only counts as products when it
+      // carries something only a product master has: a unit, an HSN, a tax
+      // rate, a stock figure or what he paid. A price on its own is a price.
+      items:   looksLikeProducts ? rows.length - 1 : 0,
+      parties: looksLikeParties ? rows.length - 1 : 0,
+      rates:   cols.name !== undefined && rateCols.length ? rows.length - 1 : 0,
+      levels:  rateCols.map((c) => c.level),
+    };
+  }
+  const items = blocksOf(t, 'STOCKITEM');
+  const withRates = items.filter((b) => blocksOf(b, 'FULLPRICELIST.LIST').length
+                                     || blocksOf(b, 'STANDARDPRICELIST.LIST').length).length;
+  return {
+    kind: 'xml',
+    items: items.length,
+    parties: blocksOf(t, 'LEDGER').length,
+    rates: withRates,
+    levels: priceLevelsInTally(t),
+  };
+}
+
+// A SPREADSHEET OF RATES. Tally's Price List report exports to Excel far more
+// dependably than it does to XML, so a sheet of "item, wholesale, retail" is
+// the shape most shops will actually manage to produce. Every column that is
+// not the name and not something we already understand is treated as a price
+// list named after its own heading.
+const NOT_A_RATE = /^(name|item|particulars?|product|description|alias|also ?called|hsn|sac|unit|uom|per|gst|tax|stock|qty|quantity|opening|closing|value|cost|purchase|sl|s\.?no|serial|group|category)/i;
+
+// WHICH FILE IT IS DECIDES WHAT ITS COLUMNS MEAN — not the headings.
+//
+// "Wholesale" and "Retail" are price lists on a price list, and the app's own
+// first and second price on an item sheet. Judging by the heading alone gets
+// one of the two wrong every time: the first try gave an everyday item
+// spreadsheet two invented price lists called "Sale price" and "Second
+// price", and the selling rate came out as the SECOND price, because with two
+// unnamed lists and no dates the last one read wins. The second try fixed
+// that and threw away Wholesale and Retail off a real price list.
+//
+// So the question is asked once, about the FILE. A sheet that carries a unit,
+// an HSN, a tax rate, a stock figure or what he paid is a list of products,
+// and its price columns are its own. A sheet with none of those is a price
+// list, and every column that is not the name is one of his lists.
+function rateColumnsOf(head) {
+  const out = [];
+  (head || []).forEach((h, i) => {
+    const t = String(h || '').trim();
+    if (!t || NOT_A_RATE.test(t)) return;
+    out.push({ at: i, level: t });
+  });
+  return out;
+}
+
+const KNOWN_COLS = ['name', 'alias', 'hsn', 'unit', 'sale_price', 'price2',
+  'purchase_price', 'gst_rate', 'opening_stock', 'kind', 'gstin', 'phone',
+  'address', 'state_name', 'opening_balance', 'owed_by'];
+
+// name → { level: rate }
+export function ratesFromCsv(text) {
+  const rows = sheetRows(text);
+  if (rows.length < 2) return { rates: {}, levels: [] };
+  const cols = mapColumns(rows[0], KNOWN_COLS);
+  if (cols.name === undefined) return { rates: {}, levels: [] };
+  // a product sheet's own price columns are not price lists — see above
+  if (cols.purchase_price !== undefined || cols.opening_stock !== undefined
+      || cols.hsn !== undefined || cols.unit !== undefined
+      || cols.gst_rate !== undefined || cols.gstin !== undefined
+      || cols.opening_balance !== undefined || cols.phone !== undefined) {
+    return { rates: {}, levels: [] };
+  }
+  const rateCols = rateColumnsOf(rows[0]);
+  const rates = {};
+  for (let i = 1; i < rows.length; i++) {
+    const name = cell(rows[i], cols.name);
+    if (!name) continue;
+    const one = {};
+    let any = false;
+    for (const c of rateCols) {
+      const v = numOf(cell(rows[i], c.at));
+      if (v) { one[c.level] = v; any = true; }
+    }
+    if (any) rates[tidy(name)] = { ...(rates[tidy(name)] || {}), ...one };
+  }
+  return { rates, levels: rateCols.map((c) => c.level) };
+}
+
+// The same, out of any Tally XML that carries price lists on its stock items.
+export function ratesFromTallyXml(xml) {
+  const t = cleanText(xml);
+  const rates = {};
+  for (const b of blocksOf(t, 'STOCKITEM')) {
+    const name = nameAttr(b) || tagTop(b, 'NAME');
+    if (!name) continue;
+    const list = ratesOf(b);
+    const std = standardRate(b);
+    if (!list.length && !std) continue;
+    const one = {};
+    for (const r of list) {
+      const lv = String(r.level || '').trim() || '(standard)';
+      // newest date wins, which is what rateAt does for a single level
+      if (!one[lv] || (r.date || '') >= (one[lv].date || '')) one[lv] = { rate: r.rate, date: r.date };
+    }
+    const flat = {};
+    for (const k of Object.keys(one)) flat[k] = one[k].rate;
+    if (std) flat['(standard)'] = std;
+    if (Object.keys(flat).length) rates[tidy(name)] = { ...(rates[tidy(name)] || {}), ...flat };
+  }
+  return { rates, levels: priceLevelsInTally(t) };
+}
+
+// { Wholesale: 120 } → the shape rateAt() reads
+const ratesAsList = (obj) => Object.keys(obj || {})
+  .filter((k) => k !== '(standard)')
+  .map((k) => ({ date: '', level: k, rate: obj[k] }));
+
+// Several files, read and put together.
+//
+// `files` is [{ name, text }]. Returns everything the sheet needs, in the same
+// shape the single-file path produces, plus a line per file saying what was
+// found in it — because an import that silently ignored a file he picked is
+// how we got here.
+export function mergeFiles(files, opts = {}) {
+  const notes = [];
+  let items = [], parties = [], allRates = {}, levels = [];
+  let basisItems = null, basisParties = null, noRateSrc = 0, skipped = 0;
+
+  for (const f of (files || [])) {
+    const text = f.text || '';
+    const what = whatsInIt(text);
+
+    // A REAL EXCEL FILE, WHICH IS A ZIP, NOT A PAGE OF TEXT.
+    // Saying "nothing we could use" about a file he was told to produce is
+    // how a morning gets wasted. It says what to do instead.
+    if (what.kind === 'xlsx' || what.kind === 'xls') {
+      notes.push({ file: f.name || 'a file',
+        found: 'an Excel file Skwik cannot open — save it as CSV' });
+      continue;
+    }
+
+    const isXml = what.kind === 'xml';
+    const got = [];
+
+    if (what.items) {
+      const r = isXml ? itemsFromTallyXml(text, {}) : itemsFromCsv(text);
+      if (r.rows && r.rows.length) {
+        items = items.concat(r.rows);
+        basisItems = basisItems || r.basis || null;
+        got.push(`${r.rows.length} items`);
+      }
+    }
+    if (what.parties) {
+      const r = isXml ? partiesFromTallyXml(text) : partiesFromCsv(text);
+      if (r.rows && r.rows.length) {
+        parties = parties.concat(r.rows);
+        basisParties = basisParties || r.basis || null;
+        skipped += r.skipped || 0;
+        got.push(`${r.rows.length} names`);
+      }
+    }
+    if (what.rates) {
+      const r = isXml ? ratesFromTallyXml(text) : ratesFromCsv(text);
+      const n = Object.keys(r.rates).length;
+      if (n) {
+        for (const k of Object.keys(r.rates)) allRates[k] = { ...(allRates[k] || {}), ...r.rates[k] };
+        for (const lv of r.levels) if (lv && levels.indexOf(lv) < 0) levels.push(lv);
+        got.push(`rates for ${n} products`);
+      }
+    }
+    for (const lv of (what.levels || [])) if (lv && levels.indexOf(lv) < 0) levels.push(lv);
+
+    notes.push({ file: f.name || 'a file', found: got.length ? got.join(', ') : 'nothing we could use' });
+  }
+
+  // THE JOIN. Rates from one file, onto items from another, by name — the
+  // same forgiving comparison the rest of the import now uses.
+  const seen = {};
+  const merged = [];
+  for (const it of items) {
+    const k = tidy(it.name);
+    if (seen[k] !== undefined) { merged[seen[k]] = { ...merged[seen[k]], ...it }; continue; }
+    seen[k] = merged.length;
+    const r = allRates[k];
+    merged.push(r ? { ...it, _rates: ratesAsList(r), _std: r['(standard)'] || 0 } : it);
+  }
+  for (const k of Object.keys(allRates)) {
+    if (seen[k] === undefined) noRateSrc++;          // a rate for something we have no item for
+  }
+
+  // The same for the names. Items were folded together and names were not, so
+  // picking one file twice — or an All Masters export alongside a ledger
+  // export, which is a thing anybody might do — counted every customer twice
+  // on the sheet. The save would have collapsed them anyway, but a count he
+  // cannot trust is a count that frightens him off tapping the button.
+  const sawName = {};
+  const names = [];
+  for (const p2 of parties) {
+    const k = tidy(p2.name);
+    if (sawName[k] !== undefined) { names[sawName[k]] = { ...names[sawName[k]], ...p2 }; continue; }
+    sawName[k] = names.length;
+    names.push(p2);
+  }
+  parties = names;
+
+  const priced = applyPriceLevel(merged, opts.level || '', opts.level2 || '');
+  return {
+    items: priced, parties, levels, notes,
+    basis: basisItems || basisParties || null,
+    skipped,
+    orphanRates: noRateSrc,
+    noRate: priced.filter((x) => !x.sale_price).length,
+  };
 }
 
 /* ===================== the blank forms ===================== */
