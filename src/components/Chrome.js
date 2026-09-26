@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView, Keyboard, Platform,
+  View, Text, TextInput, TouchableOpacity, ScrollView, Keyboard, Modal, Platform,
   UIManager, useWindowDimensions, PanResponder } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { groupOf } from '../lib/sections';
@@ -234,6 +234,44 @@ export function Sections({ navigation, org, isOwner, id }) {
         );
       })}
     </View>
+  );
+}
+
+/* ================= a sheet that opens from the TOP ================= */
+
+// A BOX YOU TYPE INTO BELONGS AT THE TOP OF THE SCREEN.
+//
+// He has asked for this twice, and he is right both times: "all my search bar
+// should always be default, stick to top of the screen and never ever at
+// bottom". The customer picker was a sheet that rose from the bottom, so even
+// though the box was the first thing INSIDE it, on the phone it sat down by
+// the keyboard — and every match that appeared pushed it about.
+//
+// A sheet that drops from the top puts the box where his eye already is,
+// holds it still while the list grows underneath it, and leaves the keyboard
+// to fill the bottom of the screen without fighting anything.
+//
+// It is still a sheet and not a screen: the bill stays visible behind it, and
+// tapping the bill closes it — which is the thing he asked for when the
+// picker used to throw him onto a page of its own.
+//
+// `onBackdrop` is left out when there is nothing safe to go back to, and the
+// backdrop then does nothing rather than stranding him.
+export function TopSheet({ visible, onClose, onBackdrop, children, maxHeight = '86%' }) {
+  return (
+    <Modal visible={!!visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-start' }}>
+        <View style={{ backgroundColor: C.bg,
+                       borderBottomLeftRadius: 26, borderBottomRightRadius: 26,
+                       paddingHorizontal: 16, paddingTop: 16, paddingBottom: 14,
+                       maxHeight, flexShrink: 1 }}>
+          {children}
+        </View>
+        {/* what is behind it, still showing */}
+        <TouchableOpacity activeOpacity={1} style={{ flex: 1 }}
+          onPress={() => onBackdrop && onBackdrop()} />
+      </View>
+    </Modal>
   );
 }
 

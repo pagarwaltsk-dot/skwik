@@ -418,14 +418,14 @@ export function partiesFromCsv(text) {
 // The tag must end right after its name, or carry a space before attributes.
 // Without that, asking for NAME also matches <NAME.LIST> and brings back
 // rubbish.
-const rx = (tag) => String(tag).replace(/\./g, '\\.');
+export const rx = (tag) => String(tag).replace(/\./g, '\\.');
 
-const tagOf = (chunk, tag) => {
+export const tagOf = (chunk, tag) => {
   const m = chunk.match(new RegExp(`<${rx(tag)}(?:\\s[^>]*)?>([\\s\\S]*?)</${rx(tag)}>`, 'i'));
   return m ? unesc(m[1].trim()) : '';
 };
 
-const unesc = (s) => String(s)
+export const unesc = (s) => String(s)
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
   .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
   .replace(/&nbsp;/gi, ' ')
@@ -449,12 +449,12 @@ const unesc = (s) => String(s)
 // every nested <SOMETHING.LIST> taken out first. Anything that genuinely
 // lives in a list, an address or a price level, is still read from the whole
 // block by the code that knows to look there.
-const stripLists = (chunk) => String(chunk)
+export const stripLists = (chunk) => String(chunk)
   .replace(/<([A-Za-z0-9_]+\.LIST)(?:\s[^>]*)?>[\s\S]*?<\/\1>/gi, '');
 
-const tagTop = (chunk, tag) => tagOf(stripLists(chunk), tag);
+export const tagTop = (chunk, tag) => tagOf(stripLists(chunk), tag);
 
-const blocksOf = (xml, tag) => {
+export const blocksOf = (xml, tag) => {
   const out = [];
   const re = new RegExp(`<${rx(tag)}(?:\\s[^>]*)?>[\\s\\S]*?</${rx(tag)}>`, 'gi');
   let m;
@@ -462,7 +462,7 @@ const blocksOf = (xml, tag) => {
   return out;
 };
 
-const nameAttr = (chunk) => {
+export const nameAttr = (chunk) => {
   const m = chunk.match(/^<[A-Z.]+\s[^>]*?\bNAME\s*=\s*"([^"]*)"/i);
   return m ? unesc(m[1]) : '';
 };
@@ -475,7 +475,7 @@ const nameAttr = (chunk) => {
 // clips in boxes had a twelfth of its stock, and the value of the shelf came
 // out a twelfth of what Tally says. Tally writes the conversion into the
 // string itself, so it is there to be read.
-const qtyOf = (x) => {
+export const qtyOf = (x) => {
   const t = String(x ?? '');
   if (!t.trim()) return 0;
   const nums = t.match(/-?[\d,]*\.?\d+/g);
@@ -491,7 +491,7 @@ const qtyOf = (x) => {
   return v;
 };
 
-const numOf = (x) => {
+export const numOf = (x) => {
   const m = String(x ?? '').match(/-?[\d,]*\.?\d+/);
   return m ? Number(m[0].replace(/,/g, '')) || 0 : 0;
 };

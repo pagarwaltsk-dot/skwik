@@ -218,7 +218,7 @@ export default function ExpensesScreen({ navigation }) {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 13.5, color: C.ink }}>
-                    He charged no GST \u2014 the GST on this is mine to pay
+                    He charged no GST — the GST on this is mine to pay
                   </Text>
                   <Text style={{ fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 17 }}>
                     {rcm

@@ -86,6 +86,67 @@ export function Figure({ children, width, tone, size = 13.5, weight = '600' }) {
   );
 }
 
+/* ---------------- a card row, the way Past bills does it ---------------- */
+
+// THE LOOK HE PICKED, AND WHY IT IS BETTER THAN A RULED TABLE.
+//
+// "Ledgers, stock should follow structure of past bills, that look looks
+// clean." He is right, and it is not only taste. A ruled table gives every
+// column a fixed width and then punishes anything that does not fit: a long
+// item name is cut off with an ellipsis, and a figure like 1,00,000 in a
+// column sized for 10,000 wraps and prints as 10000 with a nought underneath
+// it — which is not a small thing to see on a page about money.
+//
+// A card gives the name the whole width and lets it run to a second line, and
+// puts the figures underneath with room to breathe and their own small
+// headings, so no column has to be guessed at in advance.
+export function CardRow({ onPress, children, style }) {
+  const body = <View style={[S.line, style]}>{children}</View>;
+  if (!onPress) return body;
+  return <TouchableOpacity onPress={onPress} activeOpacity={0.6}>{body}</TouchableOpacity>;
+}
+
+// The name, wrapping to a second line rather than being cut, with whatever
+// belongs beside it — an edit button, a badge.
+export function CardName({ name, sub, after, lines = 2, tone }) {
+  return (
+    <View style={[S.row, { alignItems: 'flex-start' }]}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text numberOfLines={lines} style={[S.lineNm, tone && { color: tone }]}>{name}</Text>
+        {!!sub && (
+          <Text numberOfLines={2} style={{ fontSize: 11.5, color: C.muted, marginTop: 3,
+                                           lineHeight: 16 }}>
+            {sub}
+          </Text>
+        )}
+      </View>
+      {after}
+    </View>
+  );
+}
+
+// A FIGURE THAT SHRINKS RATHER THAN BREAKS.
+//
+// numberOfLines stops it wrapping; adjustsFontSizeToFit makes it get smaller
+// until it fits instead of being cut off with an ellipsis, which on a number
+// would be worse than either. A rupee figure must always be readable in full
+// or it is not a figure at all.
+export function CardFigure({ label, children, tone, size = 16, weight = '800', flex = 1 }) {
+  return (
+    <View style={{ flex, minWidth: 0 }}>
+      {!!label && (
+        <Text style={{ fontSize: 9.5, fontWeight: '800', letterSpacing: 0.5,
+                       color: C.faint }}>{label}</Text>
+      )}
+      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}
+        style={[S.num, { fontSize: size, fontWeight: weight, marginTop: 2,
+                         color: tone || C.ink }]}>
+        {children}
+      </Text>
+    </View>
+  );
+}
+
 /* ---------------- the strip that names the columns ---------------- */
 
 // cols   [{ label, width }] — a column with no width takes what is left

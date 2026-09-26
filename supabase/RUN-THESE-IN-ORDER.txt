@@ -1,0 +1,71 @@
+RUN THESE IN THIS ORDER
+=======================
+
+Copy each file into the Supabase SQL editor and press Run, top to bottom.
+
+   1.  1.9-fixes.sql
+   2.  1.9.3-security.sql
+   3.  1.9.4-reports-and-dates.sql
+   4.  1.9.5-audit-two.sql
+   5.  1.9.6-audit-three.sql
+   6.  1.9.7-bill-numbers.sql
+   7.  1.9.8-reverse-charge.sql
+   8.  1.9.9-stock-leak.sql
+   9.  1.9.10-godown-and-batches.sql
+  10.  1.9.13-gstr3b.sql
+  11.  1.9.14-subscription.sql
+  12.  1.9.20-godown-register.sql
+  13.  1.9.25-walkin-price-list.sql
+  14.  1.9.34-search-points-and-real-dues.sql
+  15.  1.9.43-stock-adjust.sql
+  16.  1.9.44-import-refs.sql
+  17.  1.9.45-alt-units.sql
+  18.  1.9.48-made-of.sql
+  19.  1.9.49-standing-balances.sql
+  20.  1.9.50-guard-every-write.sql
+  21.  1.9.51-bill-date-window.sql
+  22.  1.9.52-quiet-start.sql
+  23.  1.10.0-imports-and-backup.sql
+
+
+DO NOT USE THE ORDER GITHUB SHOWS YOU
+-------------------------------------
+GitHub sorts these names as words, not as numbers, so on screen it puts
+1.10.0 FIRST and 1.9.3 eighth. Run them that way and files will fail,
+because each one expects the ones above it to have run already.
+
+The list above is the right order. 1.10.0 is LAST.
+
+
+RUNNING ONE TWICE COSTS NOTHING
+-------------------------------
+Every one of these is written so that running it again does nothing.
+Tested: all 23 were run a second time, in order, on a database that
+already had bills, money, stock and ledgers in it. They ran clean and
+not one figure moved.
+
+So if you are not sure which you have already run, run them all. That
+is the safe answer, and it is quicker than working out where you
+stopped.
+
+
+WHAT TO WATCH FOR WHILE THEY RUN
+--------------------------------
+Some of them print a line when they finish. These are the ones worth
+reading:
+
+  1.9.50   guards: every function that writes stands behind assert_can_write
+           If it names any function instead, send me the names.
+
+  1.9.49   dates: every function already reads India's date
+           dates: 0 column default(s) moved onto India's date
+           On the first run these will say how many it moved. On a second
+           run they say nothing was left to move, which is what you want.
+
+  1.9.52   firms in this database: 1. purchase still on for 1, stock still
+           on for 1. No row was changed.
+           This one is telling you that switching the defaults off for NEW
+           shops did not switch anything off for yours.
+
+A message that starts with NOTICE is the file talking to you. A message
+that starts with ERROR is a problem - stop there and send it to me.

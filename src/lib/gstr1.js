@@ -36,8 +36,24 @@ const uqcOf = (unit) => {
 };
 
 // The portal wants 01-09-2026, not 2026-09-01.
+// A DATE AS 2026-08-03, WHATEVER SHAPE IT ARRIVED IN.
+//
+// Every date in this file is read by slicing a string, which is right for
+// what Supabase hands back and silently wrong for a Date object: String(new
+// Date()) is "Mon Aug 03 2026 ...", so the year reads as "Mon " and the whole
+// month drops out of the return with nothing on screen to say so. A file that
+// quietly comes out empty is worse than one that refuses, so the shape is
+// settled once, here, before anything is sliced.
+const ymd = (d) => {
+  if (d instanceof Date && !Number.isNaN(d.getTime())) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+         + `-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  return String(d || '');
+};
+
 const gstDate = (d) => {
-  const s = String(d || '');
+  const s = ymd(d);
   return `${s.slice(8, 10)}-${s.slice(5, 7)}-${s.slice(0, 4)}`;
 };
 
@@ -83,15 +99,28 @@ export function buildGstr1({ org, vouchers, linesByVoucher, year, month }) {
   }
 
   const inMonth = (vouchers || []).filter((v) => {
-    const d = String(v.vdate || '');
+    const d = ymd(v.vdate);
     return Number(d.slice(0, 4)) === Number(year) && Number(d.slice(5, 7)) === Number(month);
   });
 
   // A CANCELLED BILL IS NOT A SALE, BUT ITS NUMBER STILL EXISTS.
   // It is kept out of every value table and counted in the documents-issued
   // table, which is the one place the portal wants to see it.
-  const cancelled = inMonth.filter((v) => v.vtype === 'sale' && v.cancelled_at);
-  const sales     = inMonth.filter((v) => v.vtype === 'sale' && !v.cancelled_at);
+  // WHAT COUNTS AS A SALE IS DECIDED IN ONE PLACE, AND THIS WAS NOT IT.
+  //
+  // Every figure on the server side -- GSTR-3B, the summary, the balance sheet
+  // -- counts a document as outward supply when it is a sale OR an estimate
+  // the shop has told Skwik to treat as its sale (counts_as_sale). This file
+  // looked only for 'sale'. For every shop today the two agree, because a
+  // registered shop's estimates are marked as not counting; but the moment
+  // they ever did, GSTR-1 would have quietly reported less turnover than
+  // GSTR-3B for the same month, and the portal reconciles one against the
+  // other. One rule, written the same way as the rest.
+  const isOutward = (v) => v.vtype === 'sale'
+    || (v.vtype === 'estimate' && v.counts_as_sale !== false);
+
+  const cancelled = inMonth.filter((v) => isOutward(v) && v.cancelled_at);
+  const sales     = inMonth.filter((v) => isOutward(v) && !v.cancelled_at);
 
   // A credit note raised after the 30 November deadline in section 34(2) is a
   // real refund but cannot reduce the tax, so it is left out of the return.

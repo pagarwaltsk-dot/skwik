@@ -1,0 +1,302 @@
+// ===========================================================================
+//  WHAT THIS IS
+//
+//  Every rule in here was a real fault once. Each one was found by hand, and
+//  each one could come back the next time something is written in a hurry --
+//  so it is written down as a check instead of as a memory.
+//
+//  It needs nothing but Node and the files in this folder. No database, no
+//  network, no build. Run it before you upload anything:
+//
+//      node tools/check.mjs
+//
+//  It prints a line per rule and ends with a count. A FAIL is something to
+//  fix, not a warning to live with.
+// ===========================================================================
+
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const rd = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+const list = (dir, ext) => {
+  const out = [];
+  (function walk(d) {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === '.git') continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(ext)) out.push(path.relative(ROOT, p));
+    }
+  })(path.join(ROOT, dir));
+  return out.sort();
+};
+
+let pass = 0; const fails = [];
+const rule = (name, problems) => {
+  const bad = (problems || []).filter(Boolean);
+  if (!bad.length) { console.log(`  ok    ${name}`); pass++; return; }
+  console.log(`  FAIL  ${name}`);
+  bad.slice(0, 8).forEach((b) => console.log(`          ${b}`));
+  if (bad.length > 8) console.log(`          … and ${bad.length - 8} more`);
+  fails.push(name);
+};
+
+const APP = list('src', '.js');
+// IN THE ORDER THEY ARE RUN, not alphabetical. Several of the checks below ask
+// "what does the LAST definition of this function look like", and 1.9.5 sorts
+// before 1.9.43 as text while running after it.
+const vkey = (p) => (p.match(/(\d+(?:\.\d+)*)/) || [, '0'])[1]
+  .split('.').map((n) => String(n).padStart(4, '0')).join('.');
+const SQL = list('supabase', '.sql').sort((a, b) => vkey(a).localeCompare(vkey(b)));
+const src = {}; APP.forEach((f) => { src[f] = rd(f); });
+const sql = {}; SQL.forEach((f) => { sql[f] = rd(f); });
+const lineOf = (s, i) => s.slice(0, i).split('\n').length;
+
+console.log('\nSkwik — the checks that came out of the audit\n');
+
+// -------------------------------------------------------------------------
+// 1. A BACKSLASH-U IN SCREEN TEXT IS PRINTED, NOT UNDERSTOOD.
+//    An escape only works inside quotes. In plain JSX text, and in a JSX
+//    attribute written as a plain string, the shopkeeper sees — itself.
+rule('no \\uXXXX printed to the screen as text', (() => {
+  const bad = [];
+  for (const f of APP) {
+    const s = src[f];
+    // JSX text: between > and < with no braces, and inside a plain attribute
+    for (const m of s.matchAll(/>[^<>{}'"`$?=]*?\\u[0-9a-fA-F]{4}[^<>{}'"`$?=]*?</g)) {
+      bad.push(`${f}:${lineOf(s, m.index)}  ${m[0].replace(/\s+/g, ' ').slice(0, 70)}`);
+    }
+    for (const m of s.matchAll(/\s[a-zA-Z]+="[^"]*\\u[0-9a-fA-F]{4}[^"]*"/g)) {
+      bad.push(`${f}:${lineOf(s, m.index)}  ${m[0].replace(/\s+/g, ' ').slice(0, 70)}`);
+    }
+  }
+  return bad;
+})());
+
+// -------------------------------------------------------------------------
+// 2. GOING HOME MEANS RESETTING THE STACK, NOT PUSHING ANOTHER HOME.
+//    React Navigation 7 stopped walking back for navigate(). After saving a
+//    bill, navigate('Home') left the bill BEHIND home, so the back button
+//    reopened it and asked whether to throw the changes away.
+rule("nobody navigates to 'Home' -- they use goHome()", APP.flatMap((f) => {
+  const s = src[f];
+  if (f.endsWith('components/Chrome.js')) return [];
+  return [...s.matchAll(/navigation\.navigate\(\s*['"]Home['"]/g)]
+    .map((m) => `${f}:${lineOf(s, m.index)}  use goHome(navigation)`);
+}));
+
+// -------------------------------------------------------------------------
+// 3. A DATE IS TODAY WHERE HE IS STANDING.
+//    toISOString() answers in UTC, which until half past five in the morning
+//    is still yesterday in India -- and on 1 April, the wrong financial year.
+rule('no date is taken from UTC', APP.flatMap((f) => {
+  const s = src[f];
+  if (f.endsWith('lib/money.js')) return [];
+  return [...s.matchAll(/toISOString\(\)\s*\.\s*slice\(\s*0\s*,\s*10\s*\)/g)]
+    .map((m) => `${f}:${lineOf(s, m.index)}  use today() from lib/money`);
+}));
+
+// 3b. and the same on the server side
+rule('no SQL written since 1.9.43 reaches for the server clock',
+  SQL.filter((f) => /1\.9\.(4[3-9]|5[0-9])/.test(f)).flatMap((f) => {
+    const s = sql[f];
+    return [...s.matchAll(/\bcurrent_date\b/gi)].filter((m) => {
+      const line = s.slice(s.lastIndexOf('\n', m.index) + 1,
+                           (s.indexOf('\n', m.index) + 1 || s.length + 1) - 1);
+      if (/^\s*--/.test(line)) return false;               // a comment about it
+      if (/'[^']*current_date[^']*'/i.test(line)) return false;  // looking for it in a string
+      return true;
+    }).map((m) => `${f}:${lineOf(s, m.index)}  use today_ist()`);
+  }));
+
+// -------------------------------------------------------------------------
+// 4. A MIGRATION HAS TO SURVIVE THE SUPABASE SQL EDITOR.
+//    It splits a script by counting begin and end, so an unnamed $$ block or
+//    a transaction statement makes it cut a function in half.
+rule('every migration is safe to paste into the Supabase editor',
+  SQL.flatMap((f) => {
+    if (!f.includes('migrations/')) return [];
+    const s = sql[f];
+    const out = [];
+    // older files already installed are left as they are
+    if (!/1\.9\.(4[3-9]|5[0-9])/.test(f)) return [];
+    if (s.includes('$$')) out.push(`${f}  has an unnamed $$ block -- name it, e.g. $fn$`);
+    const tx = [...s.matchAll(/^[ \t]*(begin|commit|rollback)[ \t]*;/gim)];
+    if (tx.length) out.push(`${f}:${lineOf(s, tx[0].index)}  a bare ${tx[0][1]}; -- migrations must not wrap themselves`);
+    for (const tag of new Set([...s.matchAll(/\$[A-Za-z_]{1,12}\$/g)].map((m) => m[0]))) {
+      const n = s.split(tag).length - 1;
+      if (n % 2) out.push(`${f}  ${tag} appears ${n} times -- dollar quotes come in pairs`);
+    }
+    return out;
+  }));
+
+// -------------------------------------------------------------------------
+// 5. EVERY FIELD, TABLE AND FUNCTION THE APP ASKS FOR HAS TO EXIST.
+//    making_enabled did not: the switch in Settings had no column behind it,
+//    so the whole of sets and manufacturing was unreachable.
+const allSql = Object.values(sql).join('\n');
+rule('every firm field the app reads exists in the database', (() => {
+  const wanted = new Set([...Object.values(src).join('\n')
+    .matchAll(/\borg\??\.([a-z_][a-z0-9_]{2,})\b/g)].map((m) => m[1]));
+  const known = new Set();
+  const orgTable = allSql.match(/CREATE TABLE public\.orgs \(([\s\S]*?)\n\);/i);
+  // [ \t] and not \s: \s+ is greedy across newlines, so one match ate the
+  // following line and every other column went missing.
+  // and [a-z0-9_], because price1_name and turnover_above_5cr have digits in
+  // them and a class without digits silently dropped exactly those columns.
+  if (orgTable) for (const m of orgTable[1].matchAll(/^[ \t]+([a-z0-9_]+)[ \t]/gm)) known.add(m[1]);
+  for (const m of allSql.matchAll(/alter table (?:public\.)?orgs[\s\S]{0,200}?add column if not exists ([a-z_]+)/gi)) known.add(m[1]);
+  // things that are not columns at all
+  const notColumns = new Set(['id', 'map', 'filter', 'length', 'name', 'then', 'slice',
+    'toUpperCase', 'toLowerCase', 'trim', 'replace', 'split', 'join', 'includes']);
+  return [...wanted].filter((w) => !known.has(w) && !notColumns.has(w))
+    .map((w) => `orgs.${w} is read by the app and created by no SQL file`);
+})());
+
+rule('every table, view and function the app calls exists in the database', (() => {
+  const app = Object.values(src).join('\n');
+  const bad = [];
+  for (const t of new Set([...app.matchAll(/\.from\(\s*['"]([a-z0-9_]+)['"]/g)].map((m) => m[1]))) {
+    const re = new RegExp(`create\\s+(table|view|or replace view|materialized view)(\\s+if not exists)?\\s+(public\\.)?${t}\\b`, 'i');
+    if (!re.test(allSql)) bad.push(`the table or view "${t}" is read by the app and is in no SQL file`);
+  }
+  for (const r of new Set([...app.matchAll(/\.rpc\(\s*['"]([a-z0-9_]+)['"]/g)].map((m) => m[1]))) {
+    const re = new RegExp(`create\\s+(or replace\\s+)?function\\s+(public\\.)?${r}\\s*\\(`, 'i');
+    if (!re.test(allSql)) bad.push(`the function "${r}" is called by the app and is in no SQL file`);
+  }
+  return bad;
+})());
+
+// -------------------------------------------------------------------------
+// 6. NOTHING THAT CHANGES THE BOOKS MAY SKIP THE GUARD.
+//    A lapsed subscription and a look-only login are both decided in one
+//    place. The stock count, the godown transfer and the manufacturing entry
+//    were all written later and all three walked past it.
+// The NEWEST definition of a function is the one the database ends up with, so
+// an older file without the guard is history, not a hole.
+const newestDef = (fn) => {
+  let found = null;
+  for (const f of SQL) {                        // already in run order
+    const s = sql[f];
+    const hits = [...s.matchAll(new RegExp(`create or replace function public\\.${fn}\\s*\\(`, 'gi'))];
+    if (hits.length) {
+      const at = hits[hits.length - 1].index;
+      found = { file: f, line: lineOf(s, at), text: s.slice(at, at + 9000) };
+    }
+  }
+  return found;
+};
+
+rule('every function that writes stands behind assert_can_write',
+  ['adjust_stock', 'transfer_stock', 'make_goods', 'write_off',
+   'save_voucher', 'update_voucher', 'delete_voucher'].map((fn) => {
+    const d = newestDef(fn);
+    if (!d) return `${fn} is defined in no SQL file`;
+    return /assert_can_write/.test(d.text) ? null
+      : `${d.file}:${d.line}  ${fn} has no guard`;
+  }));
+
+// -------------------------------------------------------------------------
+// 7. THE OWNER'S OWN FIGURES ARE NOT THE COUNTER'S.
+//    balance_sheet and profit_and_loss are SECURITY DEFINER, so locking the
+//    tables behind them made no difference at all: a counter login could read
+//    the shop's capital, its bank loan and its profit straight out of them.
+rule("the balance sheet and the profit are owner-only",
+  ['balance_sheet', 'profit_and_loss'].map((fn) => {
+    const d = newestDef(fn);
+    if (!d) return `${fn} is defined in no SQL file`;
+    return /my_role\(\)\s*<>\s*'owner'/.test(d.text) ? null
+      : `${d.file}  ${fn} does not check my_role() -- a counter login can read it`;
+  }));
+
+// -------------------------------------------------------------------------
+// 8. A CANCELLED BILL IS NOT A BILL.
+//    Saving one again rewrote its lines and took its goods off the shelf a
+//    second time, for a bill no report will ever show.
+rule('a cancelled bill cannot be written again', (() => {
+  const d = newestDef('update_voucher');
+  if (!d) return ['update_voucher is defined in no SQL file'];
+  return /v_cancelled is not null|cancelled_at is not null/.test(d.text) ? []
+    : [`${d.file}  update_voucher does not refuse a cancelled bill`];
+})());
+
+// -------------------------------------------------------------------------
+// 9. THE PARTS LIST IS CLEARED BEFORE IT IS WRITTEN AGAIN.
+//    If the clear-out fails and the write succeeds, the recipe doubles and
+//    every bill of that set takes twice the parts off the shelf.
+rule('the parts list is not written on top of itself', (() => {
+  const s = src['src/screens/ItemsScreen.js'] || '';
+  const i = s.indexOf(".delete().eq('parent_id'");
+  if (i < 0) return [];
+  // the delete and the check that it worked, within a few lines of each other
+  const near = s.slice(Math.max(0, i - 300), i + 400);
+  return /\berror\b/.test(near) ? []
+    : ['ItemsScreen deletes the old parts without checking that the delete worked'];
+})());
+
+// -------------------------------------------------------------------------
+// 10. NOTHING INSIDE A SECURITY DEFINER FUNCTION MAY REACH ANOTHER SHOP.
+//     Row security does not apply inside one, so a tidy-up of the shape
+//     "set org_id = mine where org_id is not mine" reaches across every other
+//     shop in the database. The restore was written that way once.
+rule('no function reaches across shops', (() => {
+  const bad = [];
+  for (const f of SQL) {
+    const s = sql[f];
+    for (const m of s.matchAll(/org_id\s+is\s+distinct\s+from\s+v_org|org_id\s*<>\s*v_org|org_id\s*!=\s*v_org/gi)) {
+      const line = s.slice(s.lastIndexOf('\n', m.index) + 1, s.indexOf('\n', m.index));
+      if (/^\s*--/.test(line)) continue;             // a comment warning about it
+      // READING is fine -- join_org asks whether this login already belongs
+      // to another shop in order to refuse. It is WRITING across shops that
+      // can never be right, so only an update or a delete counts.
+      const before = s.slice(Math.max(0, m.index - 600), m.index).toLowerCase();
+      const verb = ['update ', 'delete from '].map((v) => before.lastIndexOf(v));
+      const stmt = Math.max(...verb);
+      const guard = Math.max(before.lastIndexOf('exists'), before.lastIndexOf('select'),
+                             before.lastIndexOf('if '));
+      if (stmt < 0 || guard > stmt) continue;
+      bad.push(`${f}:${lineOf(s, m.index)}  ${line.trim().slice(0, 70)}`);
+    }
+  }
+  return bad;
+})());
+
+// -------------------------------------------------------------------------
+// 11. AN IMPORT CAN ALWAYS BE TAKEN BACK OUT.
+rule('every import can be undone', (() => {
+  const bad = [];
+  if (!/create table if not exists public\.import_runs/i.test(allSql)) {
+    bad.push('there is no import_runs table');
+  }
+  for (const t of ['vouchers', 'payments', 'stock_moves', 'items', 'parties']) {
+    const re = new RegExp(`alter table public\\.${t}\\s+add column if not exists import_run`, 'i');
+    if (!re.test(allSql)) bad.push(`${t} does not carry the mark of the import that wrote it`);
+  }
+  const app = Object.values(src).join('\n');
+  if (!/rpc\(\s*'import_begin'/.test(app)) bad.push('the loader never opens an import run');
+  if (!/rpc\(\s*'import_undo'/.test(app)) bad.push('nothing in the app can undo an import');
+  return bad;
+})());
+
+// -------------------------------------------------------------------------
+// 12. EVERY SEARCH BOX IS AT THE TOP OF THE SCREEN.
+//     Asked for plainly, twice. A picker that grows downward pushes its own
+//     box off the bottom of the phone.
+rule('no picker sheet grows up from the bottom of the screen', (() => {
+  const s = src['src/components/Pickers.js'] || '';
+  return /justifyContent:\s*'flex-end'/.test(s)
+    ? ["Pickers.js has a sheet pinned to the bottom -- search boxes belong at the top"] : [];
+})());
+
+// -------------------------------------------------------------------------
+console.log('');
+if (!fails.length) {
+  console.log(`${pass} checks passed. Nothing the audit found has come back.\n`);
+  process.exit(0);
+}
+console.log(`${pass} passed, ${fails.length} FAILED:`);
+fails.forEach((f) => console.log(`  - ${f}`));
+console.log('');
+process.exit(1);

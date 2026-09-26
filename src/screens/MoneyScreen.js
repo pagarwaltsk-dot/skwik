@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Alert, BackHandler,
 } from 'react-native';
@@ -6,6 +6,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase, allRows } from '../lib/supabase';
 import { sayPlainly, withTimeout } from '../lib/offline';
 import { useApp } from '../AppContext';
+import { parseQuery } from '../lib/search';
 import { fmt0, num, settle, today } from '../lib/money';
 import { Box, Head, KeyForm, Screen, Sections, Swipe, useSectionSwipe }
   from '../components/Chrome';
@@ -109,9 +110,39 @@ export default function MoneyScreen({ route, navigation }) {
     return () => sub.remove();
   }, [leaveBatch]));
 
-  const matches = text.trim() && !party
-    ? parties.filter((p) => p.name.toLowerCase().includes(text.toLowerCase())).slice(0, 5)
+  // ONE LINE, THE WAY A BILL TAKES ONE.
+  //
+  // "Like we do in line for sale/purchase entries item name and quantity, we
+  // should do for receipt and payment also." Quite — the bill has taken
+  // "thali 12" for a long time and it is the fastest thing in the app, and
+  // there is no reason money should be two boxes and a tap when it can be one
+  // line: "ganesh 5000".
+  //
+  // It is the SAME reader the bill uses, so anything he has learned there
+  // works here: ganesh 5000, ganesh x5000, ganesh 2500+2500.
+  const asked = useMemo(() => parseQuery(text), [text]);
+  const nameOnly = (asked.base || text).trim();
+  const askedAmt = asked.qty;
+
+  const matches = nameOnly && !party
+    ? parties.filter((p) => p.name.toLowerCase().includes(nameOnly.toLowerCase())).slice(0, 5)
     : [];
+
+  // PICKING A NAME CARRIES THE FIGURE WITH IT.
+  //
+  // The amount is put in only when he actually typed one and has not already
+  // typed something into the amount box himself, so a figure he is in the
+  // middle of correcting is never overwritten under his thumb.
+  const choose = (pp) => {
+    setParty(pp);
+    setText(pp.name);
+    if (askedAmt && !String(amount).trim()) {
+      setAmount(String(askedAmt));
+      setTimeout(() => fAmt.current?.focus(), 80);
+    } else {
+      setTimeout(() => fAmt.current?.focus(), 80);
+    }
+  };
 
   const clear = () => {
     setEditing(null); setParty(null); setText(''); setAmount(''); setNote('');
@@ -419,17 +450,23 @@ export default function MoneyScreen({ route, navigation }) {
           <View style={{ height: 18 }} />
           <Text style={S.label}>{received ? 'Received from' : 'Paid to'}</Text>
           <Box ref={fWho} next={isOwner && dateOpen ? fDate : fAmt} style={{ marginTop: 6 }}
-            placeholder="Type a name"
+            placeholder={received ? 'Name and amount \u2014 ganesh 5000' : 'Name and amount \u2014 bharat 5000'}
+            onSubmit={() => { if (matches.length) choose(matches[0]); }}
             value={text} onChangeText={(t) => { setText(t); setParty(null); }} />
+
+          {/* WHAT IT READ, SAID BACK TO HIM. A figure picked out of the middle
+              of what he typed is worth showing before it is used, because a
+              name with a number in it — "Shop 5" — would otherwise take the 5
+              and say nothing. */}
+          {!party && !!askedAmt && !!nameOnly && (
+            <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.accent, marginTop: 6 }}>
+              {nameOnly} {'\u00B7'} {'\u20B9'}{fmt0(askedAmt)}
+            </Text>
+          )}
 
           {matches.map((p) => (
             <TouchableOpacity key={p.id}
-              onPress={() => {
-                setParty(p); setText(p.name);
-                // straight on to the amount — the name is never the last thing
-                // he wants to type
-                setTimeout(() => fAmt.current?.focus(), 80);
-              }}
+              onPress={() => choose(p)}
               style={{ padding: 12, backgroundColor: C.surface, borderWidth: 1,
                        borderColor: C.line, borderRadius: 12, marginTop: 6 }}>
               <Text style={{ fontSize: 15, fontWeight: '700', color: C.ink }}>{p.name}</Text>

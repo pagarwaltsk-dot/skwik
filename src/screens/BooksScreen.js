@@ -276,30 +276,54 @@ export default function BooksScreen({ navigation, route }) {
           {!(sheet?.banks || []).length && <SheetRow label="In the bank" amount={sheet?.bank} />}
           <SheetRow label="Owed by customers" amount={sheet?.debtors} />
           <SheetRow label="Goods on the shelf (at cost)" amount={sheet?.stock} />
+          {/* GST ALREADY IN HAND. It has been worked out on this sheet all
+              along and never shown; a credit balance is money the government
+              owes him and belongs among what he has. */}
+          {!!num(sheet?.gst_credit) && (
+            <SheetRow label="GST credit in hand" amount={sheet?.gst_credit} />
+          )}
+          {/* WHAT HE OWNS THAT NO BILL WILL EVER MENTION. */}
+          {(sheet?.standing || []).filter((x) => x.kind === 'owns').map((x) => (
+            <SheetRow key={x.id} label={x.name} amount={x.amount} />
+          ))}
           <SheetRow label="Total" amount={sheet?.assets} strong />
 
           <Text style={[S.eyebrow, { paddingHorizontal: 14, paddingTop: 22 }]}>
             What the shop owes
           </Text>
           <SheetRow label="Owed to suppliers" amount={sheet?.creditors} tone={C.danger} />
+          {!!num(sheet?.gst_payable) && (
+            <SheetRow label="GST to pay" amount={sheet?.gst_payable} tone={C.danger} />
+          )}
+          {(sheet?.standing || []).filter((x) => x.kind === 'owes').map((x) => (
+            <SheetRow key={x.id} label={x.name} amount={x.amount} tone={C.danger} />
+          ))}
+          {(!!num(sheet?.creditors) || !!num(sheet?.gst_payable) || !!num(sheet?.loans)) && (
+            <SheetRow label="Total" amount={sheet?.liabilities} strong tone={C.danger} />
+          )}
 
           <Text style={[S.eyebrow, { paddingHorizontal: 14, paddingTop: 22 }]}>
             What is left — your own money in the business
           </Text>
           <SheetRow label="Capital" amount={sheet?.capital} strong />
 
-          <View style={{ margin: 14, marginTop: 22, padding: 13, borderRadius: 12,
-                         backgroundColor: C.flagSoft, borderWidth: 1, borderColor: C.flagLine }}>
-            <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.flagInk }}>
-              This is built only from what is in Skwik
+          {/* THE PARAGRAPH THAT USED TO APOLOGISE IS NOW A DOOR.
+              It said a loan and a vehicle were missing and left him to finish
+              the sum on paper. He can put them in. */}
+          <TouchableOpacity onPress={() => navigation.navigate('Standing')}
+            style={{ margin: 14, marginTop: 22, padding: 13, borderRadius: 12,
+                     backgroundColor: C.surface, borderWidth: 1, borderColor: C.line }}>
+            <Text style={{ fontSize: 14.5, fontWeight: '700', color: C.accent }}>
+              {(sheet?.standing || []).length
+                ? `What you own and owe outside the books \u00B7 ${(sheet?.standing || []).length}`
+                : 'Add a loan, the shop, a vehicle \u203A'}
             </Text>
-            <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 4, lineHeight: 17 }}>
-              A loan you have taken, a shop or a vehicle you own, and money drawn
-              for the house are not in these books, so they are not in this
-              figure. Show it to your accountant as a starting point, not as a
-              filed balance sheet.
+            <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>
+              A loan, the shop, a vehicle, machinery — nothing in your bills or
+              receipts can find these, so they are entered once and kept current.
+              With them in, the figure above is your net worth and not a piece of it.
             </Text>
-          </View>
+          </TouchableOpacity>
         </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>

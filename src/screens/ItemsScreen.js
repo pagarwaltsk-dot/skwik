@@ -11,7 +11,7 @@ import { HsnField, UomField } from '../components/Pickers';
 import { Box, Foot, Head, KeyForm, Screen, Sections, Swipe, useSectionSwipe }
   from '../components/Chrome';
 import { ScanSheet } from '../components/Scan';
-import { showVariants } from '../lib/features';
+import { showMaking, showVariants } from '../lib/features';
 import { C, S } from '../theme';
 import { sayPlainly } from '../lib/offline';
 
@@ -21,7 +21,8 @@ const FIELD = {
 };
 
 const empty = { name: '', search_words: '', alias: '', hsn: '', unit: 'PCS', barcode: '',
-  supply: 'taxable', priority: 0,
+  supply: 'taxable', priority: 0, build: '',
+  alt_unit: '', alt_per: '', alt_rate: '',
                 sale_price: '', price2: '', purchase_price: '', gst_rate: '', opening_stock: '' };
 
 // Has he already put something into one of the folded-away fields? If he has,
@@ -30,7 +31,7 @@ const empty = { name: '', search_words: '', alias: '', hsn: '', unit: 'PCS', bar
 const hasMore = (e) => !!e && !!(
   (e.alias || '').trim() || (e.search_words || '').trim() || (e.hsn || '').trim()
   || (e.barcode || '').trim() || (e.variant || '').trim() || e.variant_of
-  || num(e.priority)
+  || num(e.priority) || (e.alt_unit || '').trim()
   || num(e.gst_rate) || num(e.price2) || num(e.purchase_price) || num(e.opening_stock)
   || supplyOf(e) !== 'taxable');
 
@@ -52,6 +53,10 @@ const fill = (item) => ({ ...item,
   purchase_price: String(item.purchase_price ?? ''),
   gst_rate: String(item.gst_rate ?? ''),
   priority: Number(item.priority) || 0,
+  build: item.build || '',
+  alt_unit: item.alt_unit || '',
+  alt_per: String(item.alt_per ?? ''),
+  alt_rate: String(item.alt_rate ?? ''),
   opening_stock: String(item.opening_stock ?? '') });
 
 export default function ItemsScreen({ route, navigation }) {
@@ -67,6 +72,13 @@ export default function ItemsScreen({ route, navigation }) {
   const fGst  = useRef(null), fSale  = useRef(null), fTwo   = useRef(null);
   const fBuy  = useRef(null), fOpen  = useRef(null), fCode = useRef(null);
   const [scanOpen, setScanOpen] = useState(false);
+
+  // WHAT THIS ITEM IS MADE OF, while it is open.
+  //
+  // Held beside the form rather than inside it, because the parts are rows in
+  // their own table and are saved as rows, not as a field on the item.
+  const [parts, setParts] = useState([]);
+  const [partQ, setPartQ] = useState('');
   const [history, setHistory] = useState([]);
 
   // THE SHEET OPENS SHOWING THREE THINGS.
@@ -166,6 +178,20 @@ export default function ItemsScreen({ route, navigation }) {
 
   // What was changed on this item, and when. Read only - the database does
   // not allow these rows to be edited or deleted by anyone.
+  useEffect(() => {
+    if (!edit?.id) { setParts([]); setPartQ(''); return; }
+    let on = true;
+    supabase.from('item_parts')
+      .select('id, child_id, qty, items!item_parts_child_id_fkey(name, unit, purchase_price)')
+      .eq('parent_id', edit.id)
+      .then(({ data }) => { if (on) setParts((data || []).map((r) => ({
+        id: r.id, child_id: r.child_id, qty: String(r.qty),
+        name: r.items?.name || '', unit: r.items?.unit || '',
+        cost: Number(r.items?.purchase_price) || 0 }))); })
+      .catch(() => {});
+    return () => { on = false; };
+  }, [edit?.id]);
+
   useEffect(() => {
     if (!edit?.id) { setHistory([]); return; }
     supabase.from('item_history')
@@ -292,6 +318,19 @@ export default function ItemsScreen({ route, navigation }) {
         alias: (edit.alias || '').trim(),
         hsn: (edit.hsn || '').trim(),
         unit: edit.unit,
+        // AN ORDINARY ITEM, A SET, OR SOMETHING MADE. Sent only when the shop
+        // has the switch on, so a database that has not been brought forward
+        // yet is never handed a column it does not have.
+        ...(showMaking(org) ? { build: edit.build || null } : {}),
+        // THE SECOND UNIT, OR NONE. All three go together: a unit with no
+        // factor would move stock by a number nobody chose, so an incomplete
+        // answer is stored as no second unit at all.
+        alt_unit: (edit.alt_unit || '').trim() && num(edit.alt_per) > 0
+          ? edit.alt_unit.trim() : null,
+        alt_per: (edit.alt_unit || '').trim() && num(edit.alt_per) > 0
+          ? num(edit.alt_per) : null,
+        alt_rate: (edit.alt_unit || '').trim() && num(edit.alt_per) > 0
+          ? num(edit.alt_rate) : null,
         sale_price: num(edit.sale_price),
         price2: num(edit.price2),
         purchase_price: num(edit.purchase_price),
@@ -300,11 +339,14 @@ export default function ItemsScreen({ route, navigation }) {
         // his own 1-10, or 0 for "you decide"
         priority: Math.max(0, Math.min(10, Math.round(num(edit.priority)))),
       };
+      // A NEW ITEM HAS NO ID UNTIL THE DATABASE GIVES IT ONE, and the parts
+      // it is made of are rows that point at that id. So an insert asks for
+      // the row back; an update already knows which row it is.
       const put = (b) => (edit.id
         ? supabase.from('items').update(b).eq('id', edit.id)
-        : supabase.from('items').insert(b));
+        : supabase.from('items').insert(b).select().single());
 
-      let { error } = await put(body);
+      let { data: made, error } = await put(body);
 
       // SAVING AN ITEM MUST NOT DEPEND ON A PIECE OF SQL HE HAS NOT RUN YET.
       //
@@ -316,9 +358,49 @@ export default function ItemsScreen({ route, navigation }) {
       // lands. Only the points are lost, and only until the SQL is run.
       if (error && /priority/i.test(error.message || '')) {
         const { priority: _drop, ...rest } = body;
-        ({ error } = await put(rest));
+        ({ data: made, error } = await put(rest));
+      }
+      // THE SAME FALLBACK FOR `build`, for the same reason.
+      if (error && /build/i.test(error.message || '')) {
+        const { build: _b, ...rest } = body;
+        ({ data: made, error } = await put(rest));
       }
       if (error) return Alert.alert('Could not save', sayPlainly(error));
+
+      // WHAT IT IS MADE OF, SAVED AS ROWS.
+      //
+      // The parts are not a field on the item; they are rows of their own, so
+      // they are written after the item exists and its id is known. The whole
+      // recipe is replaced rather than patched line by line: it is a handful
+      // of rows, he has the finished list in front of him, and working out
+      // which single row changed is a way to get it subtly wrong.
+      if (showMaking(org)) {
+        const parent = edit.id || made?.id || body.id;
+        if (parent) {
+          const good = parts.filter((x) => x.child_id && num(x.qty) > 0);
+          // THE CLEAR-OUT HAS TO SUCCEED BEFORE THE NEW LIST GOES IN.
+          //
+          // The old rows are deleted and the list is written again from
+          // scratch, which is the only way to get an edit right. If the delete
+          // quietly fails and the insert then succeeds, the recipe is DOUBLED:
+          // one bucket starts taking two bodies, two handles and two lids off
+          // the shelf, on every bill, and nothing anywhere says why. So it is
+          // checked, and nothing is written on top of a list that is still
+          // there.
+          const { error: de } = await supabase.from('item_parts')
+            .delete().eq('parent_id', parent);
+          if (de) return Alert.alert('The item is saved, but not what it is made of',
+            `${sayPlainly(de)}\n\nWhat it was made of before is unchanged. Open it again and set the parts.`);
+          if (good.length) {
+            const { error: pe } = await supabase.from('item_parts').insert(
+              good.map((x) => ({ org_id: org.id, parent_id: parent,
+                                 child_id: x.child_id, qty: num(x.qty) })));
+            if (pe) return Alert.alert('The item is saved, but not what it is made of',
+              sayPlainly(pe));
+          }
+        }
+      }
+
       setEdit(null); load();
     };
 
@@ -673,6 +755,169 @@ export default function ItemsScreen({ route, navigation }) {
                   <Text style={[S.label, { marginTop: 14 }]}>GST RATE %</Text>
                   <Box ref={fGst} next={fTwo} style={{ marginTop: 6 }} keyboardType="numeric"
                     value={edit.gst_rate} onChangeText={set('gst_rate')} />
+                </>
+              )}
+
+              {/* MADE OF OTHER THINGS.
+                  *
+                  * A drum body and a lid go out as one drum with a lid. There
+                  * are two ways that can work and they are not the same:
+                  *
+                  *   A SET is put together as it is sold. The bill says one
+                  *   bucket, the shelf gives up a body, two handles and a
+                  *   lid, and there is never a pile of buckets anywhere. He
+                  *   enters nothing extra, ever.
+                  *
+                  *   SOMETHING MADE is produced first and sold later. It has
+                  *   its own pile and its own cost, and it needs an entry on
+                  *   the day it is made — which is under Stock.
+                  *
+                  * The difference is whether he holds finished goods. Asked
+                  * in those words rather than in the trade's.
+                  */}
+              {showMaking(org) && (
+                <>
+                  <Text style={[S.label, { marginTop: 18 }]}>MADE OF OTHER THINGS</Text>
+                  <View style={[S.row, { gap: 6, marginTop: 6, flexWrap: 'wrap' }]}>
+                    {[{ k: '', label: 'No' },
+                      { k: 'kit', label: 'A set, put together as it is sold' },
+                      { k: 'made', label: 'Made first, then sold' }].map((b) => {
+                      const on = (edit.build || '') === b.k;
+                      return (
+                        <TouchableOpacity key={b.k || 'none'} onPress={() => set('build')(b.k)}
+                          style={{ paddingHorizontal: 12, paddingVertical: 9, borderRadius: 9,
+                                   borderWidth: 1, borderColor: on ? C.accent : C.line,
+                                   backgroundColor: on ? C.accentSoft : C.surface }}>
+                          <Text style={{ fontSize: 12.5, fontWeight: '700',
+                                         color: on ? C.accent : C.muted }}>{b.label}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {!!(edit.build || '') && (
+                    <>
+                      <Text style={S.hint}>
+                        {edit.build === 'kit'
+                          ? 'Billing one of these takes the parts below off the shelf. This item itself never holds stock.'
+                          : 'This item holds its own stock. Use Stock \u2192 Move & correct \u2192 Make to turn the parts below into finished goods.'}
+                      </Text>
+
+                      {parts.map((x, ix) => (
+                        <View key={x.child_id || ix} style={[S.line, { marginTop: 8 }]}>
+                          <View style={S.row}>
+                            <Text style={[S.lineNm, { flex: 1 }]} numberOfLines={2}>{x.name}</Text>
+                            <TouchableOpacity
+                              onPress={() => setParts((ps) => ps.filter((y) => y !== x))}
+                              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                              <Text style={{ fontSize: 20, color: C.danger }}>{'\u00D7'}</Text>
+                            </TouchableOpacity>
+                          </View>
+                          <View style={[S.row, { gap: 8, marginTop: 8 }]}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={S.cellLabel}>
+                                How many {uqcShort(x.unit)} in one
+                              </Text>
+                              <TextInput style={[S.cell, S.num]} keyboardType="numeric"
+                                selectTextOnFocus value={String(x.qty)}
+                                onChangeText={(t) => setParts((ps) =>
+                                  ps.map((y) => (y === x ? { ...y, qty: t } : y)))} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={S.cellLabel}>Costs</Text>
+                              <Text style={[{ fontSize: 15, fontWeight: '700', color: C.muted,
+                                              paddingVertical: 11 }, S.num]}>
+                                {'\u20B9'}{fmt0(num(x.qty) * num(x.cost))}
+                              </Text>
+                            </View>
+                          </View>
+                        </View>
+                      ))}
+
+                      {/* WHAT THE PARTS COME TO, so a selling price set beside
+                          it is set against something. */}
+                      {parts.length > 1 && (
+                        <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink,
+                                       marginTop: 8 }}>
+                          The parts come to {'\u20B9'}
+                          {fmt0(parts.reduce((t, x) => t + num(x.qty) * num(x.cost), 0))} each
+                        </Text>
+                      )}
+
+                      <Text style={[S.label, { marginTop: 12 }]}>ADD A PART</Text>
+                      <Box style={{ marginTop: 6 }} value={partQ} onChangeText={setPartQ}
+                        placeholder="Search your items" />
+                      {partQ.trim().length >= 2 && rows
+                        .filter((r) => r.id !== edit.id
+                          && !parts.some((x) => x.child_id === r.id)
+                          && `${r.name} ${r.search_words || ''}`.toLowerCase()
+                               .includes(partQ.trim().toLowerCase()))
+                        .slice(0, 6)
+                        .map((r) => (
+                          <TouchableOpacity key={r.id}
+                            onPress={() => {
+                              setParts((ps) => [...ps, { child_id: r.id, name: r.name,
+                                unit: r.unit, qty: '1',
+                                cost: Number(r.purchase_price) || 0 }]);
+                              setPartQ('');
+                            }}
+                            style={{ paddingVertical: 12, borderBottomWidth: 1,
+                                     borderBottomColor: C.line }}>
+                            <Text style={{ fontSize: 15, fontWeight: '700', color: C.ink }}>
+                              {r.name}
+                            </Text>
+                            <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
+                              costs {'\u20B9'}{fmt0(r.purchase_price)} a {uqcShort(r.unit)}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                    </>
+                  )}
+                </>
+              )}
+
+              {/* ALSO SOLD BY THE DOZEN.
+                  *
+                  * One customer takes two dozen spoons and the next takes
+                  * fifteen. The shelf is counted in ONE unit whatever happens
+                  * — the one above — and this is a second way of saying it on
+                  * a bill. Two dozen prints as two dozen and takes twenty-four
+                  * pieces off the shelf.
+                  *
+                  * The rate is asked for separately rather than worked out as
+                  * twelve times the piece rate, because a dozen is priced as a
+                  * dozen: 600 for twelve is not 12 x 55.
+                  */}
+              <Text style={[S.label, { marginTop: 18 }]}>ALSO SOLD BY</Text>
+              <Text style={S.hint}>
+                Leave this alone unless the same thing sells in two units.
+              </Text>
+              <View style={{ marginTop: 6 }}>
+                <UomField value={edit.alt_unit} onChange={set('alt_unit')} allowEmpty />
+              </View>
+
+              {!!(edit.alt_unit || '').trim() && (
+                <>
+                  <Text style={[S.label, { marginTop: 12 }]}>
+                    HOW MANY {uqcShort(edit.unit).toUpperCase()} IN ONE{' '}
+                    {uqcShort(edit.alt_unit).toUpperCase()}
+                  </Text>
+                  <Box style={{ marginTop: 6 }} keyboardType="numeric"
+                    value={edit.alt_per} onChangeText={set('alt_per')} />
+                  <Text style={[S.label, { marginTop: 12 }]}>
+                    PRICE FOR ONE {uqcShort(edit.alt_unit).toUpperCase()}
+                  </Text>
+                  <Box style={{ marginTop: 6 }} keyboardType="numeric"
+                    value={edit.alt_rate} onChangeText={set('alt_rate')} />
+                  {num(edit.alt_per) > 0 && (
+                    <Text style={[S.hint, { marginTop: 6 }]}>
+                      One {uqcShort(edit.alt_unit)} = {edit.alt_per}{' '}
+                      {uqcShort(edit.unit)}
+                      {num(edit.alt_rate) > 0
+                        ? ` \u00B7 that works out at \u20B9${fmt0(num(edit.alt_rate) / num(edit.alt_per))} a ${uqcShort(edit.unit)}`
+                        : ''}
+                    </Text>
+                  )}
                 </>
               )}
 
