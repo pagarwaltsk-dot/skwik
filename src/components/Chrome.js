@@ -463,6 +463,29 @@ export function useSectionSwipe(navigation, org, isOwner, id) {
   };
 }
 
+// BACK TO THE DAY BOOK, WITH NOTHING LEFT BEHIND.
+//
+// `navigation.navigate('Home')` used to walk back to the day book. In React
+// Navigation 6 it did: navigate looked for a screen of that name already in
+// the stack and popped everything above it. Version 7 changed that — navigate
+// now PUSHES a second copy — and Skwik moved to 7 without the call changing.
+//
+// So every bill he saved left this behind:
+//
+//     Home  ->  Bill (the one he just saved)  ->  Home
+//
+// He is looking at the second Home, the bill is still underneath it, and the
+// phone's back button pops that Home and lands him right back on the bill he
+// thought he had finished with — which then asks whether to save or throw away
+// changes he had already saved. He reported exactly that, and it is a bug, not
+// a feature. It also meant the stack grew by two screens per bill, all day.
+//
+// reset says what is actually meant: the day book, and nothing on top of it.
+// It behaves the same on every version, so it cannot drift again.
+export function goHome(navigation) {
+  navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+}
+
 export function useTabSwipe(tabs, current, set) {
   const i = tabs.indexOf(current);
   return {

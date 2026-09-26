@@ -34,12 +34,43 @@ export function Rule({ children, onPress, live, last, style }) {
 }
 
 // the words on a ruled line
-export function Words({ name, sub, flex = 1, numberOfLines = 1 }) {
+//
+// `after` is a small thing that belongs to the NAME rather than to the line —
+// an edit button, say. It sits immediately beside the name, where the eye is
+// already looking, instead of at the far end of the row where it reads as a
+// third column of its own.
+export function Words({ name, sub, flex = 1, numberOfLines = 1, after }) {
   return (
     <View style={{ flex, minWidth: 0 }}>
-      <Text numberOfLines={numberOfLines} style={S.ruleNm}>{name}</Text>
+      {after ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text numberOfLines={numberOfLines} style={[S.ruleNm, { flexShrink: 1 }]}>{name}</Text>
+          {after}
+        </View>
+      ) : (
+        <Text numberOfLines={numberOfLines} style={S.ruleNm}>{name}</Text>
+      )}
       {!!sub && <Text numberOfLines={1} style={S.ruleSub}>{sub}</Text>}
     </View>
+  );
+}
+
+// A SMALL WORD, AND A THUMB-SIZED TAP AROUND IT.
+//
+// He asked for the edit to be small and to sit beside the name. Small ink and
+// a small target are not the same thing: the letters are 9.5pt and the hitSlop
+// around them is 12 in every direction, so it reads as a footnote and is
+// pressed like a button.
+export function EditKey({ onPress, label, word = 'EDIT' }) {
+  return (
+    <TouchableOpacity onPress={onPress} accessibilityLabel={label}
+      hitSlop={{ top: 12, bottom: 12, left: 10, right: 12 }}
+      style={{ marginLeft: 7, paddingHorizontal: 5, paddingVertical: 1.5, borderRadius: 5,
+               borderWidth: 1, borderColor: C.line, backgroundColor: C.surface }}>
+      <Text style={{ fontSize: 9.5, fontWeight: '800', letterSpacing: 0.3, color: C.muted }}>
+        {word}
+      </Text>
+    </TouchableOpacity>
   );
 }
 

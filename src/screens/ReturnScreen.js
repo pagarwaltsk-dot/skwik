@@ -13,7 +13,7 @@ import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
 import { uuid, sayPlainly } from '../lib/offline';
 import { pdfName, sharePdf } from '../lib/pdf';
-import { BackButton, Bar, Foot, Screen } from '../components/Chrome';
+import { BackButton, Bar, Foot, goHome, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // GOODS COMING BACK.
@@ -420,7 +420,7 @@ export default function ReturnScreen({ route, navigation }) {
               onPress={() => Print.printAsync({ html: html() })}>
               <Text style={[S.ghostText, { fontSize: 16 }]}>Print</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => { setSaved(null); navigation.navigate('Home'); }}
+            <TouchableOpacity onPress={() => { setSaved(null); goHome(navigation); }}
               style={{ marginTop: 16, alignItems: 'center', paddingVertical: 10 }}>
               <Text style={{ fontSize: 16, fontWeight: '600', color: C.muted }}>Done</Text>
             </TouchableOpacity>

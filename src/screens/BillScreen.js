@@ -33,7 +33,7 @@ import {
   cachedItems, cachedParties, takeLocalNumber, queueAdd, flushQueue, sayPlainly,
 } from '../lib/offline';
 import {
-  BackButton, Bar, Box, Foot, KeyForm, Screen, useKeyboardGap, NumCell } from '../components/Chrome';
+  BackButton, Bar, Box, Foot, goHome, KeyForm, Screen, useKeyboardGap, NumCell } from '../components/Chrome';
 import { ScanSheet, ScanButton } from '../components/Scan';
 import { ColHead } from '../components/Register';
 import { CalButton, Calendar } from '../components/DatePick';
@@ -109,6 +109,19 @@ export default function BillScreen({ route, navigation }) {
   // cheap phone on a mobile pack. It is asked when he opens the list for a
   // line, and the answer is held for that item and that store.
   const [inStock, setInStock] = useState({});   // item+godown -> the batches there
+
+  // WHAT IS ON THE SHELF, WHILE HE IS STILL LOOKING FOR THE ITEM.
+  //
+  // He said it plainly: the rate on the search list is worth nothing, because
+  // the moment he picks the item the rate lands in the line in front of him.
+  // What he cannot see anywhere, at the one moment he needs it — a customer
+  // asking for forty and him about to promise them — is how many there are.
+  //
+  // `null` means NOT KNOWN YET, and is not the same as nought. Until the
+  // figures land, or on a shop that keeps no stock, the list shows the rate as
+  // it always did. Showing "0 in hand" because a read had not come back would
+  // be worse than showing nothing.
+  const [stock, setStock] = useState(null);   // { all: {id:qty}, at: {godown: {id:qty}} }
   const [pickFor, setPickFor] = useState(null); // the line whose batch list is open
   const asking = useRef({});                    // one request per item, not one per tap
   const [extraGst, setExtraGst] = useState('');    // '' = the dearest rate on the bill
@@ -271,8 +284,39 @@ export default function BillScreen({ route, navigation }) {
         // EMPTY cache over the real one. Offline billing looked finished and
         // worked on the day it was written; by the time the signal actually
         // dropped there was nothing left to bill with.
+        // Stamped with whose book it is: one handset can hold two logins, and
+        // an unstamped copy let the next login be shown the previous shop's
+        // items and customers.
         cacheItems(org?.id, i || []);
         cacheParties(org?.id, p || []);
+
+        // ASKED FOR SEPARATELY, AND NEVER WAITED ON.
+        //
+        // Billing must not get slower because of a courtesy figure, so this
+        // is not part of the load above: the items and the names are already
+        // on screen by the time it answers, and if it never answers the list
+        // simply goes on showing the rate.
+        if (org?.stock_enabled) {
+          const byGodown = showGodowns(org);
+          (byGodown
+            ? allRows(() => supabase.from('stock_in_hand_detail')
+                .select('item_id, godown_id, qty'))
+            : allRows(() => supabase.from('stock_in_hand').select('item_id, qty')))
+            .then((rows) => {
+              const all = {}, at = {};
+              (rows || []).forEach((r) => {
+                const id = r.item_id;
+                if (!id) return;
+                all[id] = num(all[id]) + num(r.qty);
+                if (byGodown && r.godown_id) {
+                  (at[r.godown_id] = at[r.godown_id] || {})[id] =
+                    num(at[r.godown_id][id]) + num(r.qty);
+                }
+              });
+              setStock({ all, at });
+            })
+            .catch(() => {});
+        }
       } catch (e) {
         // no signal, or the server is not answering: use what we copied last time
         const [ci, cp] = await Promise.all([cachedItems(org?.id), cachedParties(org?.id)]);
@@ -731,6 +775,19 @@ export default function BillScreen({ route, navigation }) {
   /* ---------------- which store this line came out of ---------------- */
 
   // A line follows the bill unless he has pointed it somewhere else.
+  // HOW MANY OF THIS ONE, IN THE STORE THIS BILL IS COMING OUT OF.
+  //
+  // A shop with two godowns that was shown the firm's total would be told it
+  // had forty when thirty of them are three miles away at the other store —
+  // exactly the promise a shopkeeper must not make. With a store chosen, the
+  // figure is that store's. With none chosen, or only one store kept, it is
+  // the firm's. `null` back means the figures are not in yet.
+  const haveOf = (id) => {
+    if (!stock || !id) return null;
+    if (godown && stock.at[godown]) return num(stock.at[godown][id] || 0);
+    return num(stock.all[id] || 0);
+  };
+
   const lineGodown = (l) => l.godown_id || godown;
   const godownName = (id) => godowns.find((g) => g.id === id)?.name || '';
 
@@ -1230,7 +1287,7 @@ export default function BillScreen({ route, navigation }) {
         party: pty, lines: c.lines, queued,
       };
       newParty.current = null; newItems.current = []; billId.current = null;
-      if (holdOnly) { setSaved(null); navigation.navigate('Home'); }
+      if (holdOnly) { setSaved(null); goHome(navigation); }
       else setSaved(rec);
     } catch (e) {
       // IF THE BOOKS WERE ALREADY WRITTEN, SAYING "could not save" IS A LIE,
@@ -1240,7 +1297,7 @@ export default function BillScreen({ route, navigation }) {
           'It is in your books. Skwik could not open the send-and-print sheet '
           + 'for it.\n\nFind it under Past bills to print it or send it on '
           + 'WhatsApp. Do not write it again.',
-          [{ text: 'OK', onPress: () => navigation.navigate('Home') }]);
+          [{ text: 'OK', onPress: () => goHome(navigation) }]);
       } else {
         Alert.alert('Could not save', sayPlainly(e));
       }
@@ -1643,10 +1700,31 @@ export default function BillScreen({ route, navigation }) {
                       </Text>
                     </View>
                     <View style={{ alignItems: 'flex-end' }}>
-                      <Text style={[S.hitPr, S.num]}>{fmt0(listRate(h.p))}</Text>
-                      <Text style={{ fontSize: 10, color: C.muted }}>
-                        {priceList === 1 ? (org?.price1_name || 'Wholesale') : (org?.price2_name || 'Retail')}
-                      </Text>
+                      {(() => {
+                        const have = haveOf(h.p.id);
+                        // not a stock shop, or the figures have not landed:
+                        // the rate, exactly as before
+                        if (have === null) return (
+                          <>
+                            <Text style={[S.hitPr, S.num]}>{fmt0(listRate(h.p))}</Text>
+                            <Text style={{ fontSize: 10, color: C.muted }}>
+                              {priceList === 1 ? (org?.price1_name || 'Wholesale')
+                                               : (org?.price2_name || 'Retail')}
+                            </Text>
+                          </>
+                        );
+                        return (
+                          <>
+                            <Text style={[S.hitPr, S.num,
+                                          have <= 0 && { color: C.red }]}>
+                              {qty(have)}
+                            </Text>
+                            <Text style={{ fontSize: 10, color: have <= 0 ? C.red : C.muted }}>
+                              {uqcShort(h.p.unit)} in hand
+                            </Text>
+                          </>
+                        );
+                      })()}
                     </View>
                   </TouchableOpacity>
                 ))}
@@ -2662,7 +2740,7 @@ export default function BillScreen({ route, navigation }) {
                 <Text style={[S.ghostText, { fontSize: 15 }]}>Send</Text>
               </TouchableOpacity>
             </View>
-            <TouchableOpacity onPress={() => { setSaved(null); navigation.navigate('Home'); }}
+            <TouchableOpacity onPress={() => { setSaved(null); goHome(navigation); }}
               style={{ marginTop: 16, alignItems: 'center', paddingVertical: 10 }}>
               <Text style={{ fontSize: 16, fontWeight: '600', color: C.muted }}>Done</Text>
             </TouchableOpacity>

@@ -3,6 +3,28 @@
     "version": ">= 5.0.0",
     "appVersionSource": "local"
   },
+
+  "//": [
+    "WHY AN APK IS TWICE THE SIZE OF WHAT THE PLAY STORE SENDS.",
+    "",
+    "An Android phone runs one of four instruction sets. A plain APK has to",
+    "work on any of them, so it carries the React Native engine four times",
+    "over - arm64-v8a, armeabi-v7a, x86 and x86_64 - and only one of those",
+    "copies is ever run. That is the 104 MB.",
+    "",
+    "An app bundle (.aab) sends Google all four and Google builds a private",
+    "APK per phone with only its own copy inside. That download is roughly a",
+    "third of the size. A competitor's '54 MB' on the store listing is that",
+    "figure; comparing it with our sideload APK is not comparing like with",
+    "like.",
+    "",
+    "So: 'production' stays an app bundle, which is what goes on the store.",
+    "'preview' is the APK for sending to a shopkeeper by WhatsApp, and it now",
+    "drops the two x86 builds - those are emulators and a few Chromebooks, not",
+    "phones - which takes about 40% off it at no cost to any real customer.",
+    "'universal' is kept for the rare machine that needs x86."
+  ],
+
   "build": {
     "development": {
       "developmentClient": true,
@@ -12,13 +34,31 @@
         "image": "latest"
       }
     },
+
     "preview": {
+      "distribution": "internal",
+      "android": {
+        "image": "latest",
+        "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a,armeabi-v7a"
+      }
+    },
+
+    "arm64": {
+      "distribution": "internal",
+      "android": {
+        "image": "latest",
+        "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a"
+      }
+    },
+
+    "universal": {
       "distribution": "internal",
       "android": {
         "buildType": "apk",
         "image": "latest"
       }
     },
+
     "production": {
       "android": {
         "buildType": "app-bundle",
@@ -26,6 +66,7 @@
       }
     }
   },
+
   "submit": {
     "production": {}
   }

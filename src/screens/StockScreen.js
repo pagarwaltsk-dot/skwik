@@ -7,6 +7,7 @@ import { fmt0, num, qty as qtyText, today as todayHere } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { showBatch, showExpiry, showGodowns, showVariants } from '../lib/features';
 import { Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
+import { EditKey } from '../components/Register';
 import { C, S } from '../theme';
 
 // WHAT IS LEFT, AND WHERE IT IS.
@@ -446,9 +447,12 @@ export default function StockScreen({ navigation }) {
                        color: C.faint }}>ITEM</Text>
         <Text style={[{ width: 80, fontSize: 10.5, fontWeight: '800', letterSpacing: 0.6,
                         color: C.faint, textAlign: 'right' }]}>IN HAND</Text>
-        <Text style={[{ width: 68, fontSize: 10.5, fontWeight: '800', letterSpacing: 0.6,
-                        color: C.faint, textAlign: 'right' }]}>RATE</Text>
-        <View style={{ width: 52 }} />
+        {/* "RATE" on its own is the question, not the answer — a purchase
+            rate and a selling rate are both rates, and the one in this column
+            is what he sells it for. Named in full, and the column widened to
+            hold the name. */}
+        <Text style={[{ width: 78, fontSize: 10, fontWeight: '800', letterSpacing: 0.2,
+                        color: C.faint, textAlign: 'right' }]}>SELLING RATE</Text>
       </View>
 
       <FlatList
@@ -479,11 +483,24 @@ export default function StockScreen({ navigation }) {
                                borderBottomWidth: 1,
                                borderBottomColor: C.line }]}>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text numberOfLines={1}
-                  style={{ fontSize: under ? 13.5 : 15.5, fontWeight: under ? '600' : '700',
-                           color: item.gone ? C.danger : C.ink }}>
-                  {item.title}
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text numberOfLines={1}
+                    style={{ flexShrink: 1,
+                             fontSize: under ? 13.5 : 15.5, fontWeight: under ? '600' : '700',
+                             color: item.gone ? C.danger : C.ink }}>
+                    {item.title}
+                  </Text>
+                  {/* BESIDE THE NAME, NOT AT THE END OF THE LINE. A button in
+                      a column of its own read as a third figure and pushed the
+                      name into an ellipsis; here it is a footnote on the name
+                      and the name gets its width back. Not on a batch, and not
+                      on the parent's own loose line — that is the same item's
+                      edit twice in a row. */}
+                  {!item.isBatch && !item.isOwn && !!item.item_id && (
+                    <EditKey label={`Edit ${item.title}`}
+                      onPress={() => navigation.navigate('Items', { editId: item.item_id })} />
+                  )}
+                </View>
                 {!!item.sub && (
                   <Text style={{ fontSize: 11.5, marginTop: 2,
                                  color: item.gone ? C.danger : C.muted }}>
@@ -515,28 +532,12 @@ export default function StockScreen({ navigation }) {
                   left blank rather than repeating the item's figure under it
                   as though the lot were priced separately. */}
               <Text numberOfLines={1}
-                style={[{ width: 68, textAlign: 'right',
+                style={[{ width: 78, textAlign: 'right',
                           fontSize: under ? 13 : 14.5, fontWeight: '700',
                           color: item.isBatch ? 'transparent' : C.muted }, S.num]}>
                 {item.isBatch ? '' : (num(item.rate) ? `\u20B9${fmt0(item.rate)}` : '\u2014')}
               </Text>
 
-              {/* EDIT BESIDE EVERY ITEM, which is what he asked for. Not on a
-                  batch, and not on the parent's own loose line, which would be
-                  the same item's edit button twice in a row. */}
-              <View style={{ width: 52, alignItems: 'flex-end' }}>
-                {!item.isBatch && !item.isOwn && !!item.item_id && (
-                  <TouchableOpacity
-                    onPress={() => navigation.navigate('Items', { editId: item.item_id })}
-                    hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
-                    style={{ paddingHorizontal: 8, paddingVertical: 5, borderRadius: 7,
-                             borderWidth: 1, borderColor: C.line, backgroundColor: C.surface }}>
-                    <Text style={{ fontSize: 10.5, fontWeight: '800', color: C.accent }}>
-                      EDIT
-                    </Text>
-                  </TouchableOpacity>
-                )}
-              </View>
             </TouchableOpacity>
           );
         }}
