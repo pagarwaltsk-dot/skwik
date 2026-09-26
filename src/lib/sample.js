@@ -407,6 +407,7 @@ export function planSample({
     }
     return roomLeft[rec.party_id];
   };
+  const shortfall = [];     // receipts the days could not carry the whole of
   const owedFirst = [];     // receipts left alone: that customer still owed money
   let trimmed = 0;          // rupees of receipt covered by an old due, not billed
   const billedAgainst = {}; // receipt id -> rupees of bills actually raised for it
@@ -529,7 +530,54 @@ export function planSample({
       if (broke) { out.forEach((o) => putBack(o.lines)); continue; }
       made = out;
     }
+
+    // AS MUCH AS THE DAYS ALLOW, RATHER THAN NOTHING AT ALL.
+    //
+    // He put in a receipt of five lakh against a customer who owed him one
+    // thirty, so three seventy needed explaining — and Skwik wrote NOT ONE
+    // BILL. Three seventy needs fourteen separate days at the ceiling, his
+    // period held five, and the whole thing was abandoned rather than settled
+    // in part. From where he sat it simply did nothing and said nothing.
+    //
+    // That is the wrong answer. Five days can still carry a lakh and a half,
+    // and a lakh and a half of his money explained is better than none of it.
+    // So when the full amount will not fit in the days available, it writes
+    // what WILL fit, and the plan says how much is left and why — which is a
+    // thing he can act on by widening the dates.
+    let short = 0;
+    if (!made) {
+      const room = (near.length ? near : days);
+      const canDo = Math.min(room.length, Math.max(0, HARD_STOP - bills.length));
+      // aimed at the comfortable size rather than the ceiling, so the bills
+      // that do get written still look like a shop's ordinary bills
+      const reach = Math.min(amt, canDo * PART_SIZE);
+      if (canDo >= 1 && reach >= 1) {
+        const n = Math.max(1, Math.min(canDo, partsFor(reach)));
+        const dates = n === 1 ? [onDate || pick(r, room)] : chooseDays(n);
+        if (dates.length === n) {
+          const cut = n === 1 ? [Math.round(reach)] : evenParts(Math.round(reach), n, r);
+          const out = [];
+          for (let k = 0; k < n; k++) {
+            const ls = oneBill(cut[k]);
+            if (!ls) break;
+            out.push({ vdate: dates[k], lines: ls, target: cut[k] });
+          }
+          if (out.length) {
+            made = out;
+            shortDays = true;
+          } else {
+            out.forEach((o) => putBack(o.lines));
+          }
+        }
+      }
+    }
     if (!made) continue;                                // leave that receipt alone
+
+    // what this receipt actually got covered for, which is not always what it
+    // was worth — see above
+    const placed = n2(made.reduce((a, m) => a + num(m.target), 0));
+    short = n2(Math.max(0, amt - placed));
+    if (short > 0) shortfall.push({ id: rec.id, party: rec.party, short, placed });
 
     made.forEach((m, k) => bills.push({
       vdate: m.vdate, party, lines: m.lines,
@@ -549,7 +597,7 @@ export function planSample({
       target: m.target,
     }));
     used.push(rec);
-    billedAgainst[rec.id] = n2((billedAgainst[rec.id] || 0) + amt);
+    billedAgainst[rec.id] = n2((billedAgainst[rec.id] || 0) + placed);
     // COUNTED HERE, NOT WHERE IT WAS WORKED OUT. A receipt can still fall over
     // further down — the shelf will not carry it, or the period has too few
     // days — and it then goes to `missed`, not to the old-dues figure. Adding
@@ -559,7 +607,7 @@ export function planSample({
     // and that much of his credit is now spoken for, so a second receipt from
     // the same customer cannot be billed against the same room twice
     if (rec.party_id && roomLeft[rec.party_id] !== Infinity) {
-      roomLeft[rec.party_id] = Math.max(0, n2(roomLeft[rec.party_id] - amt));
+      roomLeft[rec.party_id] = Math.max(0, n2(roomLeft[rec.party_id] - placed));
     }
   }
 
@@ -630,8 +678,6 @@ export function planSample({
       askedFor: n2(total),
       // so the plan can say "you asked for 50, the ceiling needs 62"
       askedBills: count,
-      // the period does not hold enough separate days for what is owed
-      shortDays,
       fromReceipts: used.length,
       // THE PART BILLED FOR, NOT THE WHOLE RECEIPT. Where some of a payment
       // went against an old due, only the rest of it has bills behind it, and
@@ -653,6 +699,13 @@ export function planSample({
       owedFirst: owedFirst.length,
       owedFirstValue: n2(owedFirst.reduce((a, x) => a + num(x.amount), 0)),
       trimmed: n2(trimmed),
+      // MONEY THE DATES COULD NOT CARRY. A customer may have only one bill a
+      // day, so a big receipt needs many days; where the period does not hold
+      // enough, as much as fits is written and this is what is left.
+      shortDays: shortfall.length > 0 || shortDays,
+      shortReceipts: shortfall.length,
+      shortValue: n2(shortfall.reduce((a, x) => a + num(x.short), 0)),
+      shortWho: shortfall.slice(0, 3).map((x) => x.party).filter(Boolean),
       // receipts this run could not raise a bill for, whatever the mode:
       // almost always because the shelf cannot carry that much. The ones left
       // alone on purpose above are not failures and are not counted here.

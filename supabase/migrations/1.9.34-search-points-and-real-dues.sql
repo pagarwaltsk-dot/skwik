@@ -31,8 +31,17 @@
 --     Nothing else reads this function, and it is still read-only.
 --
 --  Safe to run twice. Nothing is deleted and no figure in his books moves.
+--
+--  NO begin/commit AND A NAMED DOLLAR QUOTE, ON PURPOSE.
+--
+--  The Supabase SQL editor splits what it is given into statements before it
+--  sends them, and it counts `begin` and `end` while it does. A plpgsql body
+--  has its own begin and end inside it, so wrapping the file in begin/commit
+--  made it lose track and hand Postgres half a function: "unterminated
+--  dollar-quoted string". The tag $ubr$ instead of a bare $$ keeps the body
+--  whole for the same reason. Every statement here is safe on its own, so no
+--  transaction is needed to hold them together.
 -- ---------------------------------------------------------------------------
-begin;
 
 -- ---------------------------------------------------------------- 1. points
 
@@ -54,7 +63,7 @@ create or replace function public.unbilled_receipts(p_from date, p_to date)
 returns jsonb
 language plpgsql security definer
 set search_path to 'public'
-as $$
+as $ubr$
 declare
   v_org uuid := my_org_id();
   v     jsonb;
@@ -87,6 +96,5 @@ begin
      and m.pdate between p_from and p_to;
 
   return v;
-end $$;
-
-commit;
+end
+$ubr$;

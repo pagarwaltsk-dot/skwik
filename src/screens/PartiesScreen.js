@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList, Modal, Alert, ScrollView,
 } from 'react-native';
@@ -27,7 +27,7 @@ const empty = {
   opening_date: today(),
 };
 
-export default function PartiesScreen({ navigation }) {
+export default function PartiesScreen({ route, navigation }) {
   const { org, isOwner } = useApp();
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState('');
@@ -70,6 +70,40 @@ export default function PartiesScreen({ navigation }) {
     .then((data) => setRows(data || []))
     .catch(() => {});
   useFocusEffect(useCallback(() => { load(); }, []));
+
+  // ARRIVING HERE ALREADY KNOWING WHAT HE WANTS.
+  //
+  // The ledger list now carries EDIT on each row and + NEW at the top, and
+  // both land here. Walking him to a list he has to search again, when he has
+  // just tapped a man's name, would be a step backwards — so the form opens on
+  // the way in. Done once per arrival, and only after the names are down,
+  // because editing is filling a form with a row that has not come yet.
+  //
+  // THE SECOND TAP ON THE SAME NAME HAS TO WORK TOO. Remembering WHICH man
+  // was opened would mean that editing Ganesh Store, going back and tapping
+  // EDIT on Ganesh Store again did nothing — same name, so the screen would
+  // think it had already done it. What is remembered is the ARRIVAL: every
+  // tap hands over a fresh set of params, so a second tap opens the form
+  // again, while an ordinary redraw is the same arrival and does not.
+  const came = useRef(null);
+  // through refs, because both openers are declared further down the file and
+  // an effect must not depend on where a const happens to sit
+  const startNewRef = useRef(null), openRef = useRef(null);
+  const ps = route?.params;
+  useEffect(() => {
+    if (!ps || came.current === ps) return;
+    const want = ps.editId || (ps.newParty ? 'new' : null);
+    if (!want) { came.current = ps; return; }
+    if (want === 'new') {
+      came.current = ps;
+      startNewRef.current('');
+      return;
+    }
+    const row = rows.find((r) => String(r.id) === String(want));
+    if (!row) return;                       // the list has not landed yet
+    came.current = ps;
+    openRef.current(row);
+  }, [ps, rows]);
 
   const shown = rows
     // ALL is there so nobody can ever be invisible. A name saved with an odd
@@ -151,6 +185,7 @@ export default function PartiesScreen({ navigation }) {
   // The + NEW button and the "add what he typed" row must open the very same
   // form, or the two would drift apart the first time either is touched.
   const startNew = (name = '') => { setMore(false); setEdit({ ...empty, kind: newKind, name }); };
+  startNewRef.current = startNew;
 
   // An existing party who already HAS these details opens with them showing.
   // Hiding a filled-in box is how a phone number goes missing.
@@ -166,6 +201,7 @@ export default function PartiesScreen({ navigation }) {
     opening_type: p.opening_type || 'owes_you',
     opening_date: p.opening_date || today(),
   }); };
+  openRef.current = startEdit;
 
   const Label = ({ children, top = 14 }) => (
     <Text style={[S.label, { marginTop: top }]}>{children}</Text>

@@ -148,6 +148,31 @@ export default function BillScreen({ route, navigation }) {
   const markSavedRef = useRef(markSaved);
   markSavedRef.current = markSaved;
 
+  // WHEN THE FINGERPRINT IS TAKEN, AND WHY IT WAS ALWAYS WRONG.
+  //
+  // He opened an old bill, touched nothing, pressed back, and was asked
+  // whether to throw his changes away. Every time.
+  //
+  // The fingerprint was taken on a setTimeout of zero, on the reasoning that
+  // it would land "after the lines". It does not. A zero timer only waits for
+  // the current block to finish; React has not applied any of the setters by
+  // then, so what got fingerprinted was an EMPTY NEW BILL — no customer, no
+  // godown, today's date, no lines — and comparing that against the bill he
+  // was actually looking at of course came out different. Measured, on his own
+  // build and on mine:
+  //
+  //     at load:  c:""            g:""     v:"2026-09-26"  l:[]
+  //     on leave: c:"Ganesh Store" g:"g1"  v:"2026-09-20"  l:[2 lines]
+  //
+  // So it is taken in an effect instead, which by definition runs AFTER the
+  // screen has been drawn with the bill on it. `needMark` makes it happen once.
+  const needMark = useRef(false);
+  useEffect(() => {
+    if (!needMark.current || loadingBill) return;
+    needMark.current = false;
+    markSavedRef.current();
+  });
+
   const [busy, setBusy]   = useState(false);
   const [nudged, setNudged] = useState(false);
   const [saved, setSaved] = useState(null);
@@ -226,9 +251,16 @@ export default function BillScreen({ route, navigation }) {
           // the screen. Writing the shop's default over it moved the goods of
           // every re-saved bill into whichever store Skwik opens on. Whatever
           // is already chosen stands; the default is only for a blank bill.
-          setGodown((cur) => cur
-            || org?.default_godown_id
-            || (gs || []).find((g) => g.is_main)?.id || (gs || [])[0]?.id || null);
+          //
+          // AND NOT ONTO AN OLD BILL THAT NEVER HAD ONE EITHER. The line below
+          // said the default was only for a blank bill and then applied it to
+          // any bill with nothing chosen — including a bill written before
+          // this shop kept stores at all. That quietly moved its goods into a
+          // godown, and it also moved the fingerprint above, which is half of
+          // why he was accused of changes he had not made.
+          setGodown((cur) => cur || (editId ? null
+            : (org?.default_godown_id
+               || (gs || []).find((g) => g.is_main)?.id || (gs || [])[0]?.id || null)));
         }
         // KEEP A COPY FOR THE DAY THE SIGNAL GOES.
         //
@@ -307,9 +339,11 @@ export default function BillScreen({ route, navigation }) {
       // The store the goods really moved through, not today's default.
       if (v.godown_id) setGodown(v.godown_id);
 
-      /* the fingerprint is taken AFTER the lines land, on the next tick, so
-         it reflects the bill as he is actually seeing it */
-      setTimeout(markSavedRef.current, 0);
+      /* the fingerprint is taken once the loaded bill is ON THE SCREEN — see
+         the effect below. It cannot be taken here, on a timer, and it never
+         could: the setters on this and the next few lines have not been
+         applied yet when a zero-millisecond timer fires. */
+      needMark.current = true;
       setLines((ls || []).map((l) => {
         seq.current += 1;
         return {

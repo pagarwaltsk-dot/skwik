@@ -750,30 +750,30 @@ export default function SettingsScreen({ navigation }) {
           The dots were a second front door: some of what they held was also on
           the day book, and some was nowhere else. They have gone, and what was
           only there is here, which is where he was already looking for it. */}
-      <Section title="The rest of the shop"
-               note="Set up once, or touched once a month.">
-        {isOwner && (
-          <Door label="Cash & bank accounts"
-                sub="the drawer, and each bank the money goes through"
-                onPress={() => navigation.navigate('Banks')} />
-        )}
-        {showGodowns(org) && isOwner && (
-          <Door label="Godowns" sub="the stores your goods sit in"
-                onPress={() => navigation.navigate('Godowns')} />
-        )}
-        {showTransfer(org) && isOwner && (
-          <Door label="Import & export"
-                sub="bring your Tally masters in, or take a copy of your books out"
-                onPress={() => navigation.navigate('Transfer')} />
-        )}
-        <Door label="Who can bill" sub="the people who may write on your books"
-              onPress={() => navigation.navigate('Staff')} />
-        {isOwner && (
-          <Door label="Fill a month"
-                sub="see your own month written out before you bill a day of it"
-                onPress={() => navigation.navigate('Sample')} />
-        )}
-      </Section>
+      {/* ONLY WHAT WAS NOWHERE ELSE.
+          I put five things here and four of them were already on this screen
+          with a section of their own — cash and bank accounts, who can bill,
+          fill a month, and godowns through its switch. He had told me they
+          were already here and I read it as a request to add them. So this is
+          now the two that really were only behind the dots.
+
+          Godowns stays because the only door to it was the switch, and a switch
+          that is already on opens nothing: a shop with two stores could not
+          reach the screen that names them. */}
+      {isOwner && (showTransfer(org) || showGodowns(org)) && (
+        <Section title="The rest of the shop"
+                 note="Set up once, or touched once a month.">
+          {showGodowns(org) && (
+            <Door label="Godowns" sub="the stores your goods sit in, and their names"
+                  onPress={() => navigation.navigate('Godowns')} />
+          )}
+          {showTransfer(org) && (
+            <Door label="Import & export"
+                  sub="bring your Tally masters in, or take a copy of your books out"
+                  onPress={() => navigation.navigate('Transfer')} />
+          )}
+        </Section>
+      )}
 
       <Section title="This login">
         <Door label="Log out" sub="you will need your number and password again"

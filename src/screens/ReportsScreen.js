@@ -10,7 +10,7 @@ import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { fmt, fmt0, n2, today } from '../lib/money';
 import { buildGstr1 } from '../lib/gstr1';
-import { BackButton, Bar, Foot, Screen, Sections } from '../components/Chrome';
+import { BackButton, Bar, Foot, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
 import { C, S } from '../theme';
 import { sayPlainly } from '../lib/offline';
 
@@ -109,7 +109,24 @@ const Line = ({ k, v, strong, tone }) => {
   );
 };
 
-export default function ReportsScreen({ navigation }) {
+// WHAT EACH TAB IS FOR, IN ONE LINE.
+//
+// Three returns and the shop's own figures were one scroll, so the boxes his
+// accountant asks for were somewhere below the day-by-day list. A return is a
+// once-a-month job with a deadline; the sales summary is an every-evening look
+// at the counter. Same figures, different errands.
+const VIEWS = {
+  summary: { title: 'Reports',
+             blurb: 'Your own figures. Nothing here is filed anywhere.' },
+  gstr1:   { title: 'GSTR-1',
+             blurb: 'What you sold, the way the return asks for it. '
+                  + 'One whole month at a time.' },
+  gstr3b:  { title: 'GSTR-3B',
+             blurb: 'What you owe and what you can claim back, box by box, '
+                  + 'for your accountant to type in.' },
+};
+
+export default function ReportsScreen({ route, navigation }) {
   const { org, isOwner } = useApp();
   const [range, setRange] = useState('month');
   const [busy, setBusy]   = useState(true);
@@ -339,6 +356,20 @@ export default function ReportsScreen({ navigation }) {
 
   const label = rangeOf(range)[2];
 
+  // WHICH OF THE FOUR HE IS ON. The fourth, GSTR-2B, is a screen of its own —
+  // it reads a file off the portal — so it is not one of these.
+  const view = VIEWS[route?.params?.view] ? route.params.view : 'summary';
+  // The chip strip marks itself by the screen's own id, and here one screen
+  // wears three. Summary keeps the group's id so the Reports key still lights.
+  const me = view === 'summary' ? 'reports' : view;
+  const swipe = useSectionSwipe(navigation, org, isOwner, me);
+
+  // A RETURN COVERS ONE MONTH AND NOTHING ELSE. Section 39 gives no way to
+  // file a quarter or a year as one, so on either return tab the year and All
+  // buttons produce figures that cannot be filed — said once, at the top,
+  // rather than leaving him to wonder why the boxes went away.
+  const wholeMonth = range === 'month' || range === 'last';
+
   // THE RETURN ITSELF.
   // Only ever for one whole month — the portal will not take anything else.
   const [filing, setFiling] = useState(false);
@@ -458,14 +489,14 @@ export default function ReportsScreen({ navigation }) {
       <Bar>
         <BackButton navigation={navigation} />
         <View style={{ flex: 1 }}>
-          <Text style={S.barName}>Reports</Text>
+          <Text style={S.barName}>{VIEWS[view].title}</Text>
           <Text style={S.barSub}>{label}</Text>
         </View>
         <TouchableOpacity onPress={share} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
           <Text style={{ fontSize: 13, fontWeight: '700', color: '#fff', opacity: 0.9 }}>SEND</Text>
         </TouchableOpacity>
       </Bar>
-      <Sections navigation={navigation} org={org} isOwner={isOwner} id="reports" />
+      <Sections navigation={navigation} org={org} isOwner={isOwner} id={me} />
 
       <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                      borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -487,6 +518,7 @@ export default function ReportsScreen({ navigation }) {
         </View>
       </View>
 
+      <Swipe {...swipe} style={{ flex: 1 }}>
       {busy ? (
         <View style={{ paddingTop: 60, alignItems: 'center' }}>
           <ActivityIndicator color={C.accent} />
@@ -514,6 +546,8 @@ export default function ReportsScreen({ navigation }) {
 
           {anything && (
             <>
+              {view === 'summary' && (
+                <>
               <Card title={`Sales — ${label}`}>
                 <Line k={`${sums.sales.n} bill${sums.sales.n === 1 ? '' : 's'}`} v="" />
                 <Line k="Goods" v={fmt(sums.sales.taxable)} />
@@ -560,6 +594,169 @@ export default function ReportsScreen({ navigation }) {
                     as right as those are. Bills where the item was typed in by hand
                     and never saved carry no cost at all.
                   </Text>
+                </Card>
+              )}
+
+              {!!sums.items.length && (
+                <Card title="What sold">
+                  {/* THREE COLUMNS, NOT THREE THINGS IN A ROW.
+                      The quantity had no width of its own, so it started
+                      wherever the name happened to end and the amount started
+                      wherever the quantity happened to end — two ragged columns
+                      of figures down a card whose whole job is to be read down.
+                      Both are given a width and right aligned. */}
+                  {sums.items.map((i) => (
+                    <View key={i.name} style={[S.row, { marginBottom: 6, alignItems: 'baseline' }]}>
+                      <Text numberOfLines={1} style={{ flex: 1, fontSize: 14, color: C.ink }}>
+                        {i.name}
+                      </Text>
+                      <Text style={[{ fontSize: 12.5, color: C.muted, width: 62,
+                                      textAlign: 'right' }, S.num]}>
+                        {i.qty}
+                      </Text>
+                      <Text style={[{ fontSize: 14, fontWeight: '700', color: C.ink,
+                                      minWidth: 78, textAlign: 'right' }, S.num]}>
+                        {fmt0(i.value)}
+                      </Text>
+                    </View>
+                  ))}
+                </Card>
+              )}
+
+              {!!sums.days.length && (
+                <Card title="Day by day">
+                  {sums.days.map(([d, total]) => (
+                    <View key={d} style={[S.row, { marginBottom: 5, alignItems: 'baseline' }]}>
+                      <Text style={{ flex: 1, fontSize: 13.5, color: C.muted }}>{dmy(d)}</Text>
+                      <Text style={[{ fontSize: 14, fontWeight: '600', color: C.ink,
+                                      minWidth: 90, textAlign: 'right' }, S.num]}>
+                        {fmt0(total)}
+                      </Text>
+                    </View>
+                  ))}
+                </Card>
+              )}
+                </>
+              )}
+
+              {view === 'gstr1' && (
+                <>
+                  <Text style={[S.hint, { marginTop: 0, marginBottom: 2 }]}>
+                    {VIEWS.gstr1.blurb}
+                  </Text>
+              {/* A RETURN IS A MONTH. Said once, at the top, rather than
+                  letting the boxes quietly disappear when he taps This year. */}
+              {!wholeMonth && (
+                <View style={S.card}>
+                  <Text style={{ fontSize: 13.5, fontWeight: '700', color: C.ink,
+                                 lineHeight: 20 }}>
+                    A return covers one whole month.
+                  </Text>
+                  <Text style={[S.hint, { marginTop: 4 }]}>
+                    Tap This month or Last month above. The figures for a year or
+                    for All are on the Summary tab — they are yours to read, not
+                    anything you can file.
+                  </Text>
+                </View>
+              )}
+              {org?.is_gst_registered && !org?.is_composition && (
+                <TouchableOpacity style={S.card} onPress={makeGstr1} disabled={filing}>
+                  <Text style={S.eyebrow}>Your return</Text>
+                  <View style={S.row}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 16, fontWeight: '700', color: C.accent }}>
+                        {filing ? 'Working it out…' : 'Make the GSTR-1 file'}
+                      </Text>
+                      <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>
+                        The JSON the GST portal takes, worked out from these bills.
+                        One month at a time. You still file it yourself — read it first.
+                      </Text>
+                    </View>
+                    {filing && <ActivityIndicator size="small" color={C.accent} />}
+                  </View>
+                </TouchableOpacity>
+              )}
+
+              {!!sums.rates.length && (
+                <Card title="Sales by GST rate">
+                  {sums.rates.map((r) => (
+                    <Line key={r.rate} k={`${r.rate}%`}
+                      v={`${fmt(r.taxable)}  +  ${fmt(n2(r.cgst + r.sgst + r.igst))}`} />
+                  ))}
+                  <Line k="To registered buyers" v={fmt(sums.b2bTaxable)} strong />
+                  <Line k="To everyone else" v={fmt(sums.b2cTaxable)} />
+                </Card>
+              )}
+
+                </>
+              )}
+
+              {view === 'gstr3b' && (
+                <>
+                  <Text style={[S.hint, { marginTop: 0, marginBottom: 2 }]}>
+                    {VIEWS.gstr3b.blurb}
+                  </Text>
+              {/* A RETURN IS A MONTH. Said once, at the top, rather than
+                  letting the boxes quietly disappear when he taps This year. */}
+              {!wholeMonth && (
+                <View style={S.card}>
+                  <Text style={{ fontSize: 13.5, fontWeight: '700', color: C.ink,
+                                 lineHeight: 20 }}>
+                    A return covers one whole month.
+                  </Text>
+                  <Text style={[S.hint, { marginTop: 4 }]}>
+                    Tap This month or Last month above. The figures for a year or
+                    for All are on the Summary tab — they are yours to read, not
+                    anything you can file.
+                  </Text>
+                </View>
+              )}
+              {!!b3 && b3.applies && wholeMonth && (
+                <Card title="GSTR-3B — the figures">
+                  <Text style={[S.hint, { marginTop: 0, marginBottom: 8 }]}>
+                    For your accountant to type in. Not a filed return.
+                  </Text>
+                  <Line k="3.1(a) taxable sales"
+                        v={fmt(b3.table_3_1?.a_outward_taxable?.taxable_value)} strong />
+                  {['integrated_tax', 'central_tax', 'state_tax'].map((t) =>
+                    Number(b3.table_3_1?.a_outward_taxable?.[t]) > 0 ? (
+                      <Line key={t}
+                        k={'   ' + (t === 'integrated_tax' ? 'IGST' : t === 'central_tax' ? 'CGST' : 'SGST')}
+                        v={fmt(b3.table_3_1?.a_outward_taxable?.[t])} />
+                    ) : null)}
+                  {Number(b3.table_3_1?.c_nil_and_exempt?.taxable_value) > 0 && (
+                    <Line k="3.1(c) nil-rated and exempt"
+                          v={fmt(b3.table_3_1?.c_nil_and_exempt?.taxable_value)} />
+                  )}
+                  {Number(b3.table_3_1?.d_inward_reverse_charge?.taxable_value) > 0 && (
+                    <Line k="3.1(d) on reverse charge"
+                          v={fmt(b3.table_3_1?.d_inward_reverse_charge?.taxable_value)
+                             + '  +  ' + fmt(b3.table_3_1?.d_inward_reverse_charge?.total_tax)} />
+                  )}
+                  {Number(b3.table_3_1?.e_non_gst?.taxable_value) > 0 && (
+                    <Line k="3.1(e) outside GST"
+                          v={fmt(b3.table_3_1?.e_non_gst?.taxable_value)} />
+                  )}
+                  {(b3.table_3_2_interstate_unregistered || []).map((r) => (
+                    <Line key={r.state} k={`3.2 to ${r.state}, unregistered`}
+                          v={fmt(r.taxable_value) + '  +  ' + fmt(r.integrated_tax)} />
+                  ))}
+                  <Line k="4(A)(5) credit on purchases"
+                        v={fmt(b3.table_4?.a5_all_other_itc?.total)} strong />
+                  {Number(b3.table_4?.a3_reverse_charge?.total_tax) > 0 && (
+                    <Line k="4(A)(3) credit on reverse charge"
+                          v={fmt(b3.table_4?.a3_reverse_charge?.total_tax)} />
+                  )}
+                  {Number(b3.table_5_inward_nil_exempt?.value) > 0 && (
+                    <Line k="5 inward, nil and exempt"
+                          v={fmt(b3.table_5_inward_nil_exempt?.value)} />
+                  )}
+                  <Text style={[S.hint, { marginTop: 10 }]}>
+                    Your accountant still fills in:
+                  </Text>
+                  {(b3.your_accountant_fills || []).map((t, i) => (
+                    <Text key={i} style={[S.hint, { marginTop: 4 }]}>{'\u00B7 ' + t}</Text>
+                  ))}
                 </Card>
               )}
 
@@ -623,127 +820,14 @@ export default function ReportsScreen({ navigation }) {
                 * than filled with a zero, because a zero in those reads like
                 * a fact and is not one.
                 */}
-              {!!b3 && b3.applies && range === 'month' && (
-                <Card title="GSTR-3B — the figures">
-                  <Text style={[S.hint, { marginTop: 0, marginBottom: 8 }]}>
-                    For your accountant to type in. Not a filed return.
-                  </Text>
-                  <Line k="3.1(a) taxable sales"
-                        v={fmt(b3.table_3_1?.a_outward_taxable?.taxable_value)} strong />
-                  {['integrated_tax', 'central_tax', 'state_tax'].map((t) =>
-                    Number(b3.table_3_1?.a_outward_taxable?.[t]) > 0 ? (
-                      <Line key={t}
-                        k={'   ' + (t === 'integrated_tax' ? 'IGST' : t === 'central_tax' ? 'CGST' : 'SGST')}
-                        v={fmt(b3.table_3_1?.a_outward_taxable?.[t])} />
-                    ) : null)}
-                  {Number(b3.table_3_1?.c_nil_and_exempt?.taxable_value) > 0 && (
-                    <Line k="3.1(c) nil-rated and exempt"
-                          v={fmt(b3.table_3_1?.c_nil_and_exempt?.taxable_value)} />
-                  )}
-                  {Number(b3.table_3_1?.d_inward_reverse_charge?.taxable_value) > 0 && (
-                    <Line k="3.1(d) on reverse charge"
-                          v={fmt(b3.table_3_1?.d_inward_reverse_charge?.taxable_value)
-                             + '  +  ' + fmt(b3.table_3_1?.d_inward_reverse_charge?.total_tax)} />
-                  )}
-                  {Number(b3.table_3_1?.e_non_gst?.taxable_value) > 0 && (
-                    <Line k="3.1(e) outside GST"
-                          v={fmt(b3.table_3_1?.e_non_gst?.taxable_value)} />
-                  )}
-                  {(b3.table_3_2_interstate_unregistered || []).map((r) => (
-                    <Line key={r.state} k={`3.2 to ${r.state}, unregistered`}
-                          v={fmt(r.taxable_value) + '  +  ' + fmt(r.integrated_tax)} />
-                  ))}
-                  <Line k="4(A)(5) credit on purchases"
-                        v={fmt(b3.table_4?.a5_all_other_itc?.total)} strong />
-                  {Number(b3.table_4?.a3_reverse_charge?.total_tax) > 0 && (
-                    <Line k="4(A)(3) credit on reverse charge"
-                          v={fmt(b3.table_4?.a3_reverse_charge?.total_tax)} />
-                  )}
-                  {Number(b3.table_5_inward_nil_exempt?.value) > 0 && (
-                    <Line k="5 inward, nil and exempt"
-                          v={fmt(b3.table_5_inward_nil_exempt?.value)} />
-                  )}
-                  <Text style={[S.hint, { marginTop: 10 }]}>
-                    Your accountant still fills in:
-                  </Text>
-                  {(b3.your_accountant_fills || []).map((t, i) => (
-                    <Text key={i} style={[S.hint, { marginTop: 4 }]}>{'\u00B7 ' + t}</Text>
-                  ))}
-                </Card>
+                </>
               )}
 
-              {org?.is_gst_registered && !org?.is_composition && (
-                <TouchableOpacity style={S.card} onPress={makeGstr1} disabled={filing}>
-                  <Text style={S.eyebrow}>Your return</Text>
-                  <View style={S.row}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 16, fontWeight: '700', color: C.accent }}>
-                        {filing ? 'Working it out…' : 'Make the GSTR-1 file'}
-                      </Text>
-                      <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>
-                        The JSON the GST portal takes, worked out from these bills.
-                        One month at a time. You still file it yourself — read it first.
-                      </Text>
-                    </View>
-                    {filing && <ActivityIndicator size="small" color={C.accent} />}
-                  </View>
-                </TouchableOpacity>
-              )}
-
-              {!!sums.rates.length && (
-                <Card title="Sales by GST rate">
-                  {sums.rates.map((r) => (
-                    <Line key={r.rate} k={`${r.rate}%`}
-                      v={`${fmt(r.taxable)}  +  ${fmt(n2(r.cgst + r.sgst + r.igst))}`} />
-                  ))}
-                  <Line k="To registered buyers" v={fmt(sums.b2bTaxable)} strong />
-                  <Line k="To everyone else" v={fmt(sums.b2cTaxable)} />
-                </Card>
-              )}
-
-              {!!sums.items.length && (
-                <Card title="What sold">
-                  {/* THREE COLUMNS, NOT THREE THINGS IN A ROW.
-                      The quantity had no width of its own, so it started
-                      wherever the name happened to end and the amount started
-                      wherever the quantity happened to end — two ragged columns
-                      of figures down a card whose whole job is to be read down.
-                      Both are given a width and right aligned. */}
-                  {sums.items.map((i) => (
-                    <View key={i.name} style={[S.row, { marginBottom: 6, alignItems: 'baseline' }]}>
-                      <Text numberOfLines={1} style={{ flex: 1, fontSize: 14, color: C.ink }}>
-                        {i.name}
-                      </Text>
-                      <Text style={[{ fontSize: 12.5, color: C.muted, width: 62,
-                                      textAlign: 'right' }, S.num]}>
-                        {i.qty}
-                      </Text>
-                      <Text style={[{ fontSize: 14, fontWeight: '700', color: C.ink,
-                                      minWidth: 78, textAlign: 'right' }, S.num]}>
-                        {fmt0(i.value)}
-                      </Text>
-                    </View>
-                  ))}
-                </Card>
-              )}
-
-              {!!sums.days.length && (
-                <Card title="Day by day">
-                  {sums.days.map(([d, total]) => (
-                    <View key={d} style={[S.row, { marginBottom: 5, alignItems: 'baseline' }]}>
-                      <Text style={{ flex: 1, fontSize: 13.5, color: C.muted }}>{dmy(d)}</Text>
-                      <Text style={[{ fontSize: 14, fontWeight: '600', color: C.ink,
-                                      minWidth: 90, textAlign: 'right' }, S.num]}>
-                        {fmt0(total)}
-                      </Text>
-                    </View>
-                  ))}
-                </Card>
-              )}
             </>
           )}
         </ScrollView>
       )}
+      </Swipe>
     </Screen>
   );
 }

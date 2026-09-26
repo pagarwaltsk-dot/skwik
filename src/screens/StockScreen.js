@@ -3,10 +3,10 @@ import { View, Text, TouchableOpacity, FlatList, TextInput } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { num, qty as qtyText } from '../lib/money';
+import { fmt0, num, qty as qtyText } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { showBatch, showExpiry, showGodowns, showVariants } from '../lib/features';
-import { Head, Screen, Sections } from '../components/Chrome';
+import { Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // WHAT IS LEFT, AND WHERE IT IS.
@@ -47,6 +47,7 @@ const n = (v) => Number(v) || 0;
 
 export default function StockScreen({ navigation }) {
   const { org, isOwner } = useApp();
+  const swipe = useSectionSwipe(navigation, org, isOwner, 'stock');
   const [rows, setRows] = useState([]);
   const [godowns, setGodowns] = useState([]);
   const [kin, setKin] = useState([]);
@@ -80,11 +81,14 @@ export default function StockScreen({ navigation }) {
       // the detailed view is in use — the only place an item with no stock and
       // no movement at all can come from. The plain view already lists every
       // item, so a shop with neither does not pay for this.
-      const kinAsk = (bySize || detailed)
-        ? allRows(() => supabase.from('items')
-            .select('id, name, unit, variant_of, variant')
-            .eq('is_active', true).order('id'))
-        : Promise.resolve([]);
+      // THE RATE IS NOT IN THE STOCK VIEWS EITHER.
+      // This list now carries what a thing sells for beside how much is left,
+      // so the item rows are always wanted — not only when sizes are on. It is
+      // one paged read of his own catalogue, which is the same read the Items
+      // screen was doing a moment ago on the chip next door.
+      const kinAsk = allRows(() => supabase.from('items')
+        .select('id, name, unit, variant_of, variant, sale_price')
+        .eq('is_active', true).order('id'));
 
       if (!detailed) {
       // EVERY ROW, NOT THE FIRST THOUSAND.
@@ -278,6 +282,7 @@ export default function StockScreen({ navigation }) {
         // on its own it needs the whole name back
         title: depth > 0 ? (kinBy.get(id)?.variant || it.name) : it.name,
         qty: it.total,
+        rate: kinBy.get(id)?.sale_price,
         sub: kids.length ? null : sub([spread(it.places)]),
         batches: kids.length ? [] : bs,
       };
@@ -293,6 +298,8 @@ export default function StockScreen({ navigation }) {
             unit: it.unit,
             title: 'No size',
             qty: it.own,
+            isOwn: true,
+            rate: kinBy.get(id)?.sale_price,
             sub: sub([spread(it.places)]),
             batches: bs,
           });
@@ -335,6 +342,7 @@ export default function StockScreen({ navigation }) {
           // reads as a bug, so it is named.
           title: b.batch || 'No batch',
           qty: b.qty,
+          isBatch: true,
           gone,
           sub: [b.expiry && `${gone ? 'expired' : 'expires'} ${dmy(b.expiry)}`,
                 where === 'all' && b.places.size > 1 ? [...b.places].join(' + ') : null]
@@ -352,9 +360,18 @@ export default function StockScreen({ navigation }) {
 
   return (
     <Screen>
-      <Head navigation={navigation} title="Stock in hand" />
+      <Head navigation={navigation} title="Items & stock">
+        {/* THE FORM IS ON THE ITEMS SCREEN AND STAYS THERE. Twenty boxes with
+            GST, barcode and three price lists do not belong on a list; this
+            walks him to them with the sheet already open. */}
+        <TouchableOpacity onPress={() => navigation.navigate('Items', { newItem: true })}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+          <Text style={{ fontSize: 15, fontWeight: '800', color: C.green }}>+ NEW ITEM</Text>
+        </TouchableOpacity>
+      </Head>
       <Sections navigation={navigation} org={org} isOwner={isOwner} id="stock" />
 
+      <Swipe {...swipe} style={{ flex: 1 }}>
       {godowns.length > 1 && (
         <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                        borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -396,11 +413,37 @@ export default function StockScreen({ navigation }) {
           </Text>
         </TouchableOpacity>
 
+        {/* EVERYTHING THE ITEMS CHIP USED TO LEAD TO IS STILL THERE.
+            Putting up every rate by 5%, and the items he stopped using, are
+            occasional jobs on a long screen of their own — so they keep that
+            screen and lose the chip, and this is the door to it. */}
+        <TouchableOpacity onPress={() => navigation.navigate('Items')}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={{ marginTop: 10 }}>
+          <Text style={{ fontSize: 13, fontWeight: '700', color: C.accent }}>
+            Change many rates at once, or see items you stopped using ›
+          </Text>
+        </TouchableOpacity>
+
         <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 8 }}>
           {tree.shut
-            ? 'Tap any item to see every movement in and out of it. Tap Batches to open its batches.'
-            : 'Tap any item to see every movement in and out of it.'}
+            ? 'Tap a name to see every movement in and out of it, EDIT to change the item, Batches to open its batches.'
+            : 'Tap a name to see every movement in and out of it, EDIT to change the item.'}
         </Text>
+      </View>
+
+      {/* THREE FIGURES IN A ROW WITH NOTHING SAYING WHICH IS WHICH IS A
+          PUZZLE, NOT A LIST. He wrote the heading himself: item, stock in
+          hand, rate. */}
+      <View style={[S.row, { paddingHorizontal: 16, paddingBottom: 6,
+                             borderBottomWidth: 1, borderBottomColor: C.line }]}>
+        <Text style={{ flex: 1, fontSize: 10.5, fontWeight: '800', letterSpacing: 0.6,
+                       color: C.faint }}>ITEM</Text>
+        <Text style={[{ width: 80, fontSize: 10.5, fontWeight: '800', letterSpacing: 0.6,
+                        color: C.faint, textAlign: 'right' }]}>IN HAND</Text>
+        <Text style={[{ width: 68, fontSize: 10.5, fontWeight: '800', letterSpacing: 0.6,
+                        color: C.faint, textAlign: 'right' }]}>RATE</Text>
+        <View style={{ width: 52 }} />
       </View>
 
       <FlatList
@@ -450,23 +493,69 @@ export default function StockScreen({ navigation }) {
                   style={[S.tapPill, { marginRight: 2 }]}>
                   <Text style={S.tapPillText}>
                     {item.batchCount} {item.batchCount === 1 ? 'batch' : 'batches'}
-                    {item.isOpen ? ' ▴' : ' ▾'}
+                    {item.isOpen ? ' \u25B4' : ' \u25BE'}
                   </Text>
                 </TouchableOpacity>
               )}
 
-              <Text style={[{ fontSize: under ? 14.5 : 17, fontWeight: under ? '700' : '800',
-                              color: num(item.qty) < 0 ? C.red : C.ink }, S.num]}>
+              <Text numberOfLines={1}
+                style={[{ width: 80, textAlign: 'right',
+                          fontSize: under ? 13.5 : 15.5, fontWeight: under ? '700' : '800',
+                          color: num(item.qty) < 0 ? C.red : C.ink }, S.num]}>
                 {qtyText(item.qty)} {uqcShort(item.unit)}
               </Text>
+
+              {/* WHAT IT SELLS FOR, BESIDE WHAT IS LEFT. A batch has no rate
+                  of its own — the rate belongs to the item — so its cell is
+                  left blank rather than repeating the item's figure under it
+                  as though the lot were priced separately. */}
+              <Text numberOfLines={1}
+                style={[{ width: 68, textAlign: 'right',
+                          fontSize: under ? 13 : 14.5, fontWeight: '700',
+                          color: item.isBatch ? 'transparent' : C.muted }, S.num]}>
+                {item.isBatch ? '' : (num(item.rate) ? `\u20B9${fmt0(item.rate)}` : '\u2014')}
+              </Text>
+
+              {/* EDIT BESIDE EVERY ITEM, which is what he asked for. Not on a
+                  batch, and not on the parent's own loose line, which would be
+                  the same item's edit button twice in a row. */}
+              <View style={{ width: 52, alignItems: 'flex-end' }}>
+                {!item.isBatch && !item.isOwn && !!item.item_id && (
+                  <TouchableOpacity
+                    onPress={() => navigation.navigate('Items', { editId: item.item_id })}
+                    hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+                    style={{ paddingHorizontal: 8, paddingVertical: 5, borderRadius: 7,
+                             borderWidth: 1, borderColor: C.line, backgroundColor: C.surface }}>
+                    <Text style={{ fontSize: 10.5, fontWeight: '800', color: C.accent }}>
+                      EDIT
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </TouchableOpacity>
           );
         }}
         ListEmptyComponent={
-          <Text style={{ fontSize: 13.5, color: C.muted, textAlign: 'center', marginTop: 24 }}>
-            Nothing in stock here yet.
-          </Text>
-        } />
+          // NOTHING MATCHED WHAT HE TYPED, so the row he is looking at opens a
+          // new item with that name already in it rather than sending him back
+          // to the top to type it again.
+          q.trim() ? (
+            <TouchableOpacity
+              onPress={() => navigation.navigate('Items', { newItem: true, name: q.trim() })}
+              style={{ marginTop: 16, paddingVertical: 14, paddingHorizontal: 12,
+                       backgroundColor: C.soft, borderRadius: 10 }}>
+              <Text style={{ fontSize: 15, fontWeight: '700', color: C.accent }}>
+                + Add “{q.trim()}” as a new item
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <Text style={{ fontSize: 13.5, color: C.muted, textAlign: 'center',
+                           marginTop: 24, lineHeight: 20 }}>
+              No items yet. Tap + NEW ITEM above, or just start billing — a new
+              name on a bill can be saved as an item there and then.
+            </Text>
+          )} />
+      </Swipe>
     </Screen>
   );
 }

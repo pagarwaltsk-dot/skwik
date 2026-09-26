@@ -10,7 +10,7 @@ import { fmt0, today } from '../lib/money';
 import { readPickedFile } from '../lib/pickfile';
 import { parse2b, reconcile, bySupplier } from '../lib/gstr2b';
 import { sayPlainly } from '../lib/offline';
-import { Bar, BackButton, Screen, Sections } from '../components/Chrome';
+import { Bar, BackButton, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // WHICH OF MY SUPPLIERS HAS NOT FILED.
@@ -46,6 +46,7 @@ const BACK = [
 
 export default function ReconScreen({ navigation }) {
   const { org, isOwner } = useApp();
+  const swipe = useSectionSwipe(navigation, org, isOwner, 'recon');
   const [busy, setBusy]   = useState('');
   const [back, setBack]   = useState(3);
   const [res, setRes]     = useState(null);
@@ -143,6 +144,7 @@ export default function ReconScreen({ navigation }) {
       </Bar>
       <Sections navigation={navigation} org={org} isOwner={isOwner} id="recon" />
 
+      <Swipe {...swipe} style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 40 }}>
         {!res && (
           <View style={S.card}>
@@ -298,6 +300,7 @@ export default function ReconScreen({ navigation }) {
           </>
         )}
       </ScrollView>
+      </Swipe>
 
       {/* one supplier, bill by bill */}
       <Modal visible={!!open} transparent animationType="slide"

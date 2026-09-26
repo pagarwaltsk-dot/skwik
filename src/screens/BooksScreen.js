@@ -9,7 +9,7 @@ import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, n2, num, today } from '../lib/money';
 import { ColHead, Figure, Rule, Words } from '../components/Register';
-import { Head, Screen, Sections, Swipe, useTabSwipe } from '../components/Chrome';
+import { Head, Screen, Sections, Swipe, useChainSwipe, useSectionSwipe } from '../components/Chrome';
 import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
@@ -79,7 +79,8 @@ export default function BooksScreen({ navigation, route }) {
   // newest first is how a shopkeeper reads a book; oldest first is how an
   // accountant checks one. Both, on a tap.
   const [newest, setNewest] = useState(true);
-  const swipe = useTabSwipe(['cash', 'bank', 'sheet'], tab, setTab);
+  const section = useSectionSwipe(navigation, org, isOwner, 'books');
+  const swipe = useChainSwipe(['cash', 'bank', 'sheet'], tab, setTab, section);
   const [accounts, setAccounts] = useState([]);
   const [account, setAccount]   = useState(null); // which bank account
   const [book, setBook]   = useState(null);

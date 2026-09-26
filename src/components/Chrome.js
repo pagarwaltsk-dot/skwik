@@ -200,11 +200,20 @@ export function Head({ navigation, title, onBack, children }) {
 //
 // It replaces rather than pushes, so hopping between two of them a dozen times
 // does not build a back stack a dozen deep with nothing but siblings in it.
+//
+// AND A FINGER DRAGGED SIDEWAYS MOVES ALONG IT.
+//
+// Nobody had to be taught to do that in WhatsApp, and a shopkeeper going from
+// his ledgers to his past bills should not have to reach for a chip at the top
+// of the screen with the hand that is holding it. `sectionSwipe` below gives
+// any screen the two handlers; the screen wraps its own body in <Swipe>,
+// because only the screen knows which part of it may be dragged without
+// fighting a list that scrolls sideways itself.
 export function Sections({ navigation, org, isOwner, id }) {
   const g = groupOf(org, isOwner, id);
   if (!g || g.members.length < 2) return null;
   const go = (m) => {
-    if (m.id === id) return;
+    if (!m || m.id === id) return;
     if (navigation.replace) navigation.replace(m.route, m.params);
     else navigation.navigate(m.route, m.params);
   };
@@ -437,10 +446,48 @@ export function Swipe({ onLeft, onRight, children, style }) {
 
 // The tab either side of the one showing, so a screen only has to say what
 // its tabs are and in what order.
+// The same idea as useTabSwipe, but across the SCREENS of a section rather
+// than the tabs inside one. A drag to the left goes to the next chip along.
+export function useSectionSwipe(navigation, org, isOwner, id) {
+  const g = groupOf(org, isOwner, id);
+  const list = g ? g.members : [];
+  const i = list.findIndex((m) => m.id === id);
+  const go = (m) => {
+    if (!m) return;
+    if (navigation.replace) navigation.replace(m.route, m.params);
+    else navigation.navigate(m.route, m.params);
+  };
+  return {
+    onLeft:  () => { if (i >= 0 && i < list.length - 1) go(list[i + 1]); },
+    onRight: () => { if (i > 0) go(list[i - 1]); },
+  };
+}
+
 export function useTabSwipe(tabs, current, set) {
   const i = tabs.indexOf(current);
   return {
     onLeft:  () => { if (i >= 0 && i < tabs.length - 1) set(tabs[i + 1]); },
     onRight: () => { if (i > 0) set(tabs[i - 1]); },
+  };
+}
+
+// TWO ROWS OF TABS, ONE FINGER.
+//
+// Past bills has its own tabs — sale, purchase, estimate — under the Khata
+// chips, and a screen cannot have two things listening for the same drag: the
+// inner one wins the gesture and the outer one never hears it. Nesting them
+// would mean a swipe that does nothing on the last tab.
+//
+// So they are chained instead. The drag walks the tabs of the screen he is on,
+// and when it runs off the end it carries on into the next chip along — off the
+// last bills tab and into Books, back off the first and into Ledgers. One
+// finger, one direction, and nothing that has to be learnt.
+export function useChainSwipe(tabs, current, set, section) {
+  const i = tabs.indexOf(current);
+  return {
+    onLeft:  () => { if (i >= 0 && i < tabs.length - 1) set(tabs[i + 1]);
+                     else section?.onLeft?.(); },
+    onRight: () => { if (i > 0) set(tabs[i - 1]);
+                     else section?.onRight?.(); },
   };
 }
