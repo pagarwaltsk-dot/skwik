@@ -8,7 +8,8 @@ import { fmt0, num, settle, hsnApplies, SUPPLY_KINDS, supplyOf } from '../lib/mo
 import { uqcShort } from '../lib/uqc';
 import { checkHsn } from '../lib/hsn';
 import { HsnField, UomField } from '../components/Pickers';
-import { Box, Foot, Head, KeyForm, Screen, Sections } from '../components/Chrome';
+import { Box, Foot, Head, KeyForm, Screen, Sections, Swipe, useSectionSwipe }
+  from '../components/Chrome';
 import { ScanSheet } from '../components/Scan';
 import { showVariants } from '../lib/features';
 import { C, S } from '../theme';
@@ -33,7 +34,27 @@ const hasMore = (e) => !!e && !!(
   || num(e.gst_rate) || num(e.price2) || num(e.purchase_price) || num(e.opening_stock)
   || supplyOf(e) !== 'taxable');
 
-export default function ItemsScreen({ navigation }) {
+// A SAVED ROW, POURED INTO THE FORM.
+//
+// Every box on the sheet is a string, because that is what a keyboard gives;
+// the row out of the database is numbers and nulls. This is the one place that
+// conversion is written, so the row tapped on the list and the row arrived at
+// from the stock screen's EDIT button fill the same form the same way.
+const fill = (item) => ({ ...item,
+  unit: item.unit || 'PCS',
+  search_words: item.search_words || '',
+  hsn: item.hsn || '',
+  alias: item.alias || '',
+  barcode: item.barcode || '',
+  variant: item.variant || '',
+  sale_price: String(item.sale_price ?? ''),
+  price2: String(item.price2 ?? ''),
+  purchase_price: String(item.purchase_price ?? ''),
+  gst_rate: String(item.gst_rate ?? ''),
+  priority: Number(item.priority) || 0,
+  opening_stock: String(item.opening_stock ?? '') });
+
+export default function ItemsScreen({ route, navigation }) {
   const { org, isOwner } = useApp();
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState('');
@@ -167,6 +188,39 @@ export default function ItemsScreen({ navigation }) {
   // Once. This had a useFocusEffect AND a useEffect on the same condition, so
   // every visit to this screen asked the server for the whole item list twice.
   useFocusEffect(useCallback(() => { load(); }, [showGone]));
+
+  // ARRIVING HERE ALREADY KNOWING WHICH ITEM HE WANTS.
+  //
+  // The stock list now carries EDIT on each row and + NEW ITEM at the top, and
+  // both land here. He has just tapped a name; walking him to a list he has to
+  // search all over again would be a step backwards, so the sheet opens on the
+  // way in. Once per arrival, and the edit waits until the names are down —
+  // filling a form from a row that has not come yet fills it with nothing.
+  //
+  // THE SECOND TAP ON THE SAME ITEM HAS TO WORK TOO.
+  //
+  // Remembering WHICH item was opened would have meant that editing Steel
+  // Balti, going back and tapping EDIT on Steel Balti again did nothing at
+  // all — the name is the same, so the screen would think it had already
+  // done it. What is remembered instead is the ARRIVAL: each tap hands over
+  // a fresh set of params, so a second tap is a second arrival and opens the
+  // sheet again, while an ordinary redraw is the same arrival and does not.
+  const came = useRef(null);
+  const ps = route?.params;
+  useEffect(() => {
+    if (!ps || came.current === ps) return;
+    const want = ps.editId || (ps.newItem ? 'new' : null);
+    if (!want) { came.current = ps; return; }
+    if (want === 'new') {
+      came.current = ps;
+      setEdit({ ...empty, name: String(ps.name || '').trim() });
+      return;
+    }
+    const row = rows.find((r) => String(r.id) === String(want));
+    if (!row) return;                        // the list has not landed yet
+    came.current = ps;
+    setEdit(fill(row));
+  }, [ps, rows]);
 
   // THE PHONE'S OWN BACK BUTTON, WHILE AN ITEM IS OPEN.
   //
@@ -312,6 +366,10 @@ export default function ItemsScreen({ navigation }) {
   // count he started with is not the same as writing down a purchase.
   const showOpening = !!edit && !!org?.stock_enabled;
 
+  // Not while the rate list is open: a drag off the screen with two hundred
+  // typed-over prices on it would throw the lot away.
+  const swipe = useSectionSwipe(navigation, org, isOwner, 'items');
+
   return (
     <Screen>
       <Head navigation={navigation} title="Items">
@@ -337,6 +395,7 @@ export default function ItemsScreen({ navigation }) {
       </Head>
       <Sections navigation={navigation} org={org} isOwner={isOwner} id="items" />
 
+      <Swipe {...(bulk ? {} : swipe)} style={{ flex: 1 }}>
       <View style={{ padding: 16, paddingBottom: bulk ? 10 : 16 }}>
         <TextInput style={S.input} placeholder="Search" placeholderTextColor={C.faint}
           value={q} onChangeText={setQ}  returnKeyType="search" />
@@ -430,19 +489,7 @@ export default function ItemsScreen({ navigation }) {
           </View>
         ) : (
           <TouchableOpacity
-            onPress={() => setEdit({ ...item,
-              unit: item.unit || 'PCS',
-              search_words: item.search_words || '',
-              hsn: item.hsn || '',
-              alias: item.alias || '',
-              barcode: item.barcode || '',
-              variant: item.variant || '',
-              sale_price: String(item.sale_price ?? ''),
-              price2: String(item.price2 ?? ''),
-              purchase_price: String(item.purchase_price ?? ''),
-              gst_rate: String(item.gst_rate ?? ''),
-              priority: Number(item.priority) || 0,
-              opening_stock: String(item.opening_stock ?? '') })}
+            onPress={() => setEdit(fill(item))}
             style={[S.row, { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.line }]}>
             <View style={{ flex: 1 }}>
               <Text style={{ fontSize: 16, fontWeight: '700', color: C.ink }}>{item.name}</Text>
@@ -460,6 +507,7 @@ export default function ItemsScreen({ navigation }) {
             </Text>
           </TouchableOpacity>
         ))} />
+      </Swipe>
 
       {bulk && (
         <Foot>

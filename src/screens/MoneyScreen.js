@@ -7,7 +7,8 @@ import { supabase, allRows } from '../lib/supabase';
 import { sayPlainly, withTimeout } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, num, settle, today } from '../lib/money';
-import { Box, Head, KeyForm, Screen, Sections } from '../components/Chrome';
+import { Box, Head, KeyForm, Screen, Sections, Swipe, useSectionSwipe }
+  from '../components/Chrome';
 import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
@@ -376,12 +377,26 @@ export default function MoneyScreen({ route, navigation }) {
     </TouchableOpacity>
   );
 
+
+  // SLIDING AWAY FROM A HALF-WRITTEN ENTRY WOULD THROW IT AWAY.
+  //
+  // A chip change replaces the screen, so an amount he has typed and not saved
+  // goes with it — and a drag is far easier to do by accident than a tap on a
+  // chip. So the finger moves between chips while the form is untouched, which
+  // is when he is looking rather than writing, and stops the moment he starts
+  // filling it in. The chips above never stop working.
+  const started = !!party || !!String(amount).trim() || !!String(note).trim()
+    || !!String(text).trim() || batch !== null || !!editing;
+  const sec = useSectionSwipe(navigation, org, isOwner, received ? 'in' : 'out');
+  const swipe = started ? {} : sec;
+
   return (
     <Screen>
       <Head navigation={navigation} title={received ? 'Money received' : 'Money paid'}
         onBack={batch === null ? undefined : () => setBatch(null)} />
       <Sections navigation={navigation} org={org} isOwner={isOwner}
                 id={received ? 'in' : 'out'} />
+      <Swipe {...swipe} style={{ flex: 1 }}>
       <KeyForm
                   contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
 
@@ -705,6 +720,7 @@ export default function MoneyScreen({ route, navigation }) {
         </>
       )}
       </KeyForm>
+      </Swipe>
     </Screen>
   );
 }

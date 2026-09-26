@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, FlatList, ActivityIndicator,
+  View, Text, TextInput, TouchableOpacity, FlatList, ActivityIndicator, Alert, Linking,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -9,7 +9,7 @@ import { useApp } from '../AppContext';
 import { sayPlainly } from '../lib/offline';
 import { fmt0, n2, num } from '../lib/money';
 import { ColHead, Figure, Rule, Words } from '../components/Register';
-import { Head, Screen, Sections } from '../components/Chrome';
+import { Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // EVERY ACCOUNT, ON ONE PAGE.
@@ -37,8 +37,22 @@ const TABS = [
   { k: 'owing', label: 'You owe them' },
 ];
 
+// The same quiet button the Past bills rows use: a small word, and a tap
+// target around it big enough for a thumb.
+const RowKey = ({ children, onPress, label }) => (
+  <TouchableOpacity onPress={onPress} accessibilityLabel={label}
+    hitSlop={{ top: 10, bottom: 8, left: 6, right: 6 }}
+    style={{ paddingHorizontal: 11, paddingVertical: 6, borderRadius: 9,
+             borderWidth: 1, borderColor: C.line, backgroundColor: C.surface }}>
+    {children}
+  </TouchableOpacity>
+);
+
+const dmy = (d) => (d ? `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(0, 4)}` : '');
+
 export default function LedgersScreen({ navigation }) {
   const { org, isOwner } = useApp();
+  const swipe = useSectionSwipe(navigation, org, isOwner, 'ledgers');
   const [rows, setRows] = useState(null);
   const [tab, setTab]   = useState('all');
   // And on All, nil accounts can be put away — his choice, not Skwik's.
@@ -77,6 +91,28 @@ export default function LedgersScreen({ navigation }) {
       .sort((a, b) => Math.abs(num(b.balance)) - Math.abs(num(a.balance)));
   }, [rows, tab, q, hideNil]);
 
+  // ASKING FOR THE MONEY, FROM THE ROW.
+  //
+  // Word for word what the Udhar screen sends, so the message his customers
+  // have been getting does not change because the button moved.
+  const ask = (r) => {
+    const amt = Math.abs(num(r.balance));
+    const msg = `Namaste ${r.name},\n\n`
+      + `₹${fmt0(amt)} is outstanding against your account`
+      + (r.last_bill ? ` (last bill ${dmy(r.last_bill)})` : '') + '.\n\n'
+      + 'Kindly arrange the payment.\n\n'
+      + `${org?.name || ''}${org?.phone ? `\n${org.phone}` : ''}`;
+
+    const phone = String(r.phone || '').replace(/\D/g, '').slice(-10);
+    const url = phone
+      ? `whatsapp://send?phone=91${phone}&text=${encodeURIComponent(msg)}`
+      : `whatsapp://send?text=${encodeURIComponent(msg)}`;
+
+    Linking.openURL(url).catch(() =>
+      Linking.openURL(`https://wa.me/${phone ? `91${phone}` : ''}?text=${encodeURIComponent(msg)}`)
+        .catch(() => Alert.alert('No WhatsApp', 'WhatsApp is not installed on this phone.')));
+  };
+
   const totals = useMemo(() => {
     const owed  = (rows || []).reduce((a, r) => a + Math.max(0, num(r.balance)), 0);
     const owing = (rows || []).reduce((a, r) => a + Math.max(0, -num(r.balance)), 0);
@@ -85,7 +121,12 @@ export default function LedgersScreen({ navigation }) {
 
   return (
     <Screen>
-      <Head navigation={navigation} title="Ledgers" />
+      <Head navigation={navigation} title="Ledgers">
+        <TouchableOpacity onPress={() => navigation.navigate('Parties', { newParty: true })}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+          <Text style={{ fontSize: 15, fontWeight: '800', color: C.accent }}>+ NEW</Text>
+        </TouchableOpacity>
+      </Head>
       <Sections navigation={navigation} org={org} isOwner={isOwner} id="ledgers" />
 
       <View style={{ backgroundColor: C.soft, paddingHorizontal: 12, paddingVertical: 8,
@@ -125,31 +166,11 @@ export default function LedgersScreen({ navigation }) {
         )}
       </View>
 
-      {/* THE CASH BOOK AND THE BANK BOOK WERE BUILT AND THEN LEFT UNREACHABLE.
-          They lived behind one tile on the home screen that only an owner with
-          Reports switched on ever saw, and it was called "Books", which does
-          not say cash or bank to anybody. A ledger is a ledger: the cash box
-          and each bank account are accounts of the firm exactly as a customer
-          is, so they belong on the page that lists the accounts. */}
-      <View style={{ paddingHorizontal: 14, paddingTop: 12 }}>
-        <Text style={S.eyebrow}>YOUR OWN ACCOUNTS</Text>
-        <View style={[S.row, { gap: 8, marginTop: 8 }]}>
-          {[{ k: 'cash',  label: 'Cash book',  sub: 'the drawer' },
-            { k: 'bank',  label: 'Bank book',  sub: 'per account' },
-            { k: 'sheet', label: 'Balance sheet', sub: 'what you are worth' }].map((b) => (
-            <TouchableOpacity key={b.k}
-              onPress={() => navigation.navigate('Books', { book: b.k })}
-              style={{ flex: 1, paddingVertical: 11, paddingHorizontal: 8, borderRadius: 11,
-                       borderWidth: 1.5, borderColor: C.line, backgroundColor: C.surface,
-                       alignItems: 'center' }}>
-              <Text numberOfLines={1}
-                style={{ fontSize: 13, fontWeight: '800', color: C.ink }}>{b.label}</Text>
-              <Text numberOfLines={1}
-                style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>{b.sub}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
+      {/* THE CASH BOOK, THE BANK BOOK AND THE BALANCE SHEET USED TO SIT HERE.
+          They were put here when they had no other door. They have one now —
+          the Books chip along the top — and a shop's own three accounts sitting
+          above a list of its customers only made this page longer and said the
+          same thing twice. They live under Books, and nowhere else. */}
 
       <View style={[S.row, { paddingHorizontal: 14, paddingVertical: 11, marginTop: 12,
                              borderBottomWidth: 1.5, borderBottomColor: C.ink, gap: 14 }]}>
@@ -171,6 +192,7 @@ export default function LedgersScreen({ navigation }) {
         </View>
       </View>
 
+      <Swipe {...swipe} style={{ flex: 1 }}>
       {failed ? (
         <View style={{ padding: 20 }}>
           <Text style={{ fontSize: 14, fontWeight: '700', color: C.danger }}>
@@ -190,16 +212,49 @@ export default function LedgersScreen({ navigation }) {
             renderItem={({ item, index }) => {
               const b = num(item.balance);
               return (
-                <Rule last={index === shown.length - 1}
-                  onPress={() => navigation.navigate('Ledger', { partyId: item.id })}>
-                  <Words name={item.name}
-                    sub={[String(item.kind || 'customer') === 'supplier' ? 'supplier' : 'customer',
-                          item.area, item.phone].filter(Boolean).join(' · ')} />
-                  <Figure width={92} size={15} weight="700"
-                          tone={b > 0 ? C.ink : b < 0 ? C.danger : C.faint}>
-                    {b === 0 ? '—' : fmt0(Math.abs(b))}
-                  </Figure>
-                </Rule>
+                <View>
+                  <Rule last={index === shown.length - 1 && !b}
+                    onPress={() => navigation.navigate('Ledger', { partyId: item.id })}>
+                    <Words name={item.name}
+                      sub={[String(item.kind || 'customer') === 'supplier' ? 'supplier' : 'customer',
+                            item.area, item.phone].filter(Boolean).join(' · ')} />
+                    <Figure width={92} size={15} weight="700"
+                            tone={b > 0 ? C.ink : b < 0 ? C.danger : C.faint}>
+                      {b === 0 ? '—' : fmt0(Math.abs(b))}
+                    </Figure>
+                  </Rule>
+
+                  {/* WHAT HE ACTUALLY WANTS TO DO WITH AN ACCOUNT, ON THE
+                      ACCOUNT. Chasing a due used to be a different screen
+                      (Udhar) and correcting a phone number a third one
+                      (Parties). The row already knows who this is. */}
+                  <View style={[S.row, { justifyContent: 'flex-end', gap: 6,
+                                         paddingHorizontal: 14, paddingBottom: 10,
+                                         marginTop: -4,
+                                         borderBottomWidth: index === shown.length - 1 ? 0 : 1,
+                                         borderBottomColor: '#EDE9E0' }]}>
+                    {b > 0 && (
+                      <RowKey label={`Ask ${item.name} to pay`} onPress={() => ask(item)}>
+                        <Text style={{ fontSize: 11.5, fontWeight: '800', color: C.green }}>
+                          ASK TO PAY
+                        </Text>
+                      </RowKey>
+                    )}
+                    <RowKey label={`Take money from ${item.name}`}
+                      onPress={() => navigation.navigate('Money',
+                        { ptype: b < 0 ? 'payment' : 'receipt', partyId: item.id })}>
+                      <Text style={{ fontSize: 11.5, fontWeight: '800', color: C.accent }}>
+                        {b < 0 ? 'PAY' : 'RECEIVE'}
+                      </Text>
+                    </RowKey>
+                    <RowKey label={`Edit ${item.name}`}
+                      onPress={() => navigation.navigate('Parties', { editId: item.id })}>
+                      <Text style={{ fontSize: 11.5, fontWeight: '800', color: C.muted }}>
+                        EDIT
+                      </Text>
+                    </RowKey>
+                  </View>
+                </View>
               );
             }}
             ListEmptyComponent={
@@ -210,8 +265,24 @@ export default function LedgersScreen({ navigation }) {
                   : 'No accounts yet.'}
               </Text>
             } />
+
+          {/* THE ONE THING UDHAR DID THAT A ROW CANNOT. Chasing forty people
+              one after another is a job, not a tap, and it has its own screen
+              with a queue. It is reached from here, where he is already
+              looking at who owes him, rather than from a chip of its own. */}
+          {tab === 'owed' && shown.length > 1 && (
+            <TouchableOpacity onPress={() => navigation.navigate('Udhar')}
+              style={{ margin: 14, paddingVertical: 13, borderRadius: 11,
+                       borderWidth: 1.5, borderColor: C.line,
+                       backgroundColor: C.surface, alignItems: 'center' }}>
+              <Text style={{ fontSize: 14, fontWeight: '800', color: C.accent }}>
+                Ask all {shown.length} of them, one after another
+              </Text>
+            </TouchableOpacity>
+          )}
         </>
       )}
+      </Swipe>
     </Screen>
   );
 }

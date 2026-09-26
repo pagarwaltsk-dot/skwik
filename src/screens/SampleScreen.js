@@ -100,7 +100,8 @@ export default function SampleScreen({ navigation }) {
     // fill: from his last bill up to today.
     setFrom((v) => (floor && to < floor ? floor : clamp(v, floor, todayYmd)));
     setTo((v) => (floor && v < floor ? todayYmd : clamp(v, floor, todayYmd)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // `to` is read here but deliberately left off the list: this is meant to
+    // run when the fence moves, not every time he types in the box.
   }, [floor, todayYmd]);
 
   // What he has taken in that period and not yet billed — straight out of his
@@ -450,9 +451,15 @@ export default function SampleScreen({ navigation }) {
             {!!s.shortDays && (
               <Text style={{ fontSize: 12, color: C.flagInk, marginTop: -2,
                              marginBottom: 6, lineHeight: 17 }}>
-                Some money could not be billed because the dates you gave do not
-                hold enough separate days — a big receipt becomes several bills,
-                one to a day. Widen the dates and run it again.
+                {s.shortValue > 0
+                  ? `₹${fmt0(s.shortValue)} of the money you took could not be billed in `
+                    + 'these dates. One customer may have only one bill a day, so a big '
+                    + `receipt needs a day for each part${s.shortWho.length
+                        ? ` — ${s.shortWho.join(', ')}` : ''}. What fits has been written; `
+                    + 'widen the dates and run it again to cover the rest.'
+                  : 'Some money could not be billed because the dates you gave do not '
+                    + 'hold enough separate days — a big receipt becomes several bills, '
+                    + 'one to a day. Widen the dates and run it again.'}
               </Text>
             )}
             <Line k="Adding up to" v={`₹${fmt0(s.value)}`} strong />

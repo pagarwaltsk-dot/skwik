@@ -12,7 +12,8 @@ import { fmt0 } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { invoiceHtml } from '../lib/invoice';
 import { thermalHtml } from '../lib/receipt';
-import { BackButton, Bar, Foot, Screen, Sections, Swipe, useTabSwipe } from '../components/Chrome';
+import { BackButton, Bar, Foot, Screen, Sections, Swipe, useChainSwipe, useSectionSwipe }
+  from '../components/Chrome';
 import { showPurchase, showReturns } from '../lib/features';
 import { C, S } from '../theme';
 import { folderName, pdfName, saveToDownloads, sharePdf } from '../lib/pdf';
@@ -52,6 +53,59 @@ const dayLabel = (d) => {
   return dmy(d);
 };
 
+/* ---------------- the three small pictures on a row ----------------
+
+   Drawn rather than typed, because a printer written as an emoji comes out a
+   different size and a different colour on every phone, and half of them put a
+   coloured square on the shopkeeper's bill list.                            */
+
+const Printer = ({ c = C.muted }) => (
+  <View style={{ width: 19, height: 19 }}>
+    <View style={{ position: 'absolute', left: 4, top: 0, right: 4, height: 5.5,
+                   borderWidth: 1.5, borderColor: c, borderBottomWidth: 0 }} />
+    <View style={{ position: 'absolute', left: 0, top: 5.5, right: 0, height: 8,
+                   borderWidth: 1.5, borderColor: c, borderRadius: 2 }} />
+    <View style={{ position: 'absolute', left: 4, bottom: 0, right: 4, height: 6,
+                   borderWidth: 1.5, borderColor: c, backgroundColor: '#fff' }} />
+  </View>
+);
+
+const ShareArrow = ({ c = C.muted }) => (
+  <View style={{ width: 19, height: 19 }}>
+    <View style={{ position: 'absolute', left: 1, bottom: 2, width: 12, height: 8,
+                   borderLeftWidth: 1.5, borderBottomWidth: 1.5, borderRightWidth: 1.5,
+                   borderColor: c, borderBottomLeftRadius: 2, borderBottomRightRadius: 2 }} />
+    <View style={{ position: 'absolute', left: 6.2, top: 1, width: 1.5, height: 10,
+                   backgroundColor: c }} />
+    <View style={{ position: 'absolute', left: 3.4, top: 2.2, width: 7, height: 7,
+                   borderLeftWidth: 1.5, borderTopWidth: 1.5, borderColor: c,
+                   transform: [{ rotate: '45deg' }] }} />
+  </View>
+);
+
+const DownArrow = ({ c = C.muted }) => (
+  <View style={{ width: 19, height: 19 }}>
+    <View style={{ position: 'absolute', left: 1, bottom: 1, right: 1, height: 1.5,
+                   backgroundColor: c }} />
+    <View style={{ position: 'absolute', left: 8.7, top: 1, width: 1.5, height: 10,
+                   backgroundColor: c }} />
+    <View style={{ position: 'absolute', left: 5.5, top: 5.5, width: 7, height: 7,
+                   borderRightWidth: 1.5, borderBottomWidth: 1.5, borderColor: c,
+                   transform: [{ rotate: '45deg' }] }} />
+  </View>
+);
+
+// A thumb lands on 44 points, not on nineteen. The picture stays small and
+// quiet; what he actually taps is the space around it.
+const RowKey = ({ children, onPress, label }) => (
+  <TouchableOpacity onPress={onPress} accessibilityLabel={label}
+    hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+    style={{ paddingHorizontal: 11, paddingVertical: 7, borderRadius: 9,
+             borderWidth: 1, borderColor: C.line, backgroundColor: C.surface }}>
+    {children}
+  </TouchableOpacity>
+);
+
 export default function BillsScreen({ navigation }) {
   const { org, isOwner } = useApp();
   const KINDS = kindsFor(org);
@@ -59,7 +113,8 @@ export default function BillsScreen({ navigation }) {
   const [busy, setBusy]   = useState(true);
   const [q, setQ]         = useState('');
   const [kind, setKind]   = useState('all');
-  const swipe = useTabSwipe(KINDS.map((k) => k.key), kind, setKind);
+  const section = useSectionSwipe(navigation, org, isOwner, 'bills');
+  const swipe = useChainSwipe(KINDS.map((k) => k.key), kind, setKind, section);
   const [open, setOpen]   = useState(null);      // the bill tapped on
   const [lines, setLines] = useState(null);      // its lines, once fetched
   const [working, setWorking] = useState(false);
@@ -189,15 +244,71 @@ export default function BillsScreen({ navigation }) {
     setLines(data || []);
   };
 
-  const html = () => {
+  // The bill's paper, for whichever bill is asked for — the one open in the
+  // sheet, or one straight off the list.
+  const htmlOf = (v, ls) => {
     const args = {
       org,
-      voucher: { ...open, place_of_supply_name: open.parties?.state_name || org?.state_name || '' },
-      party: open.parties,
-      lines: lines || [],
+      voucher: { ...v, place_of_supply_name: v.parties?.state_name || org?.state_name || '' },
+      party: v.parties,
+      lines: ls || [],
     };
     const paper = String(org?.print_width || 'a4');
     return paper === 'a4' ? invoiceHtml(args) : thermalHtml({ ...args, width: paper });
+  };
+  const html = () => htmlOf(open, lines);
+
+  /* ---------------- print and send, straight off the list ----------------
+
+     Sending a customer his bill again is the commonest thing anybody does on
+     this screen, and it took three taps: find the bill, open it, then choose.
+     Every other billing app puts a printer and an arrow on the row itself, and
+     they are right — the row already says which bill it is, so opening it to
+     say so again is a step that earns nothing.
+
+     The lines are fetched for that one bill when the icon is tapped rather
+     than for all of them up front, because a shop with nine thousand bills is
+     not going to wait while the whole year comes down the wire to draw a list.  */
+
+  const [rowBusy, setRowBusy] = useState(null);      // the bill being worked on
+
+  const rowAction = async (v, what) => {
+    if (rowBusy) return;
+    setRowBusy(v.id);
+    try {
+      const { data, error } = await supabase.from('voucher_lines')
+        .select('*').eq('voucher_id', v.id).order('line_no');
+      if (error) throw error;
+      // A BILL WITH NO LINES IS NOT PRINTED BLANK. Better to say the lines
+      // could not be read than to hand a customer an empty sheet of paper
+      // with his name on it.
+      if (!data || !data.length) {
+        return Alert.alert('Could not read this bill',
+          'Its items did not come down from the server, so it would print empty. '
+          + 'Try again when you have signal.');
+      }
+      const paper = htmlOf(v, data);
+      if (what === 'print') { await Print.printAsync({ html: paper }); return; }
+      const { uri } = await Print.printToFileAsync({ html: paper });
+      const name = pdfName({
+        who: v.parties?.name || v.printed_name || org?.name,
+        no: v.voucher_no, fallback: org?.name || 'Bill',
+      });
+      if (what === 'save') {
+        const r = await saveToDownloads(uri, name);
+        if (r.saved) {
+          return Alert.alert('Saved on this phone',
+            `${name} is in your ${folderName(r.where)} folder.`);
+        }
+        if (r.why === 'cancelled') return;
+        return sharePdf(uri, name, 'Keep this bill');
+      }
+      await sharePdf(uri, name, 'Send again');
+    } catch (e) {
+      Alert.alert(what === 'print' ? 'Could not print' : 'Could not send', sayPlainly(e));
+    } finally {
+      setRowBusy(null);
+    }
   };
 
   const resend = async () => {
@@ -385,6 +496,31 @@ export default function BillsScreen({ navigation }) {
                       ₹{fmt0(v.total)}
                     </Text>
                   </View>
+
+                  {/* PRINT AND SEND, WITHOUT OPENING IT FIRST.
+                      The row already says whose bill this is and what it came
+                      to; opening it to say so again before he can send it is a
+                      tap that earns nothing. A cancelled bill gets neither,
+                      because it is not a bill any more. */}
+                  {!v.cancelled_at && (
+                    <View style={[S.row, { justifyContent: 'flex-end', gap: 4, marginTop: 6 }]}>
+                      {rowBusy === v.id ? (
+                        <ActivityIndicator color={C.accent} size="small" />
+                      ) : (
+                        <>
+                          <RowKey label="Print" onPress={() => rowAction(v, 'print')}>
+                            <Printer />
+                          </RowKey>
+                          <RowKey label="Send" onPress={() => rowAction(v, 'send')}>
+                            <ShareArrow />
+                          </RowKey>
+                          <RowKey label="Save" onPress={() => rowAction(v, 'save')}>
+                            <DownArrow />
+                          </RowKey>
+                        </>
+                      )}
+                    </View>
+                  )}
                 </TouchableOpacity>
               </>
             );

@@ -7,7 +7,8 @@ import { useApp } from '../AppContext';
 import { fmt0, n2, num, settle, today } from '../lib/money';
 import { showRcmIn } from '../lib/features';
 import { sayPlainly } from '../lib/offline';
-import { Box, Head, Screen, Sections, Foot } from '../components/Chrome';
+import { Box, Head, Screen, Sections, Foot, Swipe, useSectionSwipe }
+  from '../components/Chrome';
 import { C, S } from '../theme';
 
 // MONEY THAT GOES OUT AND IS NOT A PURCHASE.
@@ -144,11 +145,25 @@ export default function ExpensesScreen({ navigation }) {
 
   const suggestions = [...new Set([...heads, ...COMMON])].slice(0, 10);
 
+
+  // SLIDING AWAY FROM A HALF-WRITTEN ENTRY WOULD THROW IT AWAY.
+  //
+  // A chip change replaces the screen, so an amount he has typed and not saved
+  // goes with it — and a drag is far easier to do by accident than a tap on a
+  // chip. So the finger moves between chips while the form is untouched, which
+  // is when he is looking rather than writing, and stops the moment he starts
+  // filling it in. The chips above never stop working.
+  const started = !!String(head).trim() || !!String(amount).trim()
+    || !!String(note).trim() || !!editing;
+  const sec = useSectionSwipe(navigation, org, isOwner, 'spent');
+  const swipe = started ? {} : sec;
+
   return (
     <Screen>
       <Head navigation={navigation} title="Money out" />
       <Sections navigation={navigation} org={org} isOwner={isOwner} id="spent" />
 
+      <Swipe {...swipe} style={{ flex: 1 }}>
       <FlatList
         data={rows}
         keyExtractor={(x) => x.id}
@@ -320,6 +335,7 @@ export default function ExpensesScreen({ navigation }) {
           )
         }
       />
+      </Swipe>
     </Screen>
   );
 }
