@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0 } from '../lib/money';
-import { Box, Head, KeyForm, Screen } from '../components/Chrome';
+import { Box, goHome, Head, KeyForm, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // STARTING THE BOOKS AGAIN.
@@ -89,7 +89,7 @@ export default function WipeScreen({ navigation }) {
               + 'opening figures set back to nil.'
             : `\n\n${fmt0(d.items || 0)} items and ${fmt0(d.parties || 0)} names went too.`)
         + '\n\nBill numbering starts from 1 again.',
-        [{ text: 'Start billing', onPress: () => navigation.navigate('Home') }]);
+        [{ text: 'Start billing', onPress: () => goHome(navigation) }]);
     } catch (e) {
       setStep('confirm');
       Alert.alert('Nothing was deleted', sayPlainly(e));
