@@ -4,7 +4,7 @@ import {
 } from 'react-native';
 
 import { supabase } from '../lib/supabase';
-import { sayPlainly } from '../lib/offline';
+import { sayPlainly, forgetLocal } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0 } from '../lib/money';
 import { Box, goHome, Head, KeyForm, Screen } from '../components/Chrome';
@@ -80,6 +80,10 @@ export default function WipeScreen({ navigation }) {
     try {
       const { data, error } = await supabase.rpc('wipe_org', { p_keep_masters: keepMasters });
       if (error) throw error;
+      // The copy this phone keeps for billing with no signal has just become
+      // a copy of books that no longer exist — including the bill counter,
+      // which would otherwise carry on from the old numbers.
+      await forgetLocal();
       const d = data || {};
       Alert.alert('The books are empty',
         `${fmt0(d.vouchers || 0)} bills, ${fmt0(d.payments || 0)} money entries and `

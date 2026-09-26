@@ -214,10 +214,6 @@ export default function ReportsScreen({ route, navigation }) {
 
   /* ---------------- the sums ---------------- */
 
-  // Is there anything in this range at all? Either road can answer it.
-  const anything = vouchers.length > 0
-    || (!!summary && (((summary.heads || []).length > 0) || ((summary.days || []).length > 0)));
-
   const sums = useMemo(() => {
     const blank = () => ({ n: 0, taxable: 0, cgst: 0, sgst: 0, igst: 0, total: 0 });
 
@@ -355,6 +351,26 @@ export default function ReportsScreen({ route, navigation }) {
   }, [vouchers, lines, summary]);
 
   const label = rangeOf(range)[2];
+
+  // IS THERE ANYTHING IN THIS PERIOD AT ALL?
+  //
+  // This used to be `vouchers.length`, and the fast road above deliberately
+  // empties `vouchers` — report_summary does the adding up on the server and
+  // sends back the totals, not the bills. So on every phone whose database
+  // has the summary function, the whole of this screen was hidden behind a
+  // test that could never be true and the shopkeeper was told "Nothing in
+  // this month" over a month of trade. The question has to be asked of
+  // whichever road was taken.
+  //
+  // The last two terms are main's answer to the same fault, kept alongside:
+  // they ask the server's reply directly, so a month holding only heads this
+  // screen draws no card for still counts as a month with something in it.
+  const anything = summary
+    ? !!(sums.sales.n || sums.purchases.n || sums.estimates.n
+         || sums.rates.length || sums.items.length || sums.days.length
+         || sums.returns.total
+         || (summary.heads || []).length || (summary.days || []).length)
+    : vouchers.length > 0;
 
   // WHICH OF THE FOUR HE IS ON. The fourth, GSTR-2B, is a screen of its own —
   // it reads a file off the portal — so it is not one of these.

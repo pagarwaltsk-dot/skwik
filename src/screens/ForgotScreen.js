@@ -33,7 +33,9 @@ export default function ForgotScreen({ navigation }) {
     // WITHOUT A PLACE TO SEND HIM, THE LINK WENT NOWHERE.
     // This was called bare, so Supabase used the project's own Site URL —
     // which for an app with no website is a page that does not exist. The
-    // link is now aimed at Skwik itself, and App.js catches it.
+    // link is now aimed at Skwik itself; `skwik://` is the app's own address
+    // (app.json, "scheme") and AppContext catches the link, takes the
+    // recovery login off it and opens the screen that sets a new password.
     const { error } = await supabase.auth.resetPasswordForEmail(e, {
       redirectTo: 'skwik://reset',
     });
@@ -43,7 +45,8 @@ export default function ForgotScreen({ navigation }) {
     // Supabase never says whether the address was on an account, and that is
     // right: saying so would tell a stranger which addresses exist.
     Alert.alert('If that address is on the account, a link is on its way',
-      'Open it on this phone and it will let you set a new password.\n\n'
+      'Open it ON THIS PHONE. Skwik opens by itself and asks you for a new '
+      + 'password.\n\n'
       + 'Nothing arrives if that email was never saved in Settings.'
       + (hasSupport()
           ? `\n\nIn that case get in touch — ${supportLine()} — and we will sort it `

@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
+import { Alert } from 'react-native';
 import { supabase, phoneToEmail } from './lib/supabase';
 import { STATES } from './lib/states';
 import { cacheOrg, cachedOrg, noteServerCounters, queueCount, flushQueue,
@@ -18,6 +19,14 @@ export function AppProvider({ children }) {
   // moment where there is a session but no firm yet, and the app takes that to
   // mean "this login has no shop" and flashes the set-up screen.
   const [checking, setChecking] = useState(false);
+  // True while the login on this phone came in through a "forgotten password"
+  // link and is good for one thing only: setting a new password.
+
+  // WHICH FIRM THE PHONE IS WORKING FOR, readable from inside a callback
+  // that was made before the firm was known. Used by the outbox: a bill
+  // written offline for one shop must never be sent under another login.
+  const orgIdRef = useRef(null);
+  orgIdRef.current = org?.id || null;
 
   // WHO THIS PHONE BELONGS TO.
   //
@@ -31,9 +40,28 @@ export function AppProvider({ children }) {
   // that genuinely has no firm — is allowed to send anyone to the set-up
   // screen. Note that supabase resolves with an error rather than throwing, so
   // every step is checked, not wrapped in a try and hoped for.
-  const loadOrg = useCallback(async () => {
+  //
+  // `known` is the session the caller already has in its hand. The copy of
+  // the firm kept on this handset is stamped with the login it belongs to, so
+  // that one shop's book can never be handed to another login — and reading
+  // that stamp needs the login id even when the server cannot be reached.
+  // Both callers have it, so it is passed in rather than asked for again:
+  // asking Supabase would be a round trip on a dead line, and a dead line is
+  // exactly the moment this has to work.
+  const loadOrg = useCallback(async (known) => {
+    let localId = known?.user?.id || null;
+    if (!localId) {
+      // Called from a screen rather than from the auth listener — reloadOrg,
+      // after joining a shop or saving Settings. There is signal in that case
+      // by definition, so asking is safe.
+      try {
+        const r = await withTimeout(supabase.auth.getSession());
+        localId = r?.data?.session?.user?.id || null;
+      } catch (e) { /* the stamped copy simply will not be used */ }
+    }
+
     const fallback = async (why) => {
-      const o = await cachedOrg();
+      const o = await cachedOrg(localId);
       if (o) { setOrg(o); return o; }
       if (why === 'no-user') { setOrg(null); return null; }
       setOrg(null);
@@ -66,7 +94,7 @@ export function AppProvider({ children }) {
     if (profErr) return fallback('unreachable');
     if (!prof?.org_id) {
       // the server answered, and this login really has no firm behind it
-      const cached = await cachedOrg();
+      const cached = await cachedOrg(user.id);
       if (cached) { setOrg(cached); return cached; }
       setOrg(null);
       return null;
@@ -80,20 +108,30 @@ export function AppProvider({ children }) {
     } catch (e) { orgErr = e; }
     if (orgErr || !o) return fallback('unreachable');
 
-    cacheOrg(o); noteServerCounters(o);
+    cacheOrg(user.id, o); noteServerCounters(o);
+    // Written here as well as on every render: the outbox is emptied the
+    // moment the firm is known, which is before React has drawn a frame
+    // carrying it, and a flush that does not know the firm would send one
+    // shop's waiting bills under whatever login happens to be open.
+    orgIdRef.current = o.id;
     setOrg(o);
     return o;
   }, []);
 
   // How many bills are sitting on this phone, and a way to push them.
+  //
+  // Both are asked about THIS shop. A bill written offline carries the shop
+  // it was written for, and one written for another login must not be sent
+  // under this one: the database files a bill against whoever is signed in,
+  // so it would land in the wrong books under the wrong number.
   const countPending = useCallback(async () => {
-    const n = await queueCount();
+    const n = await queueCount(orgIdRef.current);
     setPending(n);
     return n;
   }, []);
 
   const sendPending = useCallback(async () => {
-    const r = await flushQueue(supabase);
+    const r = await flushQueue(supabase, orgIdRef.current);
     await countPending();
     return r;
   }, [countPending]);
@@ -103,18 +141,18 @@ export function AppProvider({ children }) {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!alive) return;
       setSession(data.session);
-      if (data.session) await loadOrg();
+      if (data.session) await loadOrg(data.session);
       setLoading(false);
       // bills waiting on this phone go out in the background — nobody should
       // look at a blank screen while a dead connection times out
       if (data.session) sendPending();
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_e, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, s) => {
       setSession(s);
       if (s) {
         setChecking(true);
-        try { await loadOrg(); } finally { setChecking(false); }
+        try { await loadOrg(s); } finally { setChecking(false); }
       } else {
         setOrg(null);
         setRole('owner');
@@ -180,6 +218,12 @@ export function AppProvider({ children }) {
       if (pe1) throw pe1;
 
       const hasGst = !!d.gstin;
+      // Assam is the default for a shop that gives no GST number, because
+      // that is where most of these shops are — the same answer OnboardScreen
+      // gives, so the two ways into Skwik agree. It is still a default rather
+      // than a decision: this screen does not yet OFFER the State the way the
+      // set-up screen now does, so a shop elsewhere has to correct it under
+      // Settings, where the picker asks for it by name.
       const code   = hasGst ? String(d.gstin).slice(0, 2) : '18';
       const trial  = new Date();
       trial.setDate(trial.getDate() + 7);
@@ -264,7 +308,7 @@ export function AppProvider({ children }) {
                                      && org.owner_id === session.user.id)
                                     || (role !== 'staff' && !org?.owner_id),
                            joinShop,
-                           reloadOrg: loadOrg, pending, countPending, sendPending,
+                           reloadOrg: () => loadOrg(), pending, countPending, sendPending,
                            signOut: () => supabase.auth.signOut() }}>
       {children}
     </Ctx.Provider>

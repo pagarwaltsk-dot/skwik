@@ -2,9 +2,9 @@ import React, { useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { STATES } from '../lib/states';
 import { Box, KeyForm } from '../components/Chrome';
 import { StateField } from '../components/Pickers';
+import { STATES } from '../lib/states';
 import { C, S } from '../theme';
 import { sayPlainly } from '../lib/offline';
 
@@ -58,29 +58,50 @@ export default function OnboardScreen() {
   const start = async () => {
     if (!name.trim()) return Alert.alert('Shop name', 'Type the name that should print on your bills.');
     setBusy(true);
-    const { data: { user } } = await supabase.auth.getUser();
+    // THE BUTTON MUST ALWAYS COME BACK.
+    //
+    // This read `user.id` straight off getUser(). With no signal, or a login
+    // that had gone stale, there is no user — so the line threw, the throw
+    // went nowhere, setBusy(false) was never reached, and the button sat on
+    // "One moment…" for as long as he was willing to look at it, with no
+    // message and no way forward. Every road out of here now ends in finally.
+    try {
+      const { data: who, error: whoErr } = await supabase.auth.getUser();
+      const user = who?.user;
+      if (whoErr || !user) {
+        return Alert.alert('Could not check your login',
+          'Skwik could not confirm who is signed in. Check your internet and '
+          + 'try again, or log out and log in once more.');
+      }
 
-    const trialEnds = new Date();
-    trialEnds.setDate(trialEnds.getDate() + 7);
+      const trialEnds = new Date();
+      trialEnds.setDate(trialEnds.getDate() + 7);
 
-    const { data: org, error } = await supabase.from('orgs').insert({
-      name: name.trim(),
-      phone: phone.trim(),
-      mode: 'estimate',
-      is_gst_registered: false,
-      state_code: stateCode || '18',
-      state_name: STATES[stateCode || '18'] || '',
-      plan: 'trial',
-      trial_ends_at: trialEnds.toISOString(),
-    }).select().single();
+      const { data: org, error } = await supabase.from('orgs').insert({
+        name: name.trim(),
+        phone: phone.trim(),
+        mode: 'estimate',
+        is_gst_registered: false,
+        state_code: stateCode || '18',
+        state_name: STATES[stateCode || '18'] || '',
+        plan: 'trial',
+        trial_ends_at: trialEnds.toISOString(),
+      }).select().single();
 
-    if (error) { setBusy(false); return Alert.alert('Could not save', sayPlainly(error)); }
+      if (error || !org) return Alert.alert('Could not save', sayPlainly(error));
 
-    const { error: e2 } = await supabase.from('profiles')
-      .upsert({ id: user.id, org_id: org.id, phone: phone.trim() });
-    setBusy(false);
-    if (e2) return Alert.alert('Could not save', sayPlainly(e2));
-    await reloadOrg();
+      const { error: e2 } = await supabase.from('profiles')
+        .upsert({ id: user.id, org_id: org.id, phone: phone.trim() });
+      if (e2) {
+        // A firm nothing points at is unreachable for ever, so it is taken
+        // back out rather than left behind.
+        try { await supabase.from('orgs').delete().eq('id', org.id); } catch (_) {}
+        return Alert.alert('Could not save', sayPlainly(e2));
+      }
+      await reloadOrg();
+    } catch (e) {
+      Alert.alert('Could not save', sayPlainly(e));
+    } finally { setBusy(false); }
   };
 
   if (!who) {
@@ -197,5 +218,3 @@ export default function OnboardScreen() {
     </KeyForm>
   );
 }
-
-export { STATES };

@@ -7,9 +7,10 @@ import {
   showBatch, showExpenses, showExpiry, showGodowns, showPurchase, showRcmIn, showRcmOut, showRecon, showReports, showReturns, showStock, showThumbRail, showTransfer, showVariants,
 } from '../lib/features';
 import { useApp } from '../AppContext';
-import { STATES } from './OnboardScreen';
+import { STATES } from '../lib/states';
 import { Alert as RNAlert } from 'react-native';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
+import { StateField } from '../components/Pickers';
 import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
@@ -173,7 +174,7 @@ export default function SettingsScreen({ navigation }) {
   const set = (k) => (v) => setF((s) => ({ ...s, [k]: v }));
 
   // the arrow key walks each block of the form, top to bottom
-  const rName = useRef(null), rAddr = useRef(null), rPhone = useRef(null), rState = useRef(null);
+  const rName = useRef(null), rAddr = useRef(null), rPhone = useRef(null);
   const rPre  = useRef(null), rNext = useRef(null);
   const rP1   = useRef(null), rP2   = useRef(null);
   const rL0 = useRef(null), rL1 = useRef(null), rL2 = useRef(null), rL3 = useRef(null);
@@ -511,18 +512,24 @@ export default function SettingsScreen({ navigation }) {
         <Field ref={rName} next={rAddr} label="FIRM NAME" value={f.name} onChange={set('name')} />
         <Field ref={rAddr} next={rPhone} label="ADDRESS" value={f.address} onChange={set('address')} multiline
                style={[S.input, { marginTop: 6, height: 80 }]} />
-        <Field ref={rPhone} next={rState} label="PHONE" value={f.phone} onChange={set('phone')}
-               keyboardType="phone-pad" />
+        <Field ref={rPhone} onSubmit={saveDetails} label="PHONE" value={f.phone}
+               onChange={set('phone')} keyboardType="phone-pad" />
         {!!f.is_gst_registered && (
           <Field label="GST NUMBER" value={f.gstin} onChange={set('gstin')}
                  autoCapitalize="characters" maxLength={15} />
         )}
-        <Field ref={rState} onSubmit={saveDetails} label="STATE CODE"
-               value={String(f.state_code ?? '')} onChange={set('state_code')}
-               keyboardType="number-pad" maxLength={2} />
-        <Text style={{ fontSize: 12, fontWeight: '600', color: C.muted, marginTop: 4 }}>
-          {STATES[f.state_code] || 'Unknown state code'}
-        </Text>
+        {/* THE STATE, BY ITS NAME.
+            This asked for the two-digit code — 18 for Assam, 27 for
+            Maharashtra — which is a thing only the GST portal knows and
+            nobody carries in their head. Get it wrong and every bill in the
+            shop carries the wrong tax. The picker the rest of the app already
+            uses asks for the name and keeps the code itself. */}
+        <Text style={[S.label, { marginTop: 12 }]}>STATE</Text>
+        <View style={{ marginTop: 6 }}>
+          <StateField value={String(f.state_code ?? '')}
+            onChange={(code) => setF((x) => ({ ...x, state_code: code,
+                                               state_name: STATES[code] || '' }))} />
+        </View>
         <TouchableOpacity style={[S.btn, { marginTop: 16 }]} onPress={saveDetails} disabled={busy}>
           <Text style={S.btnText}>SAVE FIRM DETAILS</Text>
         </TouchableOpacity>

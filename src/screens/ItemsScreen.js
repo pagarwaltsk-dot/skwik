@@ -185,8 +185,9 @@ export default function ItemsScreen({ route, navigation }) {
     .order('name').order('id'))
     .then((data) => setRows(data || []))
     .catch(() => {});
+  // Once. This had a useFocusEffect AND a useEffect on the same condition, so
+  // every visit to this screen asked the server for the whole item list twice.
   useFocusEffect(useCallback(() => { load(); }, [showGone]));
-  useEffect(() => { load(); }, [showGone]);
 
   // ARRIVING HERE ALREADY KNOWING WHICH ITEM HE WANTS.
   //

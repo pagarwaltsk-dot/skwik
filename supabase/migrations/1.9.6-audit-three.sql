@@ -74,7 +74,19 @@ commit;
 
 begin;
 
-create or replace view public.stock_in_hand_detail as
+-- WITH THE FLAG IT WAS DECLARED WITH.
+--
+-- Leaving this clause off is what 1.9.9 had to go and put right: CREATE OR
+-- REPLACE VIEW REPLACES a view's options rather than carrying them over, so
+-- a replace with no WITH clause silently strips security_invoker and the view
+-- starts reading its tables as its owner, with row security bypassed.
+--
+-- 1.9.9 repairs a database where that has already happened. This restates it
+-- here as well, so that re-running THIS file on its own — to put the view
+-- back after some later change — cannot quietly open the same hole a second
+-- time, with no 1.9.9 following it.
+create or replace view public.stock_in_hand_detail
+  with (security_invoker = 'on') as
 with main as (
   select distinct on (org_id) org_id, id, name
     from godowns

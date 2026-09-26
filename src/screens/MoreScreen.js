@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { supabase } from '../lib/supabase';
-import { sayPlainly } from '../lib/offline';
+import { sayPlainly, forgetLocal } from '../lib/offline';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '../AppContext';
 import { showGodowns, showTransfer } from '../lib/features';
@@ -75,6 +75,9 @@ export default function MoreScreen({ navigation }) {
     try {
       const { error } = await supabase.rpc('delete_my_account', { p_confirm: 'DELETE' });
       if (error) throw error;
+      // An account that has been deleted must not leave its items, its
+      // customers and its firm row sitting in the phone's own storage.
+      await forgetLocal();
       Alert.alert('Closed', 'Your Skwik account has been deleted.');
       await signOut();
     } catch (e) {

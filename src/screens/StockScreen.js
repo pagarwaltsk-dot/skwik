@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, FlatList, TextInput } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { fmt0, num, qty as qtyText } from '../lib/money';
+import { fmt0, num, qty as qtyText, today as todayHere } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { showBatch, showExpiry, showGodowns, showVariants } from '../lib/features';
 import { Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
@@ -141,7 +141,12 @@ export default function StockScreen({ navigation }) {
     // items, and a spent batch still drops off the detailed view as it did.
     const keepEmpty = !hideNil;
     const keepBatch = !detailed;
-    const today = new Date().toISOString().slice(0, 10);
+    // NOT toISOString(). That answers in UTC, which is five and a half hours
+    // behind India, so between midnight and half past five a batch expiring
+    // today was drawn in red as though it had expired yesterday. today() is
+    // the whole app's answer to this and every other date here goes through
+    // it. The name stays `today` so the rest of this reads as it did.
+    const today = todayHere();
 
     const src = detailed
       ? rows.filter((r) => (where === 'all' || (r.godown_id || 'none') === where))

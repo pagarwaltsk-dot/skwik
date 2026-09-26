@@ -26,7 +26,8 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test": "npx --yes esbuild tests/checks.js --bundle --platform=node --log-level=warning --outfile=node_modules/.cache/skwik-checks.cjs && node node_modules/.cache/skwik-checks.cjs"
   },
   "private": true
 }

@@ -92,6 +92,11 @@ const CSS = `
      to be impossible to miss, because the tax is NOT on this bill. */
   .rcband { border: 1.2pt solid #000; padding: 3pt 4pt; text-align: center;
             font-size: 8.6pt; font-weight: bold; margin-bottom: 3pt; }
+  /* the two column headings on the statement of account. These were written
+     as class="cap" and the class did not exist, so the headings printed at
+     body size with no weight and read as another entry in the column. */
+  .cap { font-size: 8pt; font-weight: bold; letter-spacing: .6pt;
+         text-transform: uppercase; color: #5C5B55; }
 `;
 
 export function invoiceHtml({ org, voucher, party, lines, copy }) {
