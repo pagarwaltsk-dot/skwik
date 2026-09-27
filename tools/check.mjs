@@ -527,6 +527,38 @@ rule('every part a screen draws is one it has actually got', (() => {
   return [...new Set(bad)];
 })());
 
+rule('the version on the phone can tell one build from the next', (() => {
+  // WHY THIS IS A RULE AND NOT A HABIT.
+  //
+  // Three builds went out in one afternoon, all of them reading 1.10.5 with
+  // versionCode 66, and when he asked "was it the 1.10.5 APK?" there was no
+  // answer -- the number could not distinguish the build with a feature in it
+  // from the build without. MoreScreen's own comment says the number matters
+  // exactly when you are telling whether the phone has the build you just
+  // made, so a delivery that changes the app and not the number breaks the one
+  // promise that screen makes.
+  const bad = [];
+  const f = path.join(ROOT, 'app.json');
+  if (!fs.existsSync(f)) return ['there is no app.json'];
+  let j;
+  try { j = JSON.parse(fs.readFileSync(f, 'utf8')); }
+  catch (e) { return ['app.json is not valid JSON -- nothing will build']; }
+  const v = j?.expo?.version;
+  const c = j?.expo?.android?.versionCode;
+  if (!v) bad.push('app.json has no version');
+  if (!Number.isInteger(c)) bad.push('app.json has no android versionCode');
+  // Android refuses an update whose versionCode did not go up, so the two have
+  // to move together -- a new version with the old code installs as the same
+  // build and the phone keeps what it has.
+  if (v && Number.isInteger(c)) {
+    const parts = String(v).split('.').map(Number);
+    if (parts.some((n) => !Number.isFinite(n))) {
+      bad.push(`the version "${v}" is not a plain number.number.number`);
+    }
+  }
+  return bad;
+})());
+
 // -------------------------------------------------------------------------
 console.log('');
 if (!fails.length) {

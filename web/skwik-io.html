@@ -136,6 +136,7 @@
       <div id="openBox"></div>
       <table id="planTable"></table>
       <div id="perFile"></div>
+      <div id="skipBox"></div>
       <div id="leaveOut"></div>
       <div id="stopBox"></div>
       <div class="row" style="margin-top:16px">
@@ -389,6 +390,15 @@ $('file').onchange = async () => {
     rows.push(['Money in and out', n(book.payments.length)]);
     rows.push(['Transfers between stores', n(book.transfers?.length || 0)]);
   }
+  if (anyBills) {
+    // MONEY BANKED, SAID OUT LOUD.
+    //
+    // The plan counted bills, money, transfers, items and names -- and not the
+    // banking. So when a file held no Contra there was nothing on the screen
+    // that said so, and the only way to find out was to bring the file in and
+    // then go looking in the database for why nothing arrived.
+    rows.push(['Cash paid into or taken from the bank', n((book.cashMoves || []).length)]);
+  }
   if (book.masters) {
     rows.push(['Stock items in the masters', n((book.masters.items || []).length)]);
     rows.push(['Names in the masters', n((book.masters.parties || []).length)]);
@@ -422,6 +432,26 @@ $('file').onchange = async () => {
     ).join('<br>') + '</p>';
   $('planTable').innerHTML = '<tr><th>What the file holds</th><th class="n">How many</th></tr>'
     + rows.map(([k, v]) => `<tr><td>${k}</td><td class="n">${v}</td></tr>`).join('');
+
+  // WHAT WAS PASSED OVER, BY KIND AND WITH A REASON.
+  //
+  // "Passed over: 14" tells a shopkeeper nothing, and the danger was never that
+  // an entry was skipped -- it is that he could not tell WHICH, so a whole kind
+  // of voucher could be missing from his books with nothing on any screen
+  // saying so.
+  const byWhy = new Map();
+  for (const v of (book.skipped || [])) {
+    const k = `${v.tally_type || v.vtype || 'something'}|${v.why || 'Skwik has no place for it'}`;
+    byWhy.set(k, (byWhy.get(k) || 0) + 1);
+  }
+  $('skipBox').innerHTML = byWhy.size
+    ? `<div class="flag"><strong>${n(book.skipped.length)} entr(y/ies) passed over — nothing
+         was written for these</strong><ul class="plain">`
+      + [...byWhy.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
+          .map(([k, c]) => { const [what, why] = k.split('|');
+            return `<li>${n(c)} × <strong>${what}</strong> — ${why}</li>`; }).join('')
+      + '</ul></div>'
+    : '';
 
   const stop = report.stop || [], warn = report.warn || [];
   $('stopBox').innerHTML =
