@@ -1,0 +1,73 @@
+SKWIK 1.10.5 — AND A PAGE FOR THE COMPUTER
+==========================================
+
+Everything in 1.10.4, plus the browser import/export page. If you have not
+installed 1.10.4 yet, this replaces it.
+
+TO INSTALL
+----------
+1. Supabase: run 1.10.2-big-books.sql then 1.10.3-cost-and-import.sql
+   (the same two files — running one twice costs nothing)
+2. Upload this code to GitHub.
+3. Build the phone app as usual.
+4. THEN, once, turn on GitHub Pages — see web/README.txt. Two minutes.
+
+
+THE PAGE
+--------
+web/skwik-io.html — one page, no build step, nothing loaded from anybody
+else's server. It does two things and nothing else:
+
+  · bring a Tally export in — a whole year at once, not a month at a time
+  · take your whole book out — written to disk as it arrives
+
+It is NOT a second copy of the app. It loads src/lib/tallybook.js,
+tallyload.js and booksave.js straight out of this repo, so the reading and
+the writing are the same code your phone runs. There is no second version to
+drift.
+
+Why it is worth having: exporting out of Tally happens on the computer
+anyway. Sending the file to a phone afterwards, in pieces because a phone
+cannot hold a year, is work that only exists because the app was on the
+phone. And a browser is simply better at this — memory in gigabytes instead
+of a few hundred megabytes, and a file can be written to disk as it arrives
+instead of being held whole.
+
+
+WHAT WAS TESTED — 25 checks, real browser, real database
+--------------------------------------------------------
+Your own 9 MB day book went in through the file picker, exactly as you would
+pick it. Nothing stubbed but the hosting.
+
+  · the page loads with no build step and nothing fetched from outside
+  · signs in and finds your firm
+  · reads and checks a 9 MB Tally file in about a second
+  · shows what is in the file BEFORE writing anything
+  · 90 bills, 433 lines, 108 money entries, 547 stock movements,
+    185 items and 59 names land in the database
+  · 16 suppliers arrive with their GST numbers; Shobha Steel arrives as
+    Delhi, not Assam
+  · not one line carries the tax twice
+  · the same file again writes nothing at all
+  · the backup writes 1,429 rows — every row the database holds — in 11
+    pieces straight to disk
+  · and on a browser with no save dialog it falls back to a download that is
+    byte-identical apart from the moment it was taken
+
+Two things the testing found and fixed, which would have bitten you:
+  · picking the same file a second time did nothing, because a file box only
+    speaks up when its value changes — and a second time is exactly what you
+    do when you want to be sure it ran
+  · the client was missing the one call that makes a repeat import a no-op,
+    which silently cost 92 receipts and 6 transfers out of an import
+
+
+ONE CHANGE TO THE PHONE APP, AND IT IS MECHANICAL
+-------------------------------------------------
+The files under src/lib now say  from './uqc.js'  where they said
+from './uqc' . The phone reads both the same; a browser needs the .js. There
+are two new rules in tools/check.mjs so nobody can undo it by accident.
+
+Everything else from 1.10.4 is unchanged: the opening screen, the tab key,
+the import fixes, cost of goods sold, "rahul 18000", Move, the bill number,
+option 4 on the item search, Past bills paging.
