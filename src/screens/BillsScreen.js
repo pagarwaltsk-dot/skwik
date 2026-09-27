@@ -119,18 +119,50 @@ export default function BillsScreen({ navigation }) {
   const [lines, setLines] = useState(null);      // its lines, once fetched
   const [working, setWorking] = useState(false);
 
+  // PAST BILLS STOPPED DEAD AT FOUR HUNDRED.
+  //
+  // It asked for the 400 newest and said nothing about the rest, so a shop past
+  // 400 bills simply could not reach its own older ones -- and a shop that
+  // imports a year out of Tally is past 400 on its first day. Worse, there was
+  // no way to tell: the list just ended, which looks exactly like a bill having
+  // gone missing.
+  //
+  // It now asks for a page at a time and offers to fetch the next, so the list
+  // goes back as far as he cares to look and says so when it has reached the
+  // beginning.
+  const PAGE = 200;
+  const [more, setMore] = useState(false);     // is there another page behind this one
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const page = useCallback(async (from) => supabase
+    .from('vouchers')
+    .select('*, parties(id, name, phone, gstin, address, state_name, state_code, opening_date)')
+    .order('vdate', { ascending: false })
+    .order('created_at', { ascending: false })
+    .range(from, from + PAGE - 1), []);
+
   const load = useCallback(async () => {
     setBusy(true);
-    const { data, error } = await supabase
-      .from('vouchers')
-      .select('*, parties(id, name, phone, gstin, address, state_name, state_code, opening_date)')
-      .order('vdate', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(400);
+    const { data, error } = await page(0);
     if (error) Alert.alert('Could not load your bills', sayPlainly(error));
     setRows(data || []);
+    setMore((data || []).length === PAGE);
     setBusy(false);
-  }, []);
+  }, [page]);
+
+  const fetchMore = useCallback(async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    const { data, error } = await page(rows.length);
+    setLoadingMore(false);
+    if (error) return Alert.alert('Could not load any more', sayPlainly(error));
+    // A bill written while he was reading could shift the pages by one, so
+    // anything already on screen is passed over rather than shown twice.
+    const have = new Set(rows.map((r) => r.id));
+    const add = (data || []).filter((r) => !have.has(r.id));
+    setRows((old) => [...old, ...add]);
+    setMore((data || []).length === PAGE);
+  }, [page, rows, loadingMore]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -378,6 +410,27 @@ export default function BillsScreen({ navigation }) {
                 ? 'Nothing matches that.'
                 : 'No bills yet. Every bill you save will be here, and you can\nsend it again from here any time.'}
             </Text>}
+          /* AND A WAY BACK PAST THE NEWEST TWO HUNDRED. It says where the list
+             has got to either way, so an end is an end rather than something
+             that looks like a bill having disappeared. */
+          ListFooterComponent={!rows.length ? null : (
+            <View style={{ paddingTop: 14, paddingBottom: 6, alignItems: 'center' }}>
+              {more ? (
+                <TouchableOpacity onPress={fetchMore} disabled={loadingMore}
+                  style={{ paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10,
+                           borderWidth: 1, borderColor: C.accent,
+                           backgroundColor: loadingMore ? C.line : C.accentSoft }}>
+                  <Text style={{ fontSize: 13.5, fontWeight: '800', color: C.accent }}>
+                    {loadingMore ? 'Fetching…' : 'Show older bills'}
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <Text style={{ fontSize: 12, color: C.faint }}>
+                  {`That is all ${rows.length} of them.`}
+                </Text>
+              )}
+            </View>
+          )}
           renderItem={({ item: v, index }) => {
             const prev = shown[index - 1];
             const newDay = !prev || prev.vdate !== v.vdate;

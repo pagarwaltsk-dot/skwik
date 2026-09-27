@@ -209,6 +209,32 @@ export default function StockMoveScreen({ navigation }) {
 
   /* ---------------- moving ---------------- */
 
+  // BOTH ENDS OF THE MOVE ARE HIS TO CHOOSE, AND WITH TWO STORES NEITHER WAS.
+  //
+  // Each picker used to hide the store the other one was sitting on — FROM
+  // hid TO, TO hid FROM — which sounds like it stops him naming the same
+  // place twice. In a shop with exactly two stores it does something else
+  // entirely: the FROM row is left with ONE chip in it, the store it is
+  // already on. Chamber Road to Napaukhry was not the default, it was the
+  // only move the screen could write.
+  //
+  // So goods coming back the other way had nowhere to go. The evening
+  // leftovers carried up from the shop, a wrong box sent down in the morning,
+  // stock pulled back to make up a big order — all of it was either not
+  // written at all, and the two stores' figures drifted apart for good, or
+  // written as a count at each end: two corrections, each one an Adjustment
+  // in the item's register, where there should have been one move.
+  //
+  // Every store is now offered at both ends, and picking the one the other
+  // end is already on SWAPS them instead of refusing. One tap on Napaukhry
+  // under FROM turns Chamber Road → Napaukhry into Napaukhry → Chamber
+  // Road, which is the whole journey in one tap. The two can still never be
+  // the same store — that is what the swap is for, and doMove checks it
+  // again before anything is written — and the screen still opens on main
+  // to other, so the move he makes every morning is still no taps at all.
+  const pickFrom = (id) => { if (id === to) setTo(from); setFrom(id); };
+  const pickTo   = (id) => { if (id === from) setFrom(to); setTo(id); };
+
   const doMove = () => {
     if (!from || !to)   return Alert.alert('Which stores?', 'Say where it goes from, and where to.');
     if (from === to)    return Alert.alert('Same store', 'Those are the same place.');
@@ -325,9 +351,9 @@ export default function StockMoveScreen({ navigation }) {
     );
   };
 
-  const Pick = ({ value, onChange, not }) => (
+  const Pick = ({ value, onChange }) => (
     <View style={[S.row, { gap: 8, flexWrap: 'wrap', marginTop: 6 }]}>
-      {godowns.filter((g) => g.id !== not).map((g) => {
+      {godowns.map((g) => {
         const on = value === g.id;
         return (
           <TouchableOpacity key={g.id} onPress={() => onChange(g.id)}
@@ -536,9 +562,9 @@ export default function StockMoveScreen({ navigation }) {
         ) : tab === 'move' ? (
           <>
             <Text style={[S.label, { marginTop: 18 }]}>FROM</Text>
-            <Pick value={from} onChange={setFrom} not={to} />
+            <Pick value={from} onChange={pickFrom} />
             <Text style={[S.label, { marginTop: 14 }]}>TO</Text>
-            <Pick value={to} onChange={setTo} not={from} />
+            <Pick value={to} onChange={pickTo} />
 
             {finder('Which item is moving?')}
 

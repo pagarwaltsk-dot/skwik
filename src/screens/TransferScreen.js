@@ -4,8 +4,10 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
-import { File, Paths } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import { readPickedFile } from '../lib/pickfile';
+import { readFileLines } from '../lib/bigfile';
+import { saveBook, bookLoader, sayWhatWentOut, sayWhatCameBack, totalOf } from '../lib/booksave';
 
 import { supabase, allRows as pageAll } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
@@ -47,15 +49,46 @@ function History({ org, navigation }) {
   }, []);
   React.useEffect(load, [load]);
 
+  // TWO SETS OF NAMES FOR THE SAME FIVE THINGS.
+  // A Tally import counts what it wrote as bills, money, moves, items, names.
+  // A book put back a page at a time counts by table, because that is what it
+  // is sent one page of at a time. Both end up here, and reading only one set
+  // meant a restored book showed in this list with no figures against it at
+  // all -- which looks exactly like nothing having happened.
   const shape = (c = {}) => [
-    c.bills ? `${c.bills} bills` : null,
-    c.money ? `${c.money} money entries` : null,
-    c.moves ? `${c.moves} movements` : null,
+    (c.bills ?? c.vouchers) ? `${c.bills ?? c.vouchers} bills` : null,
+    (c.money ?? c.payments) ? `${c.money ?? c.payments} money entries` : null,
+    (c.moves ?? c.stock_moves) ? `${c.moves ?? c.stock_moves} movements` : null,
     c.items ? `${c.items} items` : null,
-    c.names ? `${c.names} names` : null,
+    (c.names ?? c.parties) ? `${c.names ?? c.parties} names` : null,
   ].filter(Boolean).join(' \u00b7 ');
 
+  // A RESTORE THAT STOPPED HALF WAY IS NOT AN IMPORT, and import_undo is the
+  // wrong tool for it: it was written to take out what a Tally import writes,
+  // and a restore also writes bank accounts, expenses and opening balances,
+  // every one of which undo leaves behind to be written a second time. The
+  // server has a function that takes out exactly what a restore put in, so
+  // that is the one used.
+  const clearRestore = async (r) => {
+    Alert.alert('Clear what went in?',
+      'That restore did not finish. This takes out everything it did put in — '
+      + 'every bill, name, item, bank account and expense — and leaves the firm '
+      + 'empty again, ready to try the same file from the start.',
+      [{ text: 'Leave it' },
+       { text: 'Clear it out', style: 'destructive', onPress: async () => {
+          setBusy(r.id);
+          const { data, error } = await supabase.rpc('book_restore_clear', { p_run: r.id });
+          setBusy(null);
+          if (error) return Alert.alert('Could not clear it', sayPlainly(error));
+          load();
+          const n = data?.removed || {};
+          Alert.alert('Cleared', `${shape(n) || 'Nothing'} removed. `
+            + 'The firm is empty again — press Put a book back with the same file.');
+       } }]);
+  };
+
   const undo = async (r) => {
+    if (r.kind === 'backup' && !r.done_at) return clearRestore(r);
     setBusy(r.id);
     const { data: plan, error } = await supabase.rpc('import_undo_plan', { p_run: r.id });
     setBusy(null);
@@ -135,7 +168,9 @@ function History({ org, navigation }) {
                          paddingVertical: 8, borderRadius: 9, borderWidth: 1,
                          borderColor: C.danger, opacity: busy === r.id ? 0.5 : 1 }}>
                 <Text style={{ fontSize: 13, fontWeight: '800', color: C.danger }}>
-                  {busy === r.id ? 'One moment\u2026' : 'Take it all back out'}
+                  {busy === r.id ? 'One moment\u2026'
+                    : (r.kind === 'backup' && !r.done_at) ? 'Clear what went in'
+                    : 'Take it all back out'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -191,6 +226,24 @@ function rangeDates(k) {
 // changed, so React threw the whole list away and built it again from
 // nothing — with five hundred imported rows sitting in state, every single
 // tap. That is the freeze that makes a button look dead.
+// A TABLE NAME IS OURS, NOT HIS. While a book is moving he should see what is
+// moving in his own words -- "customers and suppliers", not "parties".
+const PLAIN = {
+  godowns: 'Stores',
+  bank_accounts: 'Bank accounts',
+  parties: 'Customers and suppliers',
+  items: 'Items',
+  item_parts: 'What items are made of',
+  standing_items: 'Opening balances',
+  expense_heads: 'Expense heads',
+  vouchers: 'Bills',
+  voucher_lines: 'Bill lines',
+  payments: 'Money in and out',
+  expenses: 'Expenses',
+  stock_moves: 'Stock movements',
+  invoice_series: 'Bill numbers',
+};
+
 const Row = ({ label, note, onPress, busyKey, tone, busy }) => (
   <TouchableOpacity onPress={onPress} disabled={!!busy}
     style={{ paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: C.line,
@@ -218,6 +271,10 @@ export default function TransferScreen({ navigation }) {
   // figures, and only then is there anything to agree to.
   const [dayBook, setDayBook] = useState(null);
   const [bringing, setBringing] = useState(null);   // { done, total } while it runs
+
+  // A WHOLE BOOK MOVING, WHICH TAKES LONG ENOUGH TO NEED A BAR.
+  // { way: 'out' | 'in', label, done, total }
+  const [copying, setCopying] = useState(null);
   const [range, setRange] = useState('month');
   const [tab, setTab] = useState('in');
   const [ready, setReady] = useState(null);   // what was read, waiting to be confirmed
@@ -335,17 +392,6 @@ export default function TransferScreen({ navigation }) {
     finally { setBusy(''); }
   };
 
-  /* ---------------- everything, organised ---------------- */
-
-  // ONE JOURNEY, NOT NINE.
-  //
-  // An accountant asking for "the books" wants sale bills, purchase bills,
-  // what is on each line, the money in and out, the expenses, what every
-  // party stands at, the items and the stock — and he wants them as separate
-  // sheets with their own headings, not one file to be untangled.
-  //
-  // The phone's sharing sheet will carry several files at once, so they are
-  // written together and handed over in one go, each named for what is in it.
   // THE WHOLE BOOK, IN A FORM SKWIK CAN READ BACK.
   //
   // Everything above this is a report: useful to a man and useless to a
@@ -354,33 +400,163 @@ export default function TransferScreen({ navigation }) {
   // firm started again, or the day it stops paying us.
   const exportBackup = async () => {
     setBusy('backup');
+    setCopying({ way: 'out', label: 'Starting…', done: 0, total: 0 });
     try {
-      const { data, error } = await supabase.rpc('book_backup');
-      if (error) throw error;
       const name = `skwik-backup-${(org?.name || 'shop').replace(/[^A-Za-z0-9]+/g, '-')}`
                  + `-${today()}.skwik.json`;
-      await send(name, JSON.stringify(data), 'application/json');
-      Alert.alert('That is your whole book',
-        `${(data?.vouchers || []).length} bills, ${(data?.payments || []).length} money entries, `
-        + `${(data?.items || []).length} items and ${(data?.parties || []).length} names.\n\n`
-        + 'Keep it somewhere you will find it. Skwik can put the whole thing back from this one '
-        + 'file, into a firm with nothing in it.');
+
+      // WRITTEN INTO THE FILE AS IT ARRIVES, NOT BUILT UP AND THEN WRITTEN.
+      //
+      // The old way asked the server for the whole book in one call and then
+      // turned the answer into a file. Measured on a shop with two years in it
+      // that is 105 MB of answer and about 340 MB of phone memory at the
+      // moment the file is written -- more than a cheap Android gives one app,
+      // and when it runs out it does not slow down, it dies. This asks for a
+      // page, appends it, and lets it go. Measured on that same shop: 0.6 MB
+      // held at the worst moment, for the same 105 MB file.
+      // AND LAST MONTH'S COPY GOES FIRST.
+      // A copy of a two-year book is 105 MB and it is written into the phone's
+      // scratch folder. One a month, each named for its day, and a year later
+      // there is a gigabyte of old copies on a phone that had 8 GB to begin
+      // with. He asked about space; this is where it would have gone.
+      try {
+        for (const old of new Directory(Paths.cache).list()) {
+          if (/^skwik-backup-.*\.skwik\.json$/.test(old.name || '')) old.delete();
+        }
+      } catch (e) { /* nothing there, or the folder will not list */ }
+
+      const file = new File(Paths.cache, name);
+      try { if (file.exists) file.delete(); } catch (e) { /* first time through */ }
+      file.create();
+
+      const { wrote } = await saveBook({
+        supabase,
+        put: (text) => { file.write(text, { append: true }); },
+        onStep: ({ table, done, total }) =>
+          setCopying({ way: 'out', label: PLAIN[table] || table, done, total }),
+      });
+
+      setCopying(null);
+      if (!(await Sharing.isAvailableAsync())) {
+        return Alert.alert('Nothing to share with',
+          'This phone has no app set up to receive files. The copy is made — '
+          + 'set up Drive or WhatsApp and try again.');
+      }
+      await Sharing.shareAsync(file.uri, { mimeType: 'application/json', dialogTitle: name });
+
+      Alert.alert('That is your whole book', `${sayWhatWentOut(wrote)}\n\n`
+        + 'Keep it somewhere you will find it — not only on this phone. Skwik can put '
+        + 'the whole thing back from this one file, into a firm with nothing in it.');
     } catch (e) {
       Alert.alert('Could not take the copy', sayPlainly(e));
-    } finally { setBusy(null); }
+    } finally { setCopying(null); setBusy(null); }
   };
 
   // AND PUTTING ONE BACK. Into a firm with nothing in it, and it says so
   // plainly rather than trying to be clever about what wins.
+  //
+  // THIS PICKED THE FILE WRONG AND HAD NEVER WORKED. It called the file reader
+  // with the list of file types where the reader wants the file itself, so the
+  // one button a shop presses on the worst day of its life -- a new phone,
+  // everything riding on one file -- failed before it read a byte. The picker
+  // is opened here, properly, the way every other import on this screen does.
   const restoreBackup = async () => {
-    let picked;
+    let asset;
     try {
-      picked = await readPickedFile(['application/json', 'text/plain', '*/*']);
-      if (!picked) return;
-    } catch (e) { return Alert.alert('Could not open that file', sayPlainly(e)); }
+      const res = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true, type: ['application/json', 'text/plain', '*/*'],
+      });
+      if (res.canceled) return;
+      asset = res.assets?.[0];
+      if (!asset?.uri) return;
+    } catch (e) { return Alert.alert('Could not open the file picker', sayPlainly(e)); }
+
+    // THE FIRST LINE ALONE, which says what kind of file this is and how much
+    // of it there is -- read without touching the rest, so the question on
+    // screen can be asked in figures before anything at all is written.
+    let head = null;
+    try {
+      await readFileLines(asset.uri, (line) => {
+        try { const o = JSON.parse(line); if (Number(o?.skwik_backup) === 2) head = o; }
+        catch (e) { /* not a line-by-line backup */ }
+        return 'stop';
+      });
+    } catch (e) { /* no streaming reader on this phone: fall through */ }
+
+    if (head) return restoreInPages(asset, head);
+    return restoreWholeFile(asset);
+  };
+
+  // A BOOK PUT BACK A PAGE AT A TIME. Nothing is ever held but the page.
+  const restoreInPages = (asset, head) => {
+    const many = head.how_many || {};
+    Alert.alert('Put this book back?',
+      `${sayWhatWentOut(many)}\n`
+      + `Taken on ${showDate(String(head.taken_at || '').slice(0, 10))}`
+      + `${head.org?.name ? ` from ${head.org.name}` : ''}.\n\n`
+      + 'It goes into this firm, which must have nothing in it. Nothing you have '
+      + 'written is ever written over.',
+      [{ text: 'Not now' },
+       { text: 'Put it back', onPress: async () => {
+          setBusy('restore');
+          setCopying({ way: 'in', label: 'Starting…', done: 0, total: totalOf(head) });
+          try {
+            const loader = bookLoader({
+              supabase,
+              onStep: ({ table, done, total }) =>
+                setCopying({ way: 'in', label: PLAIN[table] || table, done, total }),
+            });
+            let n = 0, stop = false;
+            const feed = async (line) => {
+              n += 1;
+              const what = await loader.line(line, n);
+              if (what === 'not-ours') { stop = true; return 'stop'; }
+              return undefined;
+            };
+            if (asset.lines) {
+              for (const line of asset.lines) { if (await feed(line) === 'stop') break; }
+            } else {
+              const went = await readFileLines(asset.uri, feed);
+              if (!went) throw new Error('This phone cannot read a file a piece at a time.');
+            }
+            if (stop) throw new Error('That file is not a Skwik backup.');
+            const counts = await loader.finish();
+            setCopying(null);
+            await reloadOrg();
+            Alert.alert('It is back', `${sayWhatCameBack(counts)}\n\n`
+              + 'Check a few bills before you carry on. If something is wrong, '
+              + 'this shows under What came in, and one press takes it all out again.');
+          } catch (e) {
+            Alert.alert('Could not put it back', sayPlainly(e));
+          } finally { setCopying(null); setBusy(null); }
+       } }]);
+  };
+
+  // AND THE OLDER KIND OF FILE -- one big document -- still goes in, the way
+  // it always did. Nobody's backup stops working because we found a better
+  // shape for the next one.
+  const restoreWholeFile = async (asset) => {
+    let text;
+    try { text = await readPickedFile(asset.uri); }
+    catch (e) { return Alert.alert('Could not open that file', sayPlainly(e)); }
+
+    // A PAGE-BY-PAGE FILE ON A PHONE THAT CANNOT READ PIECES.
+    //
+    // A page-by-page backup is one page per line, so it is not one JSON
+    // document and JSON.parse on the whole of it fails -- which would have told
+    // him his own backup was "not a Skwik backup". It has already been read
+    // whole by the time we are here, so the lines are simply fed through in
+    // memory: no cheaper, and it works.
+    const first = String(text).split('\n', 1)[0];
+    if (/"skwik_backup"\s*:\s*2/.test(first)) {
+      const lines = String(text).split('\n').filter((l) => l.trim());
+      let head = null;
+      try { head = JSON.parse(lines[0]); } catch (e) { head = null; }
+      if (head) return restoreInPages({ uri: asset.uri, lines }, head);
+    }
 
     let book;
-    try { book = JSON.parse(picked.text); } catch (e) {
+    try { book = JSON.parse(text); } catch (e) {
       return Alert.alert('That is not a Skwik backup', 'The file could not be read as one.');
     }
     if (Number(book?.skwik_backup) !== 1) {
@@ -399,6 +575,7 @@ export default function TransferScreen({ navigation }) {
           const { data, error } = await supabase.rpc('book_restore', { p: book });
           setBusy(null);
           if (error) return Alert.alert('Could not put it back', sayPlainly(error));
+          await reloadOrg();
           const n = data?.put_back || {};
           Alert.alert('It is back',
             `${n.bills || 0} bills, ${n.money || 0} money entries, ${n.items || 0} items `
@@ -406,6 +583,17 @@ export default function TransferScreen({ navigation }) {
        } }]);
   };
 
+  /* ---------------- everything, organised ---------------- */
+
+  // ONE JOURNEY, NOT NINE.
+  //
+  // An accountant asking for "the books" wants sale bills, purchase bills,
+  // what is on each line, the money in and out, the expenses, what every
+  // party stands at, the items and the stock — and he wants them as separate
+  // sheets with their own headings, not one file to be untangled.
+  //
+  // The phone's sharing sheet will carry several files at once, so they are
+  // written together and handed over in one go, each named for what is in it.
   const exportEverything = async () => {
     setBusy('all');
     try {
@@ -983,9 +1171,20 @@ export default function TransferScreen({ navigation }) {
 
         {tab === 'in' && (<>
         <Text style={S.eyebrow}>Bring your book in</Text>
+        {/* WHAT HE ACTUALLY DID, AND WHAT CAME OF IT.
+            He exported "Masters" whole, as the old wording invited, and what
+            came out had nothing in it Skwik could use -- a Masters export is
+            groups, voucher types, currencies and units, with the ledgers and
+            the stock items somewhere inside it -- and it was big enough to run
+            his phone out of memory besides. Export the two lists on their own
+            and both problems go away. The menu was renamed in TallyPrime, so
+            both names are given rather than one that half of them cannot
+            find. */}
         <Text style={{ fontSize: 13, color: C.muted, marginBottom: 6, lineHeight: 19 }}>
-          From Tally: Gateway → Display → List of Accounts → Export, and choose
-          XML. Or any spreadsheet saved as CSV. A name already here is updated,
+          From Tally, export the lists one at a time, not Masters all together:
+          Gateway → Chart of Accounts → Ledgers → Export → XML (in older Tally,
+          Gateway → Display → List of Accounts). Stock items the same way.
+          Or any spreadsheet saved as CSV. A name already here is updated,
           never duplicated.
         </Text>
 
@@ -1631,6 +1830,47 @@ export default function TransferScreen({ navigation }) {
                        backgroundColor: '#3B3A35AA', alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator size="large" color="#fff" />
           <Text style={{ color: '#fff', fontWeight: '700', marginTop: 12 }}>Saving…</Text>
+        </View>
+      )}
+
+      {/* A WHOLE BOOK MOVING.
+          Two years of bills takes the better part of a minute, and a spinner
+          that says nothing for a minute is how a shopkeeper decides the app
+          has hung and kills it — in the middle of a restore. So it says what
+          it is carrying, how far along it is, and not to leave the screen. */}
+      {!!copying && (
+        <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+                       backgroundColor: '#3B3A35EE', alignItems: 'center',
+                       justifyContent: 'center', paddingHorizontal: 30 }}>
+          <View style={{ width: '100%', backgroundColor: C.surface, borderRadius: 14,
+                         padding: 20 }}>
+            <Text style={{ fontSize: 16.5, fontWeight: '800', color: C.ink }}>
+              {copying.way === 'out' ? 'Taking your book out' : 'Putting your book back'}
+            </Text>
+            <View style={[S.row, { gap: 10, marginTop: 12, alignItems: 'center' }]}>
+              <ActivityIndicator size="small" color={C.accent} />
+              <Text style={{ flex: 1, fontSize: 14, fontWeight: '700', color: C.ink }}>
+                {copying.label}
+              </Text>
+              <Text style={[{ fontSize: 13, color: C.muted }, S.num]}>
+                {copying.total
+                  ? `${fmt0(copying.done)} of ${fmt0(copying.total)}`
+                  : fmt0(copying.done)}
+              </Text>
+            </View>
+            <View style={{ height: 6, borderRadius: 3, marginTop: 10,
+                           backgroundColor: C.line, overflow: 'hidden' }}>
+              <View style={{ height: 6, borderRadius: 3, backgroundColor: C.accent,
+                             width: `${copying.total
+                               ? Math.min(100, Math.round((copying.done / copying.total) * 100))
+                               : 3}%` }} />
+            </View>
+            <Text style={[S.hint, { marginTop: 12, lineHeight: 18 }]}>
+              {copying.way === 'out'
+                ? 'It is written into the file as it comes, so a big book does not have to fit in the phone at once. Leave this on the screen until it finishes.'
+                : 'Leave this on the screen until it finishes. If it stops part way, press Put a book back again with the same file — it clears what went in and starts clean.'}
+            </Text>
+          </View>
         </View>
       )}
     </Screen>

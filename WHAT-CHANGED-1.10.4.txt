@@ -1,0 +1,80 @@
+SKWIK 1.10.4 — THE OPENING SCREEN, AND THE TAB KEY
+==================================================
+
+This is 1.10.3 plus three things. If you have not installed 1.10.3 yet, this
+replaces it — everything in it is here.
+
+TO INSTALL
+----------
+1. In Supabase run supabase/migrations/1.10.3-cost-and-import.sql
+   (number 25 in RUN-THESE-IN-ORDER.txt, goes LAST — same file as before, and
+   running it twice costs nothing if you already did)
+2. Upload this code to GitHub.
+3. Build.
+
+
+1. THE BILL OPENS THE WAY YOUR OWN APP DOES
+-------------------------------------------
+You were right and I had it wrong. The sheet was the mistake, not the missing
+keypad — a box inside a pop-up sheet gets the cursor before the sheet has
+finished appearing, and Android never raises the keypad for it. So it was three
+taps before the first letter.
+
+Now, from your screenshots:
+
+  · Tap Sale or Purchase and the page opens with the product box at the top and
+    a CUSTOMER (or SUPPLIER) card under it — on the page, not in a sheet.
+  · The cursor is in that box and the keypad is up. No taps.
+  · Your customer book is listed underneath straight away, before you type
+    anything — because nine times in ten it is one of the same twenty people
+    and tapping is quicker than typing. Typing filters it.
+  · Pick a name and the whole card disappears. The name folds into the title
+    bar beside the number, with a pencil:
+
+        New Bill
+        SGS/2450 · Ganesh Store ✎
+
+    and the cursor moves to the goods. Tap the name to change it.
+
+Same on a purchase, where the card says SUPPLIER, and the supplier's bill
+number and date follow — and those fold away on Done too, which is what you
+asked for as point 7.
+
+
+2. THE TAB KEY, EVERYWHERE, FOR GOOD
+------------------------------------
+No, you should not have to keep asking. The tick was appearing on the LAST box
+of every group — the key under your thumb changed shape depending on which box
+you were in, which breaks the one habit you bill by.
+
+Every box in the app now asks for the tab key. Nothing else changed: the last
+box still saves when you press it, it just no longer disguises itself as a tick.
+
+I have written this down so it survives into future work:
+  "the phone keyboard's return key in Skwik must always be the TAB/next key
+   that moves to the following field — never a tick or Done, anywhere"
+
+
+3. THE SQL FILE — MY FAULT
+--------------------------
+You got only the `and_finally` line because I sent five queries in one file and
+the Supabase editor shows you only the LAST one. The new copy is ONE query and
+everything comes back in a single table. Read the `look_at` column: 1 PURCHASES
+is the one to check first.
+
+
+WHAT WAS TESTED
+---------------
+  11 checks   the new opening screen, driven in a browser: where the cursor is,
+              that the box is on the PAGE and not in a sheet, that the names are
+              listed before typing, that picking one folds the card away into the
+              title bar, that the cursor then moves to the goods, that tapping
+              the name brings the picker back — and that no box asks for a Done
+              key anywhere
+   7 checks   the rest of the bill screen
+  16 + 17 + 171 checks  cost of goods sold, your day book imported, and the
+              older suites — all still passing after the layout change
+
+Everything from 1.10.3 is unchanged and still in: the doubled GST on imported
+bills, the supplier GST numbers and states, cost of goods sold, "rahul 18000",
+Move, the bill number, option 4 on the item search, Past bills paging.

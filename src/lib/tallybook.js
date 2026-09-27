@@ -256,6 +256,9 @@ function readVoucher(block, types, leds) {
   const typeName = tagTop(block, 'VOUCHERTYPENAME') || nameAttr(block);
   const parent = (types[typeName.toLowerCase()] || typeName).toLowerCase();
   const map = FROM_PARENT[parent];
+  // A bill going OUT -- a sale or a credit note. On those, and only those, the
+  // consignee is the customer rather than the shop.
+  const outward = !!map && (map.vtype === 'sale' || map.vtype === 'sale_return');
 
   const v = {
     tally_type: typeName,
@@ -264,6 +267,41 @@ function readVoucher(block, types, leds) {
     no: tagTop(block, 'VOUCHERNUMBER'),
     party: tagTop(block, 'PARTYLEDGERNAME') || tagTop(block, 'PARTYNAME'),
     narration: tagTop(block, 'NARRATION'),
+
+    // WHO THE OTHER MAN IS, AND WHERE HE IS.
+    //
+    // This was not read at all, and the consequence was not small. Every name
+    // an import created was given the SHOP's own state and no GST number, so
+    // his fourteen Delhi suppliers were filed as Assam -- and a supplier with
+    // no GST number cannot have charged any, which is why the next purchase he
+    // passed to one of them took no tax. One missing tag, and his input credit
+    // stopped working.
+    //
+    // ON A PURCHASE, THE CONSIGNEE IS THE SHOP.
+    //
+    // The first try here read PARTYGSTIN or, failing that, CONSIGNEEGSTIN. On
+    // his purchase 47126-004553 there is no PARTYGSTIN and the CONSIGNEEGSTIN
+    // is 18AHXPA8555E1ZX -- his OWN registration, because on a bill he has
+    // received the goods were consigned to him. That read would have written
+    // his own GST number onto his transporter and filed a Maharashtra supplier
+    // in Assam, which is the very fault being fixed, arriving by another door.
+    //
+    // So the consignee is only the other man on a bill going OUT. On one
+    // coming in, the party's own tag is the only one that can be trusted, and
+    // the state is read from STATENAME -- which Tally does write for the
+    // supplier, and which is the only thing on five of his Maharashtra
+    // purchases that says where they are from.
+    //
+    // CMPGSTIN is carried too, so the writer can refuse any number that turns
+    // out to be the shop's own however it arrived.
+    party_gstin: tagTop(block, 'PARTYGSTIN')
+      || (outward ? tagTop(block, 'CONSIGNEEGSTIN') : ''),
+    party_state: tagTop(block, 'STATENAME')
+      || (outward ? tagTop(block, 'CONSIGNEESTATENAME') : ''),
+    own_gstin: tagTop(block, 'CMPGSTIN'),
+    // Place of supply decides which tax a bill carries, and GSTR-1 asks for it
+    // by name. Not one imported bill had it.
+    place_of_supply: tagTop(block, 'PLACEOFSUPPLY'),
     // Tally's own id for the voucher. Carried so the same file imported twice
     // cannot write the same bill twice.
     ref: tagTop(block, 'GUID') || tagTop(block, 'REMOTEID') || '',
@@ -360,9 +398,27 @@ function readBill(block, v, vtype, leds) {
   const round = roundRaw * roundSign;
 
   // the charges that were riding on a stock item
+  //
+  // AND WHAT RATE THEY CARRY, which was thrown away. Sixteen of his purchases
+  // ARE one of these and nothing else -- a transporter's bill booked against
+  // Steel Utensils, an amount and no quantity -- and they came in with the
+  // charge but with no tax rate on it, so the credit on his freight was worth
+  // nothing on a return.
+  //
+  // Several of them are also reverse charge, and the file says so in the
+  // ledger's own name: "Transport Freight Interstate & R.Charge", with the
+  // party's leg equal to the bill and no tax ledger anywhere on it. That is
+  // the tax he owes himself, so the bill is marked for it rather than read as
+  // a bill with no tax.
+  let chargeRate = 0, rcm = false;
   for (const e of loaded) {
+    if (!chargeRate) chargeRate = e.line.gst_rate || 0;
+    if (/\br\.?\s*charge\b|reverse\s*charge|\brcm\b/i.test(e.ledger)) rcm = true;
     if (/freight|transport|cartage|coolie|loading/i.test(e.ledger)) freight += e.line.amount;
     else others.push({ name: e.ledger || e.line.item_name, amount: e.line.amount, on_item: e.line.item_name });
+  }
+  for (const o of others) {
+    if (/\br\.?\s*charge\b|reverse\s*charge|\brcm\b/i.test(o.name)) rcm = true;
   }
 
   const goods = lines.reduce((t, l) => t + (l.amount || l.qty * l.rate), 0);
@@ -375,6 +431,13 @@ function readBill(block, v, vtype, leds) {
     taxable: round2(goods),
     cgst: round2(cgst), sgst: round2(sgst), igst: round2(igst), cess: round2(cess),
     freight: round2(freight), round_off: round2(round),
+    // ONE FIGURE FOR EVERYTHING RIDING ON THE BILL that is not goods, because
+    // that is what Skwik has a place for: freight, and any other charge loaded
+    // onto a stock item. `total` has always counted both; nothing stored the
+    // second one, so a bill carrying one did not add up to itself.
+    charge: round2(freight + carried),
+    charge_rate: chargeRate,
+    reverse_charge: rcm,
     // What Tally says the bill came to, kept beside what the pieces add up
     // to, so the check can tell him when they disagree instead of quietly
     // preferring one.

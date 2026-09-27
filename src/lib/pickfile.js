@@ -6,6 +6,7 @@
 import { File } from 'expo-file-system';
 import * as LegacyFS from 'expo-file-system/legacy';
 import { looksMangled, base64ToBytes, decodeBytes } from './transfer';
+import { readWholeFileStreaming, tooBigMessage } from './bigfile';
 
 // Android hands a picked file over as a content:// address rather than a real
 // path, and the two ways of reading one do not work in the same places. Inside
@@ -13,8 +14,36 @@ import { looksMangled, base64ToBytes, decodeBytes } from './transfer';
 // folder, which is exactly where a picked file lands. So: try the modern way,
 // and if it will not have it, go through Android's own content reader, which
 // always can. One of the two always works.
-export async function readPickedFile(uri) {
+export async function readPickedFile(uri, onProgress) {
   let asText, firstProblem;
+
+  // THE CHEAP WAY FIRST, AND IT IS THE ONLY WAY A BIG EXPORT SURVIVES.
+  //
+  // Everything below this reads the WHOLE file into memory, finds it mangled
+  // -- which a Tally file always is, being UTF-16 -- reads the whole file
+  // AGAIN as bytes, and decodes that into a third whole copy. Three copies
+  // alive at once, and on a real phone with a real masters export that came
+  // out as OutOfMemoryError before a single ledger had been read.
+  //
+  // Streaming looks at the first few bytes, which say what the encoding is,
+  // and then reads the file a piece at a time, decoding as it goes. One copy.
+  // If the phone has no streaming reader it hands back null and the old road
+  // is taken exactly as before.
+  try {
+    const streamed = await readWholeFileStreaming(uri, onProgress);
+    if (streamed) return streamed;
+  } catch (e) {
+    // out of memory even this way: say what to do about it, rather than
+    // letting a Java error reach a shopkeeper
+    if (/OutOfMemory|allocate/i.test(String(e?.message || e))) {
+      let size = 0;
+      try { size = Number(new File(uri).size) || 0; } catch (e2) { /* unknown */ }
+      const err = new Error(tooBigMessage(size));
+      err.tooBig = true;
+      throw err;
+    }
+    /* anything else: fall through to the old way */
+  }
 
   try {
     asText = await new File(uri).text();
@@ -23,6 +52,14 @@ export async function readPickedFile(uri) {
     try {
       asText = await LegacyFS.readAsStringAsync(uri, { encoding: 'utf8' });
     } catch (e2) {
+      const both = `${firstProblem?.message || ''} ${e2?.message || ''}`;
+      if (/OutOfMemory|allocate/i.test(both)) {
+        let size = 0;
+        try { size = Number(new File(uri).size) || 0; } catch (e3) { /* unknown */ }
+        const err = new Error(tooBigMessage(size));
+        err.tooBig = true;
+        throw err;
+      }
       throw firstProblem || e2;
     }
   }

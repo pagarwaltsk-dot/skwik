@@ -121,7 +121,15 @@ export default function MoneyScreen({ route, navigation }) {
   // It is the SAME reader the bill uses, so anything he has learned there
   // works here: ganesh 5000, ganesh x5000, ganesh 2500+2500.
   const asked = useMemo(() => parseQuery(text), [text]);
-  const nameOnly = (asked.base || text).trim();
+  // THE NAME AS HE TYPED IT, NOT AS THE READER LOWERCASED IT.
+  //
+  // parseQuery lowercases everything, which is right for matching and wrong for
+  // a name being written into his books: "Ganesh Store 5000" put a customer
+  // called "ganesh store" in his list, and it would have stayed like that.
+  // `base` is always a prefix of the tidied line, so the original casing is
+  // still there to be cut at the same place.
+  const tidy = String(text).trim().replace(/\s+/g, ' ');
+  const nameOnly = (asked.base ? tidy.slice(0, asked.base.length) : tidy).trim() || tidy;
   const askedAmt = asked.qty;
 
   const matches = nameOnly && !party
@@ -133,15 +141,43 @@ export default function MoneyScreen({ route, navigation }) {
   // The amount is put in only when he actually typed one and has not already
   // typed something into the amount box himself, so a figure he is in the
   // middle of correcting is never overwritten under his thumb.
+  // AND IT DOES NOT FIGHT THE BOX FOR THE CURSOR.
+  //
+  // Box already moves the cursor on to whatever comes next when Enter is
+  // pressed. These lines moved it again, 80ms later, to the amount box -- so
+  // with the date row open he pressed Enter, landed in the date, and was
+  // yanked out of it a moment later with no idea why. Two things calling
+  // focus() for one keypress. It only reaches for the amount box now when
+  // nothing is between here and there.
+  const goToAmount = () => {
+    if (isOwner && dateOpen) return;
+    setTimeout(() => fAmt.current?.focus(), 80);
+  };
+
   const choose = (pp) => {
     setParty(pp);
     setText(pp.name);
-    if (askedAmt && !String(amount).trim()) {
-      setAmount(String(askedAmt));
-      setTimeout(() => fAmt.current?.focus(), 80);
-    } else {
-      setTimeout(() => fAmt.current?.focus(), 80);
-    }
+    if (askedAmt && !String(amount).trim()) setAmount(String(askedAmt));
+    goToAmount();
+  };
+
+  // A NAME HE HAS NEVER TAKEN MONEY FROM BEFORE.
+  //
+  // "rahul 18000" read perfectly, said "rahul \u00b7 \u20b918,000" back to him,
+  // and then stopped dead: there was no Rahul to tap, and the figure was only
+  // ever carried into the amount box by TAPPING a name. So the one-line entry
+  // worked for people already in the book and did nothing at all for everybody
+  // else -- and a walk-in handing over cash is precisely the case where the
+  // name is new. He had to type the eighteen thousand a second time.
+  //
+  // The name is not created here. Saving already creates one when there is no
+  // match, which is the right place for it: nothing is written until he
+  // presses Save.
+  const takeAsNew = () => {
+    if (askedAmt && !String(amount).trim()) setAmount(String(askedAmt));
+    setText(nameOnly);
+    setParty(null);
+    goToAmount();
   };
 
   const clear = () => {
@@ -186,7 +222,27 @@ export default function MoneyScreen({ route, navigation }) {
     if (!party && !text.trim()) {
       return Alert.alert('Who?', received ? 'Type who paid you.' : 'Type who you paid.');
     }
-    if (num(amount) <= 0) return Alert.alert('Amount?', 'Type how much.');
+
+    // "RAHUL 18000" IS ONE LINE, AND SAVE UNDERSTOOD NEITHER HALF OF IT.
+    //
+    // The whole point of this box is that a receipt is written the way a bill
+    // line is: name and figure together. The screen read it back to him
+    // correctly -- "rahul · ₹18,000" -- and then save() looked only at `text`
+    // and at the amount box, and did two wrong things at once:
+    //
+    //   the button said Save ₹0 and refused him with "Amount? Type how much",
+    //   with the eighteen thousand sitting on the screen above it
+    //
+    //   and if he filled the amount box by hand, the party created was called
+    //   "rahul 18000" -- a new name, with a space and a figure in it, in his
+    //   books for ever, and the real Rahul still owed the money
+    //
+    // The figure only ever moved across if he tapped a suggestion. So both
+    // halves of the line are honoured here, at the last moment, where every
+    // road into save() passes.
+    const willAsk = num(amount) > 0 ? num(amount) : num(askedAmt);
+    const willName = (party?.name || nameOnly || text).trim();
+    if (willAsk <= 0) return Alert.alert('Amount?', 'Type how much.');
 
     const when = isOwner ? (pdate || today()) : today();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(when)) {
@@ -212,11 +268,12 @@ export default function MoneyScreen({ route, navigation }) {
       // a sentence he can act on.
       let p = party;
       if (!p?.id) {
-        const hit = parties.find((x) => x.name.toLowerCase() === text.trim().toLowerCase());
+        // THE NAME, NOT THE LINE. See the note at the top of save().
+        const hit = parties.find((x) => x.name.toLowerCase() === willName.toLowerCase());
         if (hit) p = hit;
         else {
           const { data, error } = await withTimeout(supabase.from('parties').insert({
-            org_id: org.id, name: text.trim(), kind: received ? 'customer' : 'supplier',
+            org_id: org.id, name: willName, kind: received ? 'customer' : 'supplier',
             state_code: org.state_code, state_name: org.state_name,
           }).select().single());
           // This used to read .data straight off the result. When the insert
@@ -230,7 +287,7 @@ export default function MoneyScreen({ route, navigation }) {
 
       const body = {
         org_id: org.id, ptype, party_id: p.id, mode,
-        amount: num(amount), note: note.trim() || null,
+        amount: willAsk, note: note.trim() || null,
         pdate: isOwner ? (pdate || today()) : today(),
         account_id: mode === 'bank' ? account : null,
       };
@@ -240,7 +297,7 @@ export default function MoneyScreen({ route, navigation }) {
           supabase.from('payments').update(body).eq('id', editing.id));
         if (error) throw error;
         clear(); await load();
-        Alert.alert('Changed', `Now ₹${fmt0(num(amount))}.`);
+        Alert.alert('Changed', `Now ₹${fmt0(willAsk)}.`);
       } else {
         const { error } = await withTimeout(supabase.from('payments').insert(body));
         if (error) throw error;
@@ -449,9 +506,16 @@ export default function MoneyScreen({ route, navigation }) {
         <>
           <View style={{ height: 18 }} />
           <Text style={S.label}>{received ? 'Received from' : 'Paid to'}</Text>
+          {/* onSubmitEditing, NOT onSubmit. Box moves to the next field when
+              there is one and only calls onSubmit when there is not -- which is
+              right on every form in the app, and meant that pressing Enter here
+              jumped to the amount box and left it empty. onSubmitEditing is
+              called either way, so the line is taken first and the focus still
+              lands where it always did. */}
           <Box ref={fWho} next={isOwner && dateOpen ? fDate : fAmt} style={{ marginTop: 6 }}
             placeholder={received ? 'Name and amount \u2014 ganesh 5000' : 'Name and amount \u2014 bharat 5000'}
-            onSubmit={() => { if (matches.length) choose(matches[0]); }}
+            onSubmitEditing={() => { if (matches.length) choose(matches[0]);
+                                     else if (nameOnly) takeAsNew(); }}
             value={text} onChangeText={(t) => { setText(t); setParty(null); }} />
 
           {/* WHAT IT READ, SAID BACK TO HIM. A figure picked out of the middle
@@ -462,6 +526,25 @@ export default function MoneyScreen({ route, navigation }) {
             <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.accent, marginTop: 6 }}>
               {nameOnly} {'\u00B7'} {'\u20B9'}{fmt0(askedAmt)}
             </Text>
+          )}
+
+          {/* NOBODY OF THAT NAME YET. The bill screen has offered "+ Add" for a
+              new item since the beginning; money never did, and the line just
+              ended. */}
+          {!party && !!nameOnly && !matches.length && (
+            <TouchableOpacity onPress={takeAsNew}
+              style={{ padding: 12, backgroundColor: C.surface, borderWidth: 1,
+                       borderColor: C.accent, borderStyle: 'dashed', borderRadius: 12,
+                       marginTop: 6 }}>
+              <Text style={{ fontSize: 15, fontWeight: '700', color: C.accent }}>
+                + {received ? 'Take' : 'Pay'} {'\u201C'}{nameOnly}{'\u201D'} as a new name
+              </Text>
+              <Text style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+                {askedAmt
+                  ? `\u20b9${fmt0(askedAmt)} goes in the box below. Nothing is saved until you press Save.`
+                  : 'Nothing is saved until you press Save.'}
+              </Text>
+            </TouchableOpacity>
           )}
 
           {matches.map((p) => (
@@ -555,7 +638,11 @@ export default function MoneyScreen({ route, navigation }) {
         <>
           <View style={{ height: 18 }} />
           <Text style={S.label}>How much?</Text>
-          <Box ref={fAmt} next={fNote}
+          {/* ENTER HERE SAVES. It used to move on to the note, which is
+              optional, so a complete receipt needed a second press with nothing
+              to type in between. Two presses for a whole entry -- name and
+              figure, then Enter -- is the point of writing it as one line. */}
+          <Box ref={fAmt} onSubmit={save}
             style={[{ marginTop: 6, fontSize: 32, paddingVertical: 14 }, S.num]}
             keyboardType="numeric" placeholder="0"
             value={amount} onChangeText={setAmount}
@@ -574,7 +661,7 @@ export default function MoneyScreen({ route, navigation }) {
             onPress={save} disabled={busy}>
             <Text style={S.btnText}>
               {busy ? 'Saving…' : editing ? `Save the change — ₹${fmt0(num(amount))}`
-                                          : `Save ₹${fmt0(num(amount))}`}
+                                          : `Save ₹${fmt0(num(amount) > 0 ? num(amount) : num(askedAmt))}`}
             </Text>
           </TouchableOpacity>
 
