@@ -10,18 +10,146 @@ import { readPickedFile } from '../lib/pickfile';
 import { supabase, allRows as pageAll } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
-import { fmt0, today } from '../lib/money';
+import { fmt0, showDate, today } from '../lib/money';
+import { vouchersFromTallyXml, checkBook } from '../lib/tallybook';
+import { loadBook, planLoad } from '../lib/tallyload';
 import {
   sniff, itemsFromCsv, partiesFromCsv, itemsFromTallyXml, partiesFromTallyXml, planImport,
   priceLevelsInTally, applyPriceLevel, mergeFiles,
   itemsToCsv, partiesToCsv, billsToCsv, billLinesToCsv, tallyVouchersXml, goesToTally,
   paymentsToCsv, expensesToCsv, balancesToCsv, stockToCsv, bookToCsv,
   looksMangled, base64ToBytes, decodeBytes,
-  buildBackup, readBackup, backupVoucherPayload,
   ITEMS_TEMPLATE, PARTIES_TEMPLATE,
 } from '../lib/transfer';
 import { BackButton, Bar, Foot, Head, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
+
+// ===========================================================================
+//  WHAT HAS BEEN BROUGHT IN, AND TAKING ANY OF IT BACK OUT.
+//
+//  An import writes hundreds of rows in one press. Until now there was no way
+//  to see that it had happened, and no way at all to undo it -- the wrong
+//  file, the wrong period, or last week's file a second time meant unpicking
+//  it by hand, a bill at a time, which is not a way at all.
+//
+//  Every row an import writes carries the mark of the run that wrote it, so
+//  one press can take the whole run back out. It asks first, in figures: what
+//  goes, and what stays behind and why.
+// ===========================================================================
+
+function History({ org, navigation }) {
+  const [runs, setRuns] = useState(null);
+  const [busy, setBusy] = useState(null);
+
+  const load = React.useCallback(() => {
+    supabase.from('import_runs').select('*').order('started_at', { ascending: false }).limit(40)
+      .then(({ data, error }) => setRuns(error ? [] : (data || [])));
+  }, []);
+  React.useEffect(load, [load]);
+
+  const shape = (c = {}) => [
+    c.bills ? `${c.bills} bills` : null,
+    c.money ? `${c.money} money entries` : null,
+    c.moves ? `${c.moves} movements` : null,
+    c.items ? `${c.items} items` : null,
+    c.names ? `${c.names} names` : null,
+  ].filter(Boolean).join(' \u00b7 ');
+
+  const undo = async (r) => {
+    setBusy(r.id);
+    const { data: plan, error } = await supabase.rpc('import_undo_plan', { p_run: r.id });
+    setBusy(null);
+    if (error) return Alert.alert('Could not read that import', sayPlainly(error));
+
+    const goes = shape(plan.goes) || 'nothing';
+    const st = plan.stays || {};
+    const staying = [
+      st.locked_bills ? `${st.locked_bills} bills sit in a month you have closed` : null,
+      st.noted_bills ? `${st.noted_bills} bills have a credit note against them` : null,
+      st.used_items ? `${st.used_items} items are used by something you wrote yourself` : null,
+      st.used_names ? `${st.used_names} names are used by something you wrote yourself` : null,
+    ].filter(Boolean);
+
+    Alert.alert('Take it all back out?',
+      `This removes ${goes} that came in from that file.\n\n`
+      + 'Anything you have written yourself since stays exactly as it is.'
+      + (staying.length ? `\n\nThese stay too:\n\u2022 ${staying.join('\n\u2022 ')}` : ''),
+      [{ text: 'Leave it' },
+       { text: 'Take it out', style: 'destructive', onPress: async () => {
+          setBusy(r.id);
+          const { data, error: e2 } = await supabase.rpc('import_undo', { p_run: r.id });
+          setBusy(null);
+          if (e2) return Alert.alert('Could not take it out', sayPlainly(e2));
+          load();
+          Alert.alert('Taken out', data?.already
+            ? 'That one had already been taken out.'
+            : `${shape(data?.removed) || 'Nothing'} removed. Your books are as they were before it.`);
+       } }]);
+  };
+
+  if (runs === null) {
+    return <ActivityIndicator color={C.accent} style={{ marginTop: 30 }} />;
+  }
+  if (!runs.length) {
+    return (
+      <View style={{ marginTop: 20 }}>
+        <Text style={S.eyebrow}>Nothing has been brought in yet</Text>
+        <Text style={{ fontSize: 13.5, color: C.muted, marginTop: 8, lineHeight: 20 }}>
+          Every import you make is listed here afterwards, with what it brought and a
+          button that takes the whole lot back out again. That is worth knowing before
+          you press anything under Bring in: nothing you do there is one-way.
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <View>
+      <Text style={S.eyebrow}>What has been brought in</Text>
+      {runs.map((r) => {
+        const done = !!r.done_at;
+        const gone = !!r.undone_at;
+        return (
+          <View key={r.id} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 11,
+                                    backgroundColor: C.surface, padding: 13, marginTop: 10 }}>
+            <Text style={{ fontSize: 15, fontWeight: '700',
+                           color: gone ? C.faint : C.ink }}>
+              {r.note || (r.kind === 'daybook' ? 'Tally day book'
+                        : r.kind === 'masters' ? 'Names and goods from Tally'
+                        : r.kind === 'backup' ? 'A whole book put back' : 'A spreadsheet')}
+            </Text>
+            <Text style={{ fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 17 }}>
+              {showDate(String(r.started_at).slice(0, 10))}
+              {shape(r.counts) ? ` \u00b7 ${shape(r.counts)}` : ''}
+              {!done && !gone ? ' \u00b7 did not finish' : ''}
+            </Text>
+
+            {gone ? (
+              <Text style={{ fontSize: 12.5, color: C.faint, marginTop: 8 }}>
+                Taken back out on {showDate(String(r.undone_at).slice(0, 10))}
+                {r.undo_note ? ` \u2014 ${r.undo_note}` : ''}
+              </Text>
+            ) : (
+              <TouchableOpacity onPress={() => undo(r)} disabled={busy === r.id}
+                style={{ alignSelf: 'flex-start', marginTop: 11, paddingHorizontal: 12,
+                         paddingVertical: 8, borderRadius: 9, borderWidth: 1,
+                         borderColor: C.danger, opacity: busy === r.id ? 0.5 : 1 }}>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: C.danger }}>
+                  {busy === r.id ? 'One moment\u2026' : 'Take it all back out'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        );
+      })}
+      <Text style={[S.hint, { marginTop: 18, lineHeight: 18 }]}>
+        Taking an import out never touches a month you have closed, a bill a credit note
+        has been raised against, or an item or a name that something you wrote yourself
+        now uses. Those are listed before it goes ahead and left where they are.
+      </Text>
+    </View>
+  );
+}
 
 // BRINGING BOOKS IN, AND SENDING THEM OUT.
 //
@@ -80,7 +208,18 @@ const Row = ({ label, note, onPress, busyKey, tone, busy }) => (
 export default function TransferScreen({ navigation }) {
   const { org, reloadOrg } = useApp();
   const [busy, setBusy]   = useState('');
+
+  // WHAT A DAY BOOK WOULD BRING IN, SHOWN BEFORE ANYTHING IS WRITTEN.
+  //
+  // Bringing a shop's whole history across is the one import that cannot be
+  // undone by hand: ninety bills, ninety-two receipts and six transfers, into
+  // books he is going to file returns from. So it is read, checked and laid
+  // out in full FIRST, and nothing is written at all. He looks at the
+  // figures, and only then is there anything to agree to.
+  const [dayBook, setDayBook] = useState(null);
+  const [bringing, setBringing] = useState(null);   // { done, total } while it runs
   const [range, setRange] = useState('month');
+  const [tab, setTab] = useState('in');
   const [ready, setReady] = useState(null);   // what was read, waiting to be confirmed
   const [seeAll, setSeeAll] = useState(false); // the whole list of it, not five rows
   const [basisOk, setBasisOk] = useState(false); // he has told us these ARE closing figures
@@ -207,6 +346,66 @@ export default function TransferScreen({ navigation }) {
   //
   // The phone's sharing sheet will carry several files at once, so they are
   // written together and handed over in one go, each named for what is in it.
+  // THE WHOLE BOOK, IN A FORM SKWIK CAN READ BACK.
+  //
+  // Everything above this is a report: useful to a man and useless to a
+  // machine. This is the rows themselves. A shop pays for Skwik by the year,
+  // and it has to be able to leave with what it has written -- a new phone, a
+  // firm started again, or the day it stops paying us.
+  const exportBackup = async () => {
+    setBusy('backup');
+    try {
+      const { data, error } = await supabase.rpc('book_backup');
+      if (error) throw error;
+      const name = `skwik-backup-${(org?.name || 'shop').replace(/[^A-Za-z0-9]+/g, '-')}`
+                 + `-${today()}.skwik.json`;
+      await send(name, JSON.stringify(data), 'application/json');
+      Alert.alert('That is your whole book',
+        `${(data?.vouchers || []).length} bills, ${(data?.payments || []).length} money entries, `
+        + `${(data?.items || []).length} items and ${(data?.parties || []).length} names.\n\n`
+        + 'Keep it somewhere you will find it. Skwik can put the whole thing back from this one '
+        + 'file, into a firm with nothing in it.');
+    } catch (e) {
+      Alert.alert('Could not take the copy', sayPlainly(e));
+    } finally { setBusy(null); }
+  };
+
+  // AND PUTTING ONE BACK. Into a firm with nothing in it, and it says so
+  // plainly rather than trying to be clever about what wins.
+  const restoreBackup = async () => {
+    let picked;
+    try {
+      picked = await readPickedFile(['application/json', 'text/plain', '*/*']);
+      if (!picked) return;
+    } catch (e) { return Alert.alert('Could not open that file', sayPlainly(e)); }
+
+    let book;
+    try { book = JSON.parse(picked.text); } catch (e) {
+      return Alert.alert('That is not a Skwik backup', 'The file could not be read as one.');
+    }
+    if (Number(book?.skwik_backup) !== 1) {
+      return Alert.alert('That is not a Skwik backup',
+        'A backup file is the one Skwik writes under Send out, named .skwik.json.');
+    }
+
+    Alert.alert('Put this book back?',
+      `${(book.vouchers || []).length} bills, ${(book.payments || []).length} money entries, `
+      + `${(book.items || []).length} items and ${(book.parties || []).length} names, `
+      + `taken on ${showDate(String(book.taken_at || '').slice(0, 10))}.\n\n`
+      + 'It goes into this firm, which must have nothing in it. Nothing is written over.',
+      [{ text: 'Not now' },
+       { text: 'Put it back', onPress: async () => {
+          setBusy('restore');
+          const { data, error } = await supabase.rpc('book_restore', { p: book });
+          setBusy(null);
+          if (error) return Alert.alert('Could not put it back', sayPlainly(error));
+          const n = data?.put_back || {};
+          Alert.alert('It is back',
+            `${n.bills || 0} bills, ${n.money || 0} money entries, ${n.items || 0} items `
+            + `and ${n.names || 0} names.`);
+       } }]);
+  };
+
   const exportEverything = async () => {
     setBusy('all');
     try {
@@ -246,7 +445,16 @@ export default function TransferScreen({ navigation }) {
         return q;
       };
 
-      const [pays, exps, items, { data: bal }, stock, { data: cashBook }] = await Promise.all([
+      // AN EXPORT THAT IS QUIETLY SHORT IS WORSE THAN ONE THAT FAILS.
+      //
+      // allRows() throws when the server says no, so the four paged reads
+      // below stop the whole export if anything goes wrong. The two RPCs did
+      // not: their error was dropped and the file was written anyway — a
+      // party-balances sheet with no parties in it, a cash book with no cash
+      // book, both looking exactly like a shop that has none. This is the copy
+      // he hands his accountant and keeps as his backup, so a missing figure
+      // has to stop it rather than pass unnoticed.
+      const [pays, exps, items, balR, stock, bookR] = await Promise.all([
         allRows(money), allRows(spend),
         allRows(() => supabase.from('items').select('*').order('name').order('id')),
         supabase.rpc('party_balances'),
@@ -256,6 +464,10 @@ export default function TransferScreen({ navigation }) {
         supabase.rpc('money_book', { p_from: from || '2000-04-01', p_to: to || today(),
                                      p_account: null, p_cash: true, p_limit: 1000000 }),
       ]);
+      if (balR?.error) throw balR.error;
+      if (bookR?.error) throw bookR.error;
+      const bal = balR?.data;
+      const cashBook = bookR?.data;
 
       const sale = vs.filter((v) => v.vtype === 'sale' || v.vtype === 'estimate');
       const buy  = vs.filter((v) => v.vtype === 'purchase');
@@ -344,236 +556,22 @@ export default function TransferScreen({ navigation }) {
 
   /* ---------------- the whole book ---------------- */
 
-  // Everything, in one file he keeps himself. Fetched in pieces so a big
-  // book does not arrive as one enormous request.
-  const saveBackup = async () => {
-    setBusy('backup');
-    try {
-      // A PAGE NEEDS SOMETHING TO BE A PAGE OF.
-      //
-      // Asking for rows 0-999 and then 1000-1999 without saying in what order
-      // lets the database answer in whatever order it likes, and it does not
-      // have to be the same order twice. Rows near the boundary could come
-      // back twice or not at all, and a backup that quietly loses rows is
-      // worse than no backup. Ordering by id makes the pages line up.
-      const grab = async (table, cols = '*') => {
-        const out = [];
-        for (let from = 0; ; from += 1000) {
-          const { data, error } = await supabase.from(table).select(cols)
-            .order('id').range(from, from + 999);
-          if (error) throw error;
-          out.push(...(data || []));
-          if (!data || data.length < 1000) break;
-        }
-        return out;
-      };
-
-      const [items, parties, vouchers, lines, payments, expenses,
-             godowns, banks, moves] = await Promise.all([
-        grab('items'), grab('parties'), grab('vouchers'),
-        grab('voucher_lines'), grab('payments'), grab('expenses'),
-        // the three that were never in the file: see buildBackup
-        grab('godowns'), grab('bank_accounts'), grab('stock_moves'),
-      ]);
-
-      const text = buildBackup({ org, items, parties, vouchers, lines, payments, expenses,
-                                 godowns, banks, moves });
-      const day = today();
-      await send(`skwik-backup-${day}.json`, text, 'application/json');
-
-      const ownMoves = (moves || []).filter((m) => !m.ref_voucher_id).length;
-      Alert.alert('Backup made',
-        `${vouchers.length} bills, ${items.length} items, ${parties.length} names, `
-        + `${expenses.length} money-out entries.\n`
-        + `${godowns.length} godown(s), ${banks.length} bank account(s), `
-        + `${ownMoves} stock movement(s) no bill made.\n\n`
-        + 'Keep it somewhere that is not this phone — Drive, or send it to '
-        + 'yourself on WhatsApp.');
-    } catch (e) {
-      Alert.alert('Could not make the backup', sayPlainly(e));
-    } finally { setBusy(''); }
-  };
-
-  // Putting a book back. Safe to run twice: a bill that is already there is
-  // left alone rather than written again.
-  const restoreBackup = async () => {
-    setBusy('restore');
-    try {
-      const res = await DocumentPicker.getDocumentAsync({
-        copyToCacheDirectory: false, type: '*/*',
-      });
-      if (res.canceled) return;
-      const asset = res.assets?.[0];
-      if (!asset?.uri) return;
-
-      const b = readBackup(await readPickedFile(asset.uri));
-      if (b.problem) return Alert.alert('Cannot use that file', b.problem);
-
-      Alert.alert(
-        `Restore ${b.firm || 'this book'}?`,
-        `Taken ${String(b.taken_at).slice(0, 10)}.\n\n`
-        + `${b.vouchers.length} bills, ${b.items.length} items, ${b.parties.length} names.\n\n`
-        + 'Anything already here is left as it is. Nothing is deleted.',
-        [{ text: 'Not now' },
-         { text: 'Put it back', onPress: () => doRestore(b) }]);
-    } catch (e) {
-      Alert.alert('Could not read that file', sayPlainly(e));
-    } finally { setBusy(''); }
-  };
-
-  const doRestore = async (b) => {
-    setBusy('saving');
-    try {
-      const mine = (r) => ({ ...r, org_id: org.id });
-
-      // THE GODOWNS AND THE BANK ACCOUNTS GO FIRST.
-      //
-      // Every bill carries a godown id and every receipt an account id, and
-      // both have a foreign key behind them. Put a bill back before its
-      // godown exists and the database refuses the whole row.
-      for (let i = 0; i < (b.godowns || []).length; i += 100) {
-        const { error } = await supabase.from('godowns')
-          .upsert((b.godowns || []).slice(i, i + 100).map(mine), { onConflict: 'id' });
-        if (error) throw error;
-      }
-      for (let i = 0; i < (b.banks || []).length; i += 100) {
-        const { error } = await supabase.from('bank_accounts')
-          .upsert((b.banks || []).slice(i, i + 100).map(mine), { onConflict: 'id' });
-        if (error) throw error;
-      }
-
-      for (let i = 0; i < b.parties.length; i += 100) {
-        const { error } = await supabase.from('parties')
-          .upsert(b.parties.slice(i, i + 100).map(mine), { onConflict: 'id' });
-        if (error) throw error;
-      }
-      for (let i = 0; i < b.items.length; i += 100) {
-        const { error } = await supabase.from('items')
-          .upsert(b.items.slice(i, i + 100).map(mine), { onConflict: 'id' });
-        if (error) throw error;
-      }
-
-      const byVoucher = {};
-      b.lines.forEach((l) => { (byVoucher[l.voucher_id] = byVoucher[l.voucher_id] || []).push(l); });
-
-      // A CANCELLED BILL COMES BACK CANCELLED.
-      //
-      // save_voucher has no way to write cancelled_at, so a restore used to
-      // bring every cancelled bill back to life — the number, the goods, the
-      // tax and all. It is saved first, so its number is held, and then
-      // cancelled again with the reason it carried.
-      // A CREDIT NOTE CANNOT GO BACK BEFORE THE BILL IT IS AGAINST.
-      //
-      // The bills went back in whatever order the file listed them, and a
-      // credit note carries the id of the bill it reverses. Arrive first and
-      // the database refuses it — "violates foreign key constraint" — and the
-      // restore stopped dead there, leaving the book half rebuilt and the
-      // shopkeeper looking at a sentence in Postgres. On a real month's
-      // backup that was five bills in a hundred and thirty.
-      //
-      // The ones that point at nothing go first. Anything still refused is
-      // kept for the next round, and the rounds stop when a whole pass puts
-      // nothing back — so a note against a note against a bill is fine too,
-      // and a note whose bill is genuinely missing from the file is reported
-      // instead of stopping everything.
-      let bills = 0, already = 0, recancelled = 0;
-      const putBack = async (v) => {
-        const { data, error } = await supabase.rpc('save_voucher',
-          { p: backupVoucherPayload(v, byVoucher[v.id]) });
-        if (error) return error;
-        if (data?.already) already++; else bills++;
-        if (v.cancelled_at && data?.id && !data?.already) {
-          const { error: cErr } = await supabase.rpc('delete_voucher',
-            { p_id: data.id, p_reason: v.cancel_reason || 'Cancelled before this backup' });
-          if (cErr) throw cErr;
-          recancelled++;
-        }
-        return null;
-      };
-
-      let queue = [...b.vouchers].sort((x, y) =>
-        (x.ref_voucher_id ? 1 : 0) - (y.ref_voucher_id ? 1 : 0));
-      let lastErr = null;
-      while (queue.length) {
-        const again = [];
-        for (const v of queue) {
-          const err = await putBack(v);
-          if (!err) continue;
-          // a missing bill to point at: try again once the rest are in
-          if (/foreign key|not present in table/i.test(err.message || '')) {
-            again.push(v); lastErr = err;
-          } else throw err;
-        }
-        if (again.length === queue.length) {          // a whole pass, no progress
-          throw new Error(
-            `${again.length} credit or debit note${again.length === 1 ? '' : 's'} in this `
-            + 'backup point at a bill that is not in the file, so they could not be put '
-            + 'back. Everything else has been restored.');
-        }
-        queue = again;
-      }
-
-      // Receipts and payments he entered himself. The ones a cash bill wrote
-      // are left out — saving the bill writes those again by itself.
-      //
-      // The test is who MADE the row, not whether it points at a bill. A real
-      // receipt can be tied to a bill afterwards, and testing on the link
-      // alone dropped those from every restore.
-      //
-      // A BACKUP WRITTEN BEFORE 1.9 HAS NO from_voucher AT ALL, and undefined
-      // is not false — every payment in it would have passed this filter and
-      // been written back on top of the one save_voucher had just recreated,
-      // doubling the cash on every restore anyone is holding today. When the
-      // key is missing the old rule is the best guess there is.
-      const cameFromBill = (pm) => (pm.from_voucher === undefined || pm.from_voucher === null
-        ? !!pm.ref_voucher_id
-        : !!pm.from_voucher);
-      const manual = b.payments.filter((pm) => !cameFromBill(pm));
-      for (let i = 0; i < manual.length; i += 100) {
-        const { error } = await supabase.from('payments')
-          .upsert(manual.slice(i, i + 100).map(mine), { onConflict: 'id' });
-        if (error) throw error;
-      }
-
-      // Money out. Empty on a backup taken by an older Skwik.
-      for (let i = 0; i < (b.expenses || []).length; i += 100) {
-        const { error } = await supabase.from('expenses')
-          .upsert(b.expenses.slice(i, i + 100).map(mine), { onConflict: 'id' });
-        if (error) throw error;
-      }
-
-      // THE MOVEMENTS NO BILL MADE.
-      //
-      // Transfers between godowns and opening-stock rows are written straight
-      // into stock_moves by their own routines, with no bill behind them, so
-      // nothing in the restore recreated them. A transfer nets to zero, which
-      // is why nobody noticed: the total stock came back right and the
-      // godown-wise figures were wrong.
-      //
-      // The ones a bill made are deliberately not in the file — save_voucher
-      // wrote them again a moment ago, and putting them back as well would
-      // count every sale twice.
-      const ownMoves = (b.moves || []).filter((m) => !m.ref_voucher_id);
-      for (let i = 0; i < ownMoves.length; i += 200) {
-        const { error } = await supabase.from('stock_moves')
-          .upsert(ownMoves.slice(i, i + 200).map(mine), { onConflict: 'id' });
-        if (error) throw error;
-      }
-
-      Alert.alert('Put back',
-        `${bills} bills restored${already ? `, ${already} were already here` : ''}.\n`
-        + `${b.items.length} items and ${b.parties.length} names checked.\n`
-        + `${(b.godowns || []).length} godown(s), ${(b.banks || []).length} bank account(s), `
-        + `${ownMoves.length} stock movement(s) put back.`
-        + ((b.godowns || []).length || ownMoves.length ? '' :
-            '\n\nThis file was made by an older Skwik, so it carries no godowns, '
-            + 'no bank accounts and no transfers. Take a fresh backup.'));
-    } catch (e) {
-      Alert.alert('Stopped part way',
-        `${sayPlainly(e)}\n\nWhat went back before the problem is saved. `
-        + 'Running the restore again carries on from there without duplicating anything.');
-    } finally { setBusy(''); }
-  };
+  // THIS USED TO BE DONE HERE, IN THE APP, AND IT COULD NOT WORK.
+  //
+  // It read every row out, wrote them to a file, and put them back by
+  // upserting each one under THE ID IT LEFT WITH. An id is unique across
+  // the whole of Skwik, so if the firm the file came from still exists --
+  // which is the ordinary case, a new phone or a second firm -- every id in
+  // the file is already taken. Each row either did nothing or tried to move
+  // somebody else’s row into this firm, which row security then refused.
+  // Either way the book did not come back.
+  //
+  // Both halves now happen in the database, in one call each. The copy is
+  // the rows themselves; putting it back gives every row a fresh id and
+  // rebuilds every reference through a map, so the book comes back whole
+  // whether or not the firm it came from is still there. It goes into a
+  // firm with nothing in it and says so rather than guessing what wins.
+  // See exportBackup and restoreBackup above.
 
   /* ---------------- in ---------------- */
 
@@ -659,6 +657,111 @@ export default function TransferScreen({ navigation }) {
   // exports what he likes — ledgers, stock items, the price list, XML or
   // spreadsheet — picks them all at once, and Skwik works out what each one
   // is and joins them together by name.
+  // GATEWAY -> DISPLAY -> DAY BOOK -> EXPORT, which is where the history is.
+  // The masters file he may already have imported holds the items and the
+  // names; this one holds what happened.
+  const pickDayBook = async () => {
+    setBusy('in-book');
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: false, type: '*/*',
+      });
+      if (res.canceled) return;
+      const asset = res.assets?.[0];
+      if (!asset?.uri) return Alert.alert('Could not open that', 'No file came back.');
+
+      const text = await readPickedFile(asset.uri);
+      if (!/<VOUCHER[\s>]/i.test(text)) {
+        return Alert.alert('No transactions in that file',
+          'That looks like a Tally file, but it holds only masters \u2014 the items '
+          + 'and the names. The transactions come from Gateway \u2192 Display \u2192 '
+          + 'Day Book, then Export as XML.');
+      }
+
+      const book = vouchersFromTallyXml(text);
+
+      // WHAT THE SHOP ALREADY HAS, so the report can say how many names and
+      // items would be NEW rather than listing all of them as if the shop
+      // were empty. Asked for here rather than held on the screen, because
+      // this is the only place that wants it and it is one read.
+      const [mine, theirs, stores] = await Promise.all([
+        pageAll(() => supabase.from('items').select('name').eq('is_active', true)).catch(() => []),
+        pageAll(() => supabase.from('parties').select('name')).catch(() => []),
+        supabase.from('godowns').select('name').then((r) => r.data || []).catch(() => []),
+      ]);
+      const report = checkBook(book, {
+        items: (mine || []).map((x) => x.name),
+        parties: (theirs || []).map((x) => x.name),
+        godowns: (stores || []).map((x) => x.name),
+      });
+      setDayBook({ book, report, name: asset.name || 'your day book',
+                   have: { items: mine || [], parties: theirs || [], godowns: stores || [] } });
+    } catch (e) {
+      Alert.alert('Could not read that file', sayPlainly(e));
+    } finally { setBusy(''); }
+  };
+
+  // BRINGING IT IN, ONCE HE HAS SEEN WHAT IT IS.
+  //
+  // Everything written here carries an id worked out from Tally's own id for
+  // that voucher, and the database refuses a second write of an id it already
+  // holds — so pressing this twice costs nothing but the wait. That is worth
+  // saying to him plainly, because the fear of pressing it twice is exactly
+  // what makes a man press it twice.
+  const bringItIn = () => {
+    if (!dayBook) return;
+    const { book, report } = dayBook;
+    if (report.stop.length) {
+      return Alert.alert('Put these right first',
+        report.stop.slice(0, 5).join('\n')
+        + (report.stop.length > 5 ? `\n+ ${report.stop.length - 5} more` : ''));
+    }
+    const plan = planLoad(book, {
+      items: (dayBook.have?.items || []).map((x) => x.name),
+      parties: (dayBook.have?.parties || []).map((x) => x.name),
+      godowns: (dayBook.have?.godowns || []).map((x) => x.name),
+    });
+    Alert.alert('Put all this into your books?',
+      `${plan.bills} bill${plan.bills === 1 ? '' : 's'}, ${plan.payments} money `
+      + `entr${plan.payments === 1 ? 'y' : 'ies'}`
+      + (plan.transfers ? `, ${plan.transfers} stock move${plan.transfers === 1 ? '' : 's'}` : '')
+      + `.\n\n${plan.newItems.length} new item${plan.newItems.length === 1 ? '' : 's'} and `
+      + `${plan.newParties.length} new name${plan.newParties.length === 1 ? '' : 's'} will be added. `
+      + 'Anything already here is left alone.\n\nIf it stops halfway, press it again — '
+      + 'nothing is ever written twice.',
+      [{ text: 'Not yet' }, { text: 'Bring it in', onPress: doBring }]);
+  };
+
+  const doBring = async () => {
+    setBringing({ done: 0, total: 0 });
+    try {
+      const out = await loadBook({
+        supabase, org, book: dayBook.book,
+        onStep: ({ done, total }) => setBringing({ done, total }),
+      });
+      setDayBook(null);
+      Alert.alert('It is in your books',
+        [out.bills && `${out.bills} bill${out.bills === 1 ? '' : 's'}`,
+         out.already && `${out.already} already there`,
+         out.payments && `${out.payments} money entries`,
+         out.transfers && `${out.transfers} stock moves`,
+         out.items && `${out.items} new items`,
+         out.parties && `${out.parties} new names`]
+          .filter(Boolean).join('\n')
+        + '\n\nLook at Past bills and Ledgers to check it against Tally.');
+    } catch (e) {
+      // HOW FAR IT GOT, not just that it failed. Everything already written
+      // is whole and correct; pressing it again carries on from there.
+      const m = e && e.made;
+      Alert.alert('It stopped partway',
+        `${sayPlainly(e)}\n\n`
+        + (m ? `Written so far: ${m.bills} bills, ${m.payments} money entries, `
+             + `${m.items} items, ${m.parties} names.\n\n` : '')
+        + 'Nothing written is wrong. Press Bring it in again and it will carry '
+        + 'on from where it stopped.');
+    } finally { setBringing(null); }
+  };
+
   const pickMany = async () => {
     setBusy('in-all');
     try {
@@ -863,8 +966,32 @@ export default function TransferScreen({ navigation }) {
         </View>
       </Bar>
 
+      {/* THREE JOBS, THREE TABS.
+          This screen was one long scroll doing four unrelated things: reading
+          a file in, writing files out, and no way at all to see what had been
+          brought in before or to take any of it back out. Khata, Stock and
+          Reports each got split and each got better; this is the same cut. */}
+      <View style={[S.row, { gap: 6, paddingHorizontal: 16, paddingTop: 12,
+                             paddingBottom: 4 }]}>
+        {[['in', 'Bring in'], ['out', 'Send out'], ['log', 'History']].map(([k, label]) => {
+          const on = tab === k;
+          return (
+            <TouchableOpacity key={k} onPress={() => setTab(k)}
+              style={{ paddingHorizontal: 13, paddingVertical: 8, borderRadius: 999,
+                       borderWidth: 1, borderColor: on ? C.ink : C.line,
+                       backgroundColor: on ? C.ink : 'transparent' }}>
+              <Text style={{ fontSize: 13, fontWeight: '700',
+                             color: on ? C.bg : C.muted }}>{label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
 
+        {tab === 'log' && <History org={org} navigation={navigation} />}
+
+        {tab === 'in' && (<>
         <Text style={S.eyebrow}>Bring your book in</Text>
         <Text style={{ fontSize: 13, color: C.muted, marginBottom: 6, lineHeight: 19 }}>
           From Tally: Gateway → Display → List of Accounts → Export, and choose
@@ -881,8 +1008,177 @@ export default function TransferScreen({ navigation }) {
           onPress={pickMany}
           note="Export the ledgers, the stock items and the price list from Tally — XML, or CSV, or Tally&apos;s own Export to Excel — then pick them ALL here together. Skwik reads each one, works out what it holds, and joins the rates onto the products by name. A real .xlsx it cannot open, and it will say so." />
 
-        <View style={{ height: 26 }} />
+        <Row busy={busy} label="Past transactions from Tally" busyKey="in-book"
+          onPress={pickDayBook}
+          note="Gateway &#8594; Display &#8594; Day Book &#8594; Export as XML. Bills, receipts, payments and stock moved between stores. Skwik reads it and shows you every figure BEFORE anything is written." />
 
+        {!!dayBook && (() => {
+          const { book, report } = dayBook;
+          const c = report.counts;
+          const money = (n) => `\u20B9${fmt0(n)}`;
+          const sum = (a, f) => a.reduce((t, x) => t + (f(x) || 0), 0);
+          const sales = book.vouchers.filter((v) => v.vtype === 'sale');
+          const buys  = book.vouchers.filter((v) => v.vtype === 'purchase');
+          const rec   = book.payments.filter((p) => p.ptype === 'receipt');
+          const pay   = book.payments.filter((p) => p.ptype === 'payment');
+          const days  = book.vouchers.concat(book.payments)
+            .map((v) => v.vdate).filter(Boolean).sort();
+          // how many distinct items and names the file mentions at all
+          const seen = (arr) => new Set(arr.filter(Boolean)
+            .map((x) => String(x).trim().toLowerCase())).size;
+          const itemsSeen = seen(book.vouchers.flatMap((v) => (v.lines || []).map((l) => l.item)));
+          const namesSeen = seen(book.vouchers.map((v) => v.party)
+            .concat(book.payments.map((p) => p.party)));
+          const Line2 = ({ k, v, tone }) => (
+            <View style={[S.row, { marginBottom: 5, alignItems: 'baseline' }]}>
+              <Text style={{ flex: 1, fontSize: 13.5, color: tone || C.ink }}>{k}</Text>
+              <Text style={[{ fontSize: 13.5, fontWeight: '700', color: tone || C.ink }, S.num]}>
+                {v}
+              </Text>
+            </View>
+          );
+          return (
+            <View style={[S.card, { marginTop: 10 }]}>
+              <Text style={S.eyebrow}>What is in {dayBook.name}</Text>
+              {!!days.length && (
+                <Text style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+                  {showDate(days[0])} to {showDate(days[days.length - 1])}
+                </Text>
+              )}
+
+              <Line2 k={`${c.bills} bill${c.bills === 1 ? '' : 's'}`} v="" />
+              {!!sales.length && (
+                <Line2 k={`   ${sales.length} sales`} v={money(sum(sales, (v) => v.total))} />
+              )}
+              {!!buys.length && (
+                <Line2 k={`   ${buys.length} purchases`} v={money(sum(buys, (v) => v.total))} />
+              )}
+              {!!rec.length && (
+                <Line2 k={`${rec.length} received`} v={money(sum(rec, (p) => p.amount))} />
+              )}
+              {!!pay.length && (
+                <Line2 k={`${pay.length} paid`} v={money(sum(pay, (p) => p.amount))} />
+              )}
+              {!!c.transfers && (
+                <Line2 k={`${c.transfers} moved between stores`} v="" />
+              )}
+              {!!c.skipped && (
+                <Line2 k={`${c.skipped} left out`} v="" tone={C.muted} />
+              )}
+
+              <View style={{ height: 10 }} />
+              {/* MATCHED AND NEW, SIDE BY SIDE.
+                  It said how many were new and left the rest to be inferred.
+                  A name that should have matched and did not is the commonest
+                  way an import goes wrong -- one Ganesh Store becomes two, and
+                  his udhar is split between them -- and the moment to catch it
+                  is here, before anything is written, not afterwards. */}
+              <Text style={S.eyebrow}>Names and goods in the file</Text>
+              <Line2 k={`Items \u00b7 ${itemsSeen - report.newItems.length} already yours`}
+                     v={`${report.newItems.length} new`} />
+              <Line2 k={`Names \u00b7 ${namesSeen - report.newParties.length} already yours`}
+                     v={`${report.newParties.length} new`} />
+              {!!report.newGodowns.length && (
+                <Line2 k="Stores not here yet" v={String(report.newGodowns.length)} />
+              )}
+
+              {/* WHAT IS LEFT OUT, AND WHY — never a silent drop. */}
+              {!!book.skipped.length && (
+                <>
+                  <View style={{ height: 10 }} />
+                  <Text style={S.eyebrow}>Left out, and why</Text>
+                  {[...new Set(book.skipped.map((x) => x.why))].slice(0, 6).map((w) => (
+                    <Text key={w} style={{ fontSize: 12.5, color: C.muted, marginBottom: 3 }}>
+                      {'\u00B7 '}{book.skipped.filter((x) => x.why === w).length} {'\u2014'} {w}
+                    </Text>
+                  ))}
+                </>
+              )}
+
+              {!!report.stop.length && (
+                <View style={{ marginTop: 12, padding: 11, borderRadius: 10,
+                               backgroundColor: C.dangerSoft || C.flagSoft,
+                               borderWidth: 1, borderColor: C.danger }}>
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: C.danger }}>
+                    {report.stop.length} thing{report.stop.length === 1 ? '' : 's'} to put right first
+                  </Text>
+                  {report.stop.slice(0, 6).map((x, i) => (
+                    <Text key={i} style={{ fontSize: 12.5, color: C.danger, marginTop: 4, lineHeight: 17 }}>
+                      {'\u00B7 '}{x}
+                    </Text>
+                  ))}
+                </View>
+              )}
+
+              {!!report.warn.length && (
+                <View style={{ marginTop: 10, padding: 11, borderRadius: 10,
+                               backgroundColor: C.flagSoft, borderWidth: 1, borderColor: C.flagLine }}>
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: C.flagInk }}>
+                    {report.warn.length} worth a look
+                  </Text>
+                  {report.warn.slice(0, 5).map((x, i) => (
+                    <Text key={i} style={{ fontSize: 12.5, color: C.flagInk, marginTop: 4, lineHeight: 17 }}>
+                      {'\u00B7 '}{x}
+                    </Text>
+                  ))}
+                  {report.warn.length > 5 && (
+                    <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 4 }}>
+                      + {report.warn.length - 5} more
+                    </Text>
+                  )}
+                </View>
+              )}
+
+              {bringing ? (
+                <View style={{ marginTop: 14 }}>
+                  <View style={[S.row, { gap: 10 }]}>
+                    <ActivityIndicator size="small" color={C.accent} />
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: C.ink }}>
+                      {bringing.total
+                        ? `${bringing.done} of ${bringing.total}`
+                        : 'Starting\u2026'}
+                    </Text>
+                  </View>
+                  {/* A BAR, BECAUSE A NUMBER ALONE DOES NOT LOOK LIKE MOVEMENT
+                      on a slow pack, and this can take a minute. */}
+                  <View style={{ height: 6, borderRadius: 3, marginTop: 8,
+                                 backgroundColor: C.line, overflow: 'hidden' }}>
+                    <View style={{ height: 6, borderRadius: 3, backgroundColor: C.accent,
+                                   width: `${bringing.total
+                                     ? Math.round((bringing.done / bringing.total) * 100) : 3}%` }} />
+                  </View>
+                  <Text style={[S.hint, { marginTop: 8 }]}>
+                    Leave this on the screen until it finishes.
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <Text style={[S.hint, { marginTop: 12, lineHeight: 18 }]}>
+                    Nothing has been written yet. Everything above is only what the
+                    file holds.
+                  </Text>
+                  <TouchableOpacity onPress={bringItIn}
+                    style={[S.btn, { marginTop: 12 },
+                            !!report.stop.length && { backgroundColor: C.faint }]}>
+                    <Text style={S.btnText}>
+                      {report.stop.length ? 'Put the problems right first' : 'Bring it in'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setDayBook(null)} style={{ paddingTop: 12 }}>
+                    <Text style={{ fontSize: 13.5, fontWeight: '700', color: C.muted,
+                                   textAlign: 'center' }}>
+                      Not now
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+          );
+        })()}
+
+        </>)}
+
+        {tab === 'out' && (<>
         <Text style={S.eyebrow}>Send your book out</Text>
 
         <View style={[S.row, { gap: 6, marginBottom: 12 }]}>
@@ -925,10 +1221,10 @@ export default function TransferScreen({ navigation }) {
           month, and keeping it off this phone.
         </Text>
 
-        <Row busy={busy} label="Save a full backup" busyKey="backup" onPress={saveBackup}
-          note="Firm, items, customers, every bill and every line, receipts and payments." />
-        <Row busy={busy} label="Put a backup back" busyKey="restore" onPress={restoreBackup} tone="quiet"
-          note="Adds anything missing. Nothing here is deleted, and a bill already in your books is left alone." />
+        <Row busy={busy} label="Your whole book, in one file" busyKey="backup" onPress={exportBackup}
+          note="Not a report — the rows themselves. Your firm, your items, your customers, every bill and every line, the money and the stock. Skwik can put the whole thing back from this one file, so your book is yours to take anywhere." />
+        <Row busy={busy} label="Put a book back" busyKey="restore" onPress={restoreBackup} tone="quiet"
+          note="Into a firm with nothing in it: a new phone, or a firm started again. Every row comes back with the bills still pointing at the same customers and the same goods. Nothing you have written is ever written over." />
 
         <View style={{ height: 26 }} />
 
@@ -943,6 +1239,7 @@ export default function TransferScreen({ navigation }) {
           Your whole book stays in Skwik. These files are copies — sending one
           out changes nothing here.
         </Text>
+        </>)}
       </ScrollView>
 
       {/* ---------- what was read, before anything is saved ---------- */}

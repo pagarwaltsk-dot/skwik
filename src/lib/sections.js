@@ -96,6 +96,15 @@ export function groupsFor(org, isOwner) {
               alone: { label: 'Stock', icon: 'stock' } }
           : { id: 'items', label: 'Items', route: 'Items',
               alone: { label: 'Items', icon: 'tag' } },
+        // MOVING GOODS AND COUNTING THEM ARE NOT ITEMS WORK.
+        //
+        // The godown transfer was built long ago and then hidden in Settings
+        // under Godowns, where a man looking for his stock would never think
+        // to go; the stock count did not exist at all. Both belong beside the
+        // stock list, because that is the screen he is on when he notices the
+        // figure is wrong.
+        showStock(org) && isOwner
+          && { id: 'moves', label: 'Move & correct', route: 'StockMove' },
       ]),
     },
     (showReports(org) || showRecon(org)) && isOwner && {

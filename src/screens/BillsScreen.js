@@ -572,6 +572,29 @@ export default function BillsScreen({ navigation }) {
                   ))}
                 </View>
 
+                {/* A CANCELLED BILL IS NOT A BILL ANY MORE.
+                    The row already refuses to print or send one. This sheet
+                    went on offering Print, Download, Change and a return on
+                    it, and Change was the dangerous one: it opened the bill,
+                    and pressing Save wrote its goods off the shelf a second
+                    time for a bill no report will ever show. The server now
+                    refuses that outright; there is no reason to offer the
+                    journey either. */}
+                {open.cancelled_at ? (
+                  <View style={[S.card, { marginTop: 4 }]}>
+                    <Text style={{ fontSize: 14, fontWeight: '800', color: C.danger }}>
+                      This bill was cancelled
+                    </Text>
+                    <Text style={{ fontSize: 13, color: C.muted, marginTop: 6, lineHeight: 19 }}>
+                      {dmy(String(open.cancelled_at).slice(0, 10))}
+                      {open.cancel_reason ? ` · ${open.cancel_reason}` : ''}
+                      {'. '}Its number stays used, so your numbering has no gap in it, and
+                      it counts as cancelled in your GSTR-1. Nothing on it can be changed —
+                      write a fresh bill instead.
+                    </Text>
+                  </View>
+                ) : (
+                  <>
                 <TouchableOpacity style={[S.btn, { backgroundColor: C.wa },
                                           (working || !lines) && { opacity: 0.5 }]}
                   onPress={resend} disabled={working || !lines}>
@@ -614,6 +637,8 @@ export default function BillsScreen({ navigation }) {
                       Remove this {open.vtype === 'purchase' ? 'purchase' : 'bill'}
                     </Text>
                   </TouchableOpacity>
+                )}
+                  </>
                 )}
 
                 <TouchableOpacity onPress={() => { setOpen(null); setLines(null); }}

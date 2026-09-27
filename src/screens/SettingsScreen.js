@@ -4,13 +4,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import {
-  showBatch, showExpenses, showExpiry, showGodowns, showPurchase, showRcmIn, showRcmOut, showRecon, showReports, showReturns, showStock, showThumbRail, showTransfer, showVariants,
+  showBatch, showExpenses, showExpiry, showGodowns, showMaking, showPurchase, showRcmIn, showRcmOut, showRecon, showReports, showReturns, showStock, showThumbRail, showTransfer, showVariants,
 } from '../lib/features';
 import { useApp } from '../AppContext';
 import { STATES } from '../lib/states';
 import { Alert as RNAlert } from 'react-native';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
 import { StateField } from '../components/Pickers';
+import AskBox from '../components/AskBox';
 import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
@@ -290,15 +291,25 @@ export default function SettingsScreen({ navigation }) {
     setBusy(true);
     const { error } = await supabase.rpc('set_invoice_start',
       { p_next: n, p_prefix: f.invoice_prefix || '' });
+    let sideError = null;
     if (!error) {
       // Starting again each April is kept on the firm, not in the counter.
-      await supabase.from('orgs').update({
+      // Checked, because otherwise the next line says "Saved" over a setting
+      // that did not save, and he finds out next April.
+      const r = await supabase.from('orgs').update({
         restart_each_year: !!f.restart_each_year,
         year_in_prefix: f.year_in_prefix !== false,
       }).eq('id', org.id);
+      sideError = r.error || null;
     }
     setBusy(false);
     if (error) return Alert.alert('Could not change numbering', sayPlainly(error));
+    if (sideError) {
+      await reloadOrg();
+      return Alert.alert('The number is changed, the rest is not',
+        `Your next bill will be ${nextLooksLike()}. Skwik could not save whether the numbering `
+        + `starts again each April: ${sayPlainly(sideError)} Set that one again.`);
+    }
     await reloadOrg();
     Alert.alert('Saved', `Your next bill will be ${nextLooksLike()}.`);
   };
@@ -345,6 +356,18 @@ export default function SettingsScreen({ navigation }) {
                   contentContainerStyle={{ padding: 16,
                     paddingBottom: Math.max(insets.bottom, 12) + 60 }}>
 
+      {/* THE QUESTION BOX, AT THE TOP, WHERE A BOX BELONGS.
+          The list below it is long and will get longer, and a man looking for
+          his second godown should not have to know that Skwik files it under
+          "What you use". He types what he wants and the switch comes to him. */}
+      <AskBox
+        valueOf={(k) => at(k, !!org?.[k])}
+        onFlip={(k, v, f) => flip(k, v, (on2) => {
+          if (on2 && k === 'godowns_enabled') navigation.navigate('Godowns');
+          else if (on2 && f?.route === 'Transfer') navigation.navigate('Transfer');
+        })}
+        onOpen={(f) => f.route && navigation.navigate(f.route)} />
+
       <Section title="What you use"
                note="Skwik opens as a billing book: sale, purchase, money in, money out. Switch on whatever else your shop needs and it appears straight away. Switching something off only hides it — nothing you have written is ever deleted.">
         <Toggle label="Purchase bills"
@@ -388,6 +411,10 @@ export default function SettingsScreen({ navigation }) {
                 note="9x2, 9x3, 10x2 clip tiffin as one product in three sizes, each with its own rate and stock."
                 value={at('variants_enabled', showVariants(org))}
                 onValueChange={(v) => flip('variants_enabled', v)} />
+        <Toggle label="Things made of other things"
+                note="A set sold as one but made of parts — a bucket body, a handle and a lid. Billing the bucket takes the three off the shelf. And, for a shop that makes a batch before it sells it, an entry that turns parts into finished goods and works out what one costs to make."
+                value={at('making_enabled', showMaking(org))}
+                onValueChange={(v) => flip('making_enabled', v)} />
         <Toggle label="One-handed picking"
                 note="Puts a down arrow and an OK down the right of the item list while you search, so the third match is two taps in the corner instead of a reach into the middle of the screen. The list still works exactly as it does now."
                 value={at('thumb_rail', showThumbRail(org))}

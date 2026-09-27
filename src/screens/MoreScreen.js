@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '../AppContext';
 import { showGodowns, showTransfer } from '../lib/features';
 import { Head, Screen } from '../components/Chrome';
+import AskBox from '../components/AskBox';
 import { C, S } from '../theme';
 
 // The version on screen is READ from app.json, never typed here. A number
@@ -14,7 +15,7 @@ import { C, S } from '../theme';
 import app from '../../app.json';
 
 export default function MoreScreen({ navigation }) {
-  const { org, signOut, isOwner } = useApp();
+  const { org, signOut, isOwner, reloadOrg } = useApp();
   const insets = useSafeAreaInsets();
 
   const scheme = !org?.is_gst_registered ? 'Not registered under GST'
@@ -95,8 +96,24 @@ export default function MoreScreen({ navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title="Everything" />
-      <ScrollView contentContainerStyle={{ padding: 16,
+      <ScrollView keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ padding: 16,
                     paddingBottom: Math.max(insets.bottom, 12) + 24 }}>
+
+      {/* THE SAME QUESTION BOX AS SETTINGS, because a man who cannot find
+          Settings is exactly the man who needs to ask. It flips the switch
+          from here too -- sending him somewhere else to press it would be
+          answering his question with a errand. */}
+      <AskBox
+        placeholder={'Ask anything \u2014 "bring my Tally data in"'}
+        valueOf={(k) => !!org?.[k]}
+        onFlip={async (k, v, f) => {
+          const { error } = await supabase.from('orgs').update({ [k]: v }).eq('id', org.id);
+          if (error) return Alert.alert('Could not save', sayPlainly(error));
+          await reloadOrg?.();
+          if (v && f?.route) navigation.navigate(f.route);
+        }}
+        onOpen={(f) => f.route && navigation.navigate(f.route)} />
 
       <View style={{ marginTop: 20, padding: 16, backgroundColor: C.card,
                      borderRadius: 18, borderWidth: 1.5, borderColor: C.line }}>

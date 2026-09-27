@@ -16,9 +16,12 @@
 // Three things make it his month rather than a made-up one:
 //
 //   THE MONEY HE ACTUALLY TOOK. Receipts already in his books for that period
-//   that are not yet against a bill — his UPI and cash entries — are matched
-//   to the rupee, and the bill is tied to the receipt, so the customer's
-//   ledger settles to nothing, exactly as it would have.
+//   that are not yet against a bill — his UPI and cash entries — are explained
+//   by bills of roughly that size, tied to the receipt, so the customer's
+//   ledger comes back to about nothing, the way a real one does. It used to
+//   match to the rupee, and it bought that exactness by inventing a discount
+//   on nearly every bill. Real goods at real rates do not add up to a round
+//   figure, and a practice month that pretends they do teaches him nothing.
 //
 //   WHAT IS ON THE SHELF. Items are chosen in proportion to what he actually
 //   has, and nothing is ever sold past it. A run that would send an item
@@ -203,40 +206,54 @@ const billTotal = (lines, mode, discount = null) => computeBill(lines.map((l) =>
   qty: l.qty, rate: l.rate, gst_rate: Number(l.item.gst_rate) || 0, disc: l.disc || 0,
 })), mode, { discount: discount == null ? lines.discount || 0 : discount }).total;
 
-// A receipt of 5,700 is what the customer PAID — tax and all. So the bill has
-// to come to 5,700 on its face, not 5,700 before tax.
+// ROUNDING A BILL OFF, THE WAY A COUNTER DOES IT.
 //
-// The bill's OWN discount is nudged until the printed total is that figure
-// exactly, which is what a shopkeeper does when he rounds a bill off at the
-// counter. It used to be pushed onto the last line, which put the whole
-// rounding on one tax rate; shared across the bill it lands where it belongs.
-export function fitToTotal(lines, target, mode) {
-  const gross = n2(lines.reduce((a, l) => a + n2(l.qty * l.rate), 0));
-  // the average rate the bill carries, so the first guess is close
-  const avg = mode === 'none' ? 0
-    : (gross > 0
-        ? lines.reduce((a, l) => a + n2(l.qty * l.rate) * (Number(l.item.gst_rate) || 0), 0) / gross
-        : 0);
+// This used to nudge the bill's own discount until the printed total hit a
+// received figure EXACTLY -- and on most bills that meant inventing a
+// discount of a few thousand rupees that nobody had given. A practice month
+// full of phantom discounts teaches the wrong thing about the app and looks
+// nothing like his own book.
+//
+// What a shopkeeper really does is knock off the odd rupees: 5,703 becomes
+// 5,700 and he says "chhod do". So that is all this does now, and it is the
+// only discount anything here will ever write. Five rupees is the ceiling,
+// and if a round figure is further away than that the bill simply prints what
+// the goods come to.
+export const MAX_ROUNDING = 5;
 
-  let want = 0;
-  for (let i = 0; i < 10; i++) {
-    const total = billTotal(lines, mode, want);
-    const off = total - target;
-    if (off === 0) { lines.discount = n2(want); return true; }
-    want = n2(want + off / (1 + avg / 100));
-    if (want < 0 || want >= gross) return false;        // cannot get there at all
+export function roundOff(lines, mode, maxDisc = MAX_ROUNDING) {
+  const flat = () => lines.map((l) => ({
+    qty: l.qty, rate: l.rate, gst_rate: Number(l.item.gst_rate) || 0, disc: l.disc || 0 }));
+  const bare = computeBill(flat(), mode, { discount: 0 }).total;
+
+  // the nearest round ten at or below it, if it is within reach
+  const gap = bare % 10;
+  if (gap === 0 || gap > maxDisc) { lines.discount = 0; return bare; }
+
+  // the discount comes off before tax, so it takes a shade more than the gap
+  // to move the printed total by the gap -- worked out rather than guessed
+  const gross = n2(lines.reduce((a, l) => a + n2(l.qty * l.rate), 0));
+  const avg = mode === 'none' || gross <= 0 ? 0
+    : lines.reduce((a, l) => a + n2(l.qty * l.rate) * (Number(l.item.gst_rate) || 0), 0) / gross;
+  let want = n2(gap / (1 + avg / 100));
+  for (let i = 0; i < 6; i++) {
+    const got = computeBill(flat(), mode, { discount: want }).total;
+    if (got === bare - gap) { lines.discount = n2(want); return got; }
+    want = n2(want + (got - (bare - gap)) / (1 + avg / 100));
+    if (want <= 0 || want > maxDisc) break;
   }
-  if (billTotal(lines, mode, want) === target) { lines.discount = n2(want); return true; }
-  return false;
+  lines.discount = 0;
+  return bare;
 }
 
 /* ---------------- one bill ---------------- */
 
-// Fill a bill towards a figure out of what is actually on the shelf.
-// `exact` is for a bill raised against money already received: it has to come
-// to that amount to the rupee, so the last line takes one more piece than it
-// needs and the difference comes off as a discount — which is what happens at
-// a counter anyway, and it shows on the bill.
+// Fill a bill towards a figure out of what is actually on the shelf. The
+// figure is what it AIMS at; what it comes to is whatever the goods come to,
+// give or take the odd rupees knocked off by roundOff().
+//
+// `exact` reaches further for the figure, and is no longer used by anything:
+// nothing in here has to land on an amount to the rupee any more.
 // HOW MANY THINGS A BILL OF THIS SIZE CARRIES.
 //
 // A big bill is big because a lot went into the bag, not because one thing
@@ -465,14 +482,25 @@ export function planSample({
     // The bill has to PRINT it, tax included, or the ledger will not settle.
     // Worth several goes: a different mix of goods often lands where the first
     // could not, usually because the shelf ran short of what it reached for.
+    // ONE BILL OF ROUGHLY THAT SIZE, out of what is actually on the shelf.
+    //
+    // It used to have to come to the figure TO THE RUPEE, and it bought that
+    // exactness with an invented discount on nearly every bill. It no longer
+    // does: the bill is built out of real goods at real rates, the odd rupees
+    // are knocked off if a round figure is within five, and the total is
+    // whatever that comes to. What is left over against the receipt stays on
+    // the customer's account, which is what a ledger looks like anyway.
     const oneBill = (figure) => {
-      for (let go = 0; go < 6; go++) {
-        const t = buildLines(figure, pool, r, { exact: true, mode, avgRate: usualRate });
-        if (!t) return null;
-        if (fitToTotal(t, Math.round(figure), mode)) return t;
-        putBack(t);
-      }
-      return null;
+      // `exact` here no longer means "land on the figure to the rupee" -- it
+      // means keep reaching until the figure is COVERED, which is what keeps
+      // a big bill carrying fifteen lines instead of three fat ones. A bill
+      // that is short is fine now; a bill that looks machine-written is not.
+      const t = buildLines(figure, pool, r, { exact: true, mode, avgRate: usualRate });
+      if (!t) return null;
+      const total = roundOff(t, mode);
+      if (total <= 0) { putBack(t); return null; }
+      t.total = total;
+      return t;
     };
 
     // WHICH DAYS THE PARTS FALL ON.
@@ -525,7 +553,7 @@ export function planSample({
       for (let k = 0; k < n; k++) {
         const ls = oneBill(cut[k]);
         if (!ls) { broke = true; break; }
-        out.push({ vdate: dates[k], lines: ls, target: cut[k] });
+        out.push({ vdate: dates[k], lines: ls, target: ls.total });
       }
       if (broke) { out.forEach((o) => putBack(o.lines)); continue; }
       made = out;
@@ -560,7 +588,7 @@ export function planSample({
           for (let k = 0; k < n; k++) {
             const ls = oneBill(cut[k]);
             if (!ls) break;
-            out.push({ vdate: dates[k], lines: ls, target: cut[k] });
+            out.push({ vdate: dates[k], lines: ls, target: ls.total });
           }
           if (out.length) {
             made = out;
@@ -589,8 +617,9 @@ export function planSample({
       // Where a receipt became several bills, only the last one carries it.
       // The earlier parts sit on the customer's account until that day, which
       // is exactly what happened: he bought through the month and paid once.
-      // The account still comes to nothing, because the bills add up to the
-      // receipt to the rupee.
+      // The account comes back to about nothing: the bills add up to close to
+      // the receipt, and whatever the goods did not quite reach stays on his
+      // account, which is what an account is for.
       is_cash: false,
       receipt: k === made.length - 1 ? rec : null,
       partOf: made.length > 1 ? rec.id : null,

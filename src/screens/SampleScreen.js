@@ -236,7 +236,7 @@ export default function SampleScreen({ navigation }) {
         done++;
 
         // tie the money he already took to the bill it was for, so the
-        // customer's ledger settles exactly as it would have
+        // customer's ledger comes back to about nothing
         if (b.receipt?.id) {
           const { error: le } = await supabase.from('payments')
             .update({ ref_voucher_id: data.id }).eq('id', b.receipt.id);
@@ -338,10 +338,12 @@ export default function SampleScreen({ navigation }) {
             own customers. They carry your numbering and your tax, they print like
             every other bill, and you can open and change any of them afterwards.
             {'\n\n'}
-            Where money has already come in and has no bill against it, the bill is
-            built to match that amount to the rupee and tied to it — so the ledger
-            settles exactly as it would have. Nothing is sold that you do not have
-            in stock.
+            Where money has already come in and has no bill against it, bills of
+            about that size are written and tied to it, so the ledger comes back to
+            about nothing the way a real one does. Real goods do not add up to round
+            figures, so the odd rupees are knocked off where a round figure is within
+            five — and that is the only discount anything here will write. Nothing is
+            sold that you do not have in stock.
           </Text>
         </View>
 

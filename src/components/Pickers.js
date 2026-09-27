@@ -23,20 +23,25 @@ import { C, S } from '../theme';
 function Sheet({ visible, title, hint, children, onClose }) {
   const gap = useKeyboardGap();
   const { height } = useWindowDimensions();
-  const room = Math.max(260, Math.round((height - gap) * 0.9));
+  const room = Math.max(260, Math.round((height - gap) * 0.86));
   // AND THE SEARCH BOX HAS TO STAY WHERE HE PUT HIS THUMB.
   //
-  // The sheet is anchored to the bottom of the screen, so its height was the
-  // height of whatever was in it: thirty-six states and the box sat near the
-  // top of the phone, two matches and the whole sheet collapsed down to sit on
-  // the keyboard, taking the box with it. Typing a letter moved the box he was
-  // typing into. Holding a floor under the sheet keeps it still.
+  // This sheet used to rise from the bottom, and its height was the height of
+  // whatever was in it: thirty-six states and the box sat near the top of the
+  // phone, two matches and the whole sheet collapsed down onto the keyboard,
+  // taking the box with it. Typing a letter moved the box he was typing into.
+  //
+  // A floor under the sheet held it still, which helped. Dropping it from the
+  // TOP instead settles it for good — the box is at the top of the screen
+  // where he is already looking, the list grows downwards underneath it, and
+  // the keyboard has the rest of the screen to itself. That is the rule he
+  // has asked for twice: a search box is never at the bottom.
   const floor = Math.min(room, 440);
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end',
-                     paddingBottom: gap }}>
-        <View style={{ backgroundColor: C.bg, borderTopLeftRadius: 26, borderTopRightRadius: 26,
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-start' }}>
+        <View style={{ backgroundColor: C.bg,
+                       borderBottomLeftRadius: 26, borderBottomRightRadius: 26,
                        padding: 18, maxHeight: room, minHeight: floor, flexShrink: 1 }}>
           <View style={[S.row, { marginBottom: 10 }]}>
             <Text style={{ flex: 1, fontSize: 20, fontWeight: '800', color: C.ink }}>{title}</Text>
@@ -58,7 +63,10 @@ function Sheet({ visible, title, hint, children, onClose }) {
 
 // ---------------- UNIT ----------------
 
-export function UomField({ value, onChange }) {
+// `allowEmpty` is for the SECOND unit an item may be sold in, which most
+// items do not have. Without it there is no way back to "none" once a unit
+// has been tapped by mistake, and no way to say the item only sells one way.
+export function UomField({ value, onChange, allowEmpty }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const list = searchUqc(q);
@@ -69,7 +77,8 @@ export function UomField({ value, onChange }) {
         style={[S.input, { flexDirection: 'row', alignItems: 'center' }]}>
         <Text style={{ flex: 1, fontSize: 17, fontWeight: '700',
                        color: value ? C.ink : C.faint }}>
-          {value ? `${uqcName(value)}  (${uqcShort(value)})` : 'Choose a unit'}
+          {value ? `${uqcName(value)}  (${uqcShort(value)})`
+                 : (allowEmpty ? 'Only one unit' : 'Choose a unit')}
         </Text>
         <Text style={{ fontSize: 15, color: C.muted }}>▾</Text>
       </TouchableOpacity>
@@ -83,6 +92,14 @@ export function UomField({ value, onChange }) {
             const top = list[0];
             if (top) { onChange(top.code); setOpen(false); }
           }} />
+        {allowEmpty && (
+          <TouchableOpacity onPress={() => { onChange(''); setOpen(false); }}
+            style={{ paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.line }}>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: C.muted }}>
+              Only one unit
+            </Text>
+          </TouchableOpacity>
+        )}
         <FlatList
           data={list}
           keyExtractor={(u) => u.code}

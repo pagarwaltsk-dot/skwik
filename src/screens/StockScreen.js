@@ -3,11 +3,11 @@ import { View, Text, TouchableOpacity, FlatList, TextInput } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { fmt0, num, qty as qtyText, today as todayHere } from '../lib/money';
+import { fmt0, num, qty as qtyText, today as todayIst } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { showBatch, showExpiry, showGodowns, showVariants } from '../lib/features';
 import { Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
-import { EditKey } from '../components/Register';
+import { CardFigure, CardName, CardRow, EditKey } from '../components/Register';
 import { C, S } from '../theme';
 
 // WHAT IS LEFT, AND WHERE IT IS.
@@ -141,12 +141,10 @@ export default function StockScreen({ navigation }) {
     // items, and a spent batch still drops off the detailed view as it did.
     const keepEmpty = !hideNil;
     const keepBatch = !detailed;
-    // NOT toISOString(). That answers in UTC, which is five and a half hours
-    // behind India, so between midnight and half past five a batch expiring
-    // today was drawn in red as though it had expired yesterday. today() is
-    // the whole app's answer to this and every other date here goes through
-    // it. The name stays `today` so the rest of this reads as it did.
-    const today = todayHere();
+    // TODAY WHERE HE IS STANDING, not today in Greenwich. toISOString answers
+    // in UTC, which until half past five in the morning is still yesterday in
+    // India — so a batch that expired today read as good for those hours.
+    const today = todayIst();
 
     const src = detailed
       ? rows.filter((r) => (where === 'all' || (r.godown_id || 'none') === where))
@@ -438,107 +436,63 @@ export default function StockScreen({ navigation }) {
         </Text>
       </View>
 
-      {/* THREE FIGURES IN A ROW WITH NOTHING SAYING WHICH IS WHICH IS A
-          PUZZLE, NOT A LIST. He wrote the heading himself: item, stock in
-          hand, rate. */}
-      <View style={[S.row, { paddingHorizontal: 16, paddingBottom: 6,
-                             borderBottomWidth: 1, borderBottomColor: C.line }]}>
-        <Text style={{ flex: 1, fontSize: 10.5, fontWeight: '800', letterSpacing: 0.6,
-                       color: C.faint }}>ITEM</Text>
-        <Text style={[{ width: 80, fontSize: 10.5, fontWeight: '800', letterSpacing: 0.6,
-                        color: C.faint, textAlign: 'right' }]}>IN HAND</Text>
-        {/* "RATE" on its own is the question, not the answer — a purchase
-            rate and a selling rate are both rates, and the one in this column
-            is what he sells it for. Named in full, and the column widened to
-            hold the name. */}
-        <Text style={[{ width: 78, fontSize: 10, fontWeight: '800', letterSpacing: 0.2,
-                        color: C.faint, textAlign: 'right' }]}>SELLING RATE</Text>
-      </View>
-
       <FlatList
         data={shown}
         keyExtractor={(i, ix) => `${i.key}|${ix}`}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 30 }}
+        contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 30 }}
         renderItem={({ item }) => {
           const under = item.depth > 0;
           return (
-            <TouchableOpacity
-              disabled={!item.item_id}
-              // THE REGISTER OPENS ON THE STORE THE STRIP ABOVE IS SET TO.
-              // It used to open on the whole firm whichever button was lit,
-              // so a shopkeeper looking at his godown tapped an item and was
-              // shown his shop's sales in it.
-              onPress={() => navigation.navigate('ItemMoves', {
+            <CardRow
+              style={{ marginLeft: item.depth * 12,
+                       borderLeftWidth: under ? 3 : 1,
+                       borderLeftColor: under ? C.line : C.line,
+                       paddingVertical: under ? 10 : 12 }}
+              onPress={item.item_id ? () => navigation.navigate('ItemMoves', {
                 itemId: item.item_id,
                 itemName: item.item_name,
                 unit: item.unit,
                 godownId: where === 'all' ? null : where,
                 godownName: where === 'all' ? ''
-                  : (godowns.find((g) => g.id === where)?.name || '') })}
-              style={[S.row, { paddingVertical: under ? 10 : 14,
-                               marginLeft: item.depth * 12,
-                               paddingLeft: under ? 10 : 0,
-                               borderLeftWidth: under ? 2 : 0,
-                               borderLeftColor: C.line,
-                               borderBottomWidth: 1,
-                               borderBottomColor: C.line }]}>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text numberOfLines={1}
-                    style={{ flexShrink: 1,
-                             fontSize: under ? 13.5 : 15.5, fontWeight: under ? '600' : '700',
-                             color: item.gone ? C.danger : C.ink }}>
-                    {item.title}
-                  </Text>
-                  {/* BESIDE THE NAME, NOT AT THE END OF THE LINE. A button in
-                      a column of its own read as a third figure and pushed the
-                      name into an ellipsis; here it is a footnote on the name
-                      and the name gets its width back. Not on a batch, and not
-                      on the parent's own loose line — that is the same item's
-                      edit twice in a row. */}
-                  {!item.isBatch && !item.isOwn && !!item.item_id && (
-                    <EditKey label={`Edit ${item.title}`}
-                      onPress={() => navigation.navigate('Items', { editId: item.item_id })} />
-                  )}
-                </View>
-                {!!item.sub && (
-                  <Text style={{ fontSize: 11.5, marginTop: 2,
-                                 color: item.gone ? C.danger : C.muted }}>
-                    {item.sub}
-                  </Text>
+                  : (godowns.find((g) => g.id === where)?.name || '') }) : undefined}>
+
+              <CardName
+                name={item.title}
+                tone={item.gone ? C.danger : undefined}
+                sub={item.sub}
+                after={!item.isBatch && !item.isOwn && !!item.item_id ? (
+                  <EditKey label={`Edit ${item.title}`}
+                    onPress={() => navigation.navigate('Items', { editId: item.item_id })} />
+                ) : null} />
+
+              <View style={[S.row, { marginTop: 10, gap: 10, alignItems: 'flex-end' }]}>
+                <CardFigure label="IN HAND" size={under ? 15 : 17}
+                  tone={num(item.qty) < 0 ? C.red : C.ink}>
+                  {qtyText(item.qty)} {uqcShort(item.unit)}
+                </CardFigure>
+
+                {/* A batch has no rate of its own — the rate belongs to the
+                    item — so its cell is left out rather than repeating the
+                    item's figure as though the lot were priced separately. */}
+                {!item.isBatch && (
+                  <CardFigure label="SELLING RATE" size={under ? 14 : 15.5} weight="700"
+                    tone={C.muted}>
+                    {num(item.rate) ? `\u20B9${fmt0(item.rate)}` : '\u2014'}
+                  </CardFigure>
+                )}
+
+                {item.batchCount > 0 && (
+                  <TouchableOpacity onPress={() => flip(item.key)}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    style={S.tapPill}>
+                    <Text style={S.tapPillText}>
+                      {item.batchCount} {item.batchCount === 1 ? 'batch' : 'batches'}
+                      {item.isOpen ? ' \u25B4' : ' \u25BE'}
+                    </Text>
+                  </TouchableOpacity>
                 )}
               </View>
-
-              {item.batchCount > 0 && (
-                <TouchableOpacity onPress={() => flip(item.key)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  style={[S.tapPill, { marginRight: 2 }]}>
-                  <Text style={S.tapPillText}>
-                    {item.batchCount} {item.batchCount === 1 ? 'batch' : 'batches'}
-                    {item.isOpen ? ' \u25B4' : ' \u25BE'}
-                  </Text>
-                </TouchableOpacity>
-              )}
-
-              <Text numberOfLines={1}
-                style={[{ width: 80, textAlign: 'right',
-                          fontSize: under ? 13.5 : 15.5, fontWeight: under ? '700' : '800',
-                          color: num(item.qty) < 0 ? C.red : C.ink }, S.num]}>
-                {qtyText(item.qty)} {uqcShort(item.unit)}
-              </Text>
-
-              {/* WHAT IT SELLS FOR, BESIDE WHAT IS LEFT. A batch has no rate
-                  of its own — the rate belongs to the item — so its cell is
-                  left blank rather than repeating the item's figure under it
-                  as though the lot were priced separately. */}
-              <Text numberOfLines={1}
-                style={[{ width: 78, textAlign: 'right',
-                          fontSize: under ? 13 : 14.5, fontWeight: '700',
-                          color: item.isBatch ? 'transparent' : C.muted }, S.num]}>
-                {item.isBatch ? '' : (num(item.rate) ? `\u20B9${fmt0(item.rate)}` : '\u2014')}
-              </Text>
-
-            </TouchableOpacity>
+            </CardRow>
           );
         }}
         ListEmptyComponent={

@@ -1,14 +1,12 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
 import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { fmt0, num, qty as qtyText, today } from '../lib/money';
-import { uqcShort } from '../lib/uqc';
-import { searchItems } from '../lib/search';
+import { num } from '../lib/money';
 import { sayPlainly } from '../lib/offline';
-import { Box, Head, Screen, Foot } from '../components/Chrome';
+import { Box, Head, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // TWO STORES, ONE BOOK.
@@ -23,34 +21,22 @@ export default function GodownScreen({ navigation }) {
   const { org, reloadOrg } = useApp();
   const [list, setList]   = useState([]);
   const [stock, setStock] = useState([]);
-  const [items, setItems] = useState([]);
   const [name, setName]   = useState('');
   // Android has no Alert.prompt, so the rename box is drawn in the row itself
   const [renaming, setRenaming] = useState(null);
   const [busy, setBusy]   = useState(false);
 
-  // the move being built
-  const [from, setFrom] = useState(null);
-  const [to, setTo]     = useState(null);
-  const [q, setQ]       = useState('');
-  const [lines, setLines] = useState([]);
-  const seq = useRef(0);
 
   const load = useCallback(async () => {
     // the stock rows are one per item PER STORE per batch, so a few hundred
     // items is already past the 1,000 the server hands back without a word
-    const [{ data: gs }, st, its] = await Promise.all([
+    const [{ data: gs }, st] = await Promise.all([
       supabase.from('godowns').select('*').order('name'),
       allRows(() => supabase.from('stock_in_hand_detail').select('*').order('item_id')),
-      allRows(() => supabase.from('items').select('id, name, unit')
-        .eq('is_active', true).order('name').order('id')),
     ]);
     setList(gs || []);
     setStock(st || []);
-    setItems(its || []);
-    if (!from && (gs || []).length) setFrom(gs.find((g) => g.is_main)?.id || gs[0].id);
-    if (!to && (gs || []).length > 1) setTo(gs.find((g) => g.id !== (gs[0].id))?.id || null);
-  }, [from, to]);
+  }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -62,8 +48,16 @@ export default function GodownScreen({ navigation }) {
     const { data, error } = await supabase.from('godowns')
       .insert({ org_id: org.id, name: n, is_main: first }).select().single();
     if (!error && first) {
-      await supabase.from('orgs')
+      // THE FIRST GODOWN SWITCHES GODOWNS ON. If this write fails the godown
+      // exists and nothing in the app can see it, which looks exactly like the
+      // add having failed -- except that adding it again makes two.
+      const { error: oe } = await supabase.from('orgs')
         .update({ godowns_enabled: true, default_godown_id: data.id }).eq('id', org.id);
+      if (oe) {
+        setBusy(false);
+        return Alert.alert(`${n} is saved, but stores are still switched off`,
+          `${sayPlainly(oe)}\n\nTurn "More than one godown" on under Settings, or try again here.`);
+      }
       await reloadOrg();
     }
     setBusy(false);
@@ -102,10 +96,37 @@ export default function GodownScreen({ navigation }) {
     load();
   };
 
+  // CHANGING THE MAIN STORE IS THREE WRITES, AND HALF OF IT IS WORSE THAN NONE.
+  //
+  // The first clears the flag everywhere, the second sets it on the new one,
+  // the third points the firm at it. None of them was checked. If the first
+  // went through and the second did not, the shop is left with NO main store
+  // at all -- and every function that falls back to "the main one, or the
+  // first by name" then quietly picks a different godown, so goods start
+  // landing in the wrong store with nothing anywhere saying so.
+  //
+  // So each step is checked, and if the second fails the first is put back.
   const makeMain = async (g) => {
-    await supabase.from('godowns').update({ is_main: false }).eq('org_id', org.id);
-    await supabase.from('godowns').update({ is_main: true }).eq('id', g.id);
-    await supabase.from('orgs').update({ default_godown_id: g.id }).eq('id', org.id);
+    const was = list.find((x) => x.is_main);
+    const clear = await supabase.from('godowns')
+      .update({ is_main: false }).eq('org_id', org.id);
+    if (clear.error) return Alert.alert('Could not change the main store', sayPlainly(clear.error));
+
+    const set = await supabase.from('godowns').update({ is_main: true }).eq('id', g.id);
+    if (set.error) {
+      // put it back the way it was, so the shop is never left without one
+      if (was) await supabase.from('godowns').update({ is_main: true }).eq('id', was.id);
+      return Alert.alert('Could not change the main store',
+        `${sayPlainly(set.error)}\n\n${was ? `${was.name} is still the main store.` : ''}`);
+    }
+
+    const point = await supabase.from('orgs')
+      .update({ default_godown_id: g.id }).eq('id', org.id);
+    if (point.error) {
+      return Alert.alert('Half done',
+        `${g.name} is now the main store, but Skwik could not be told to use it by default: `
+        + `${sayPlainly(point.error)} Try again.`);
+    }
     await reloadOrg();
     load();
   };
@@ -120,71 +141,6 @@ export default function GodownScreen({ navigation }) {
     });
     return Object.values(m).filter((r) => num(r.qty) !== 0);
   }, [stock]);
-
-  const hereNow = (itemId, batch) => {
-    const r = inGodown.find((x) => x.item_id === itemId && (x.godown_id || null) === from
-                                && (x.batch || '') === (batch || ''));
-    return r ? num(r.qty) : 0;
-  };
-
-  const hits = q.trim() ? searchItems(items, q, 8) : [];
-
-  const addLine = (h) => {
-    seq.current += 1;
-    setLines((ls) => [{ key: seq.current, item_id: h.p.id, item_name: h.p.name,
-                        unit: h.p.unit, qty: '', batch: '' }, ...ls]);
-    setQ('');
-  };
-  const setLine = (key, patch) =>
-    setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
-
-  const move = async () => {
-    if (!from || !to) return Alert.alert('Which godowns?', 'Choose where it goes from and to.');
-    if (from === to) return Alert.alert('Same godown', 'Those are the same place.');
-    const good = lines.filter((l) => num(l.qty) > 0);
-    if (!good.length) return Alert.alert('Nothing to move', 'Add an item and a quantity.');
-
-    const short = good.find((l) => num(l.qty) > hereNow(l.item_id, l.batch));
-    if (short) {
-      return Alert.alert('More than you have',
-        `${short.item_name}: only ${qtyText(hereNow(short.item_id, short.batch))} `
-        + 'is in that godown. Move it anyway?',
-        [{ text: 'Let me check' }, { text: 'Move anyway', onPress: () => send(good) }]);
-    }
-    send(good);
-  };
-
-  const send = async (good) => {
-    setBusy(true);
-    const { error } = await supabase.rpc('transfer_stock', {
-      p: { from_godown: from, to_godown: to, mdate: today(),
-           lines: good.map((l) => ({ item_id: l.item_id, qty: num(l.qty),
-                                     batch: (l.batch || '').trim() || null })) },
-    });
-    setBusy(false);
-    if (error) return Alert.alert('Could not move it', sayPlainly(error));
-    setLines([]);
-    load();
-    Alert.alert('Moved', `${good.length} item${good.length === 1 ? '' : 's'} moved.`);
-  };
-
-  const Pick = ({ value, onChange, not }) => (
-    <View style={[S.row, { gap: 8, flexWrap: 'wrap', marginTop: 6 }]}>
-      {list.filter((g) => g.id !== not).map((g) => {
-        const on = value === g.id;
-        return (
-          <TouchableOpacity key={g.id} onPress={() => onChange(g.id)}
-            style={{ paddingHorizontal: 13, paddingVertical: 9, borderRadius: 9,
-                     borderWidth: 1, borderColor: on ? C.accent : C.line,
-                     backgroundColor: on ? C.accentSoft : C.surface }}>
-            <Text style={{ fontSize: 13.5, fontWeight: '700', color: on ? C.accent : C.muted }}>
-              {g.name}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
-    </View>
-  );
 
   return (
     <Screen>
@@ -253,70 +209,30 @@ export default function GodownScreen({ navigation }) {
           </Text>
         )}
 
+        {/* MOVING GOODS USED TO BE DONE HERE TOO, AND IS NOT ANY MORE.
+            //
+            // A shop with two stores had the transfer on this screen, three
+            // taps inside Settings, which is the last place a man looks when
+            // he is standing in front of a shelf. It lives under Stock now,
+            // beside the list he is already reading, together with the stock
+            // count that never existed at all. This screen does the one thing
+            // its name promises: it names the stores. */}
         {list.length > 1 && (
-          <>
-            <Text style={[S.eyebrow, { marginTop: 26 }]}>Move goods</Text>
-            <Text style={S.label}>FROM</Text>
-            <Pick value={from} onChange={setFrom} not={to} />
-            <Text style={[S.label, { marginTop: 12 }]}>TO</Text>
-            <Pick value={to} onChange={setTo} not={from} />
-
-            <TextInput style={[S.input, { marginTop: 14 }]} value={q} onChangeText={setQ}
-              placeholder="Which item?" placeholderTextColor={C.faint}
-              returnKeyType="next" submitBehavior="submit"
-              onSubmitEditing={() => { if (hits.length) addLine(hits[0]); }} />
-            {hits.map((h) => (
-              <TouchableOpacity key={h.p.id} onPress={() => addLine(h)}
-                style={{ paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: C.line }}>
-                <Text style={{ fontSize: 15, fontWeight: '700', color: C.ink }}>{h.p.name}</Text>
-                <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
-                  {qtyText(hereNow(h.p.id, ''))} {uqcShort(h.p.unit)} here
-                </Text>
-              </TouchableOpacity>
-            ))}
-
-            {lines.map((l) => (
-              <View key={l.key} style={[S.line, { marginTop: 10 }]}>
-                <View style={S.row}>
-                  <Text style={[S.lineNm, { flex: 1 }]}>{l.item_name}</Text>
-                  <TouchableOpacity onPress={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}>
-                    <Text style={{ fontSize: 20, color: C.danger }}>×</Text>
-                  </TouchableOpacity>
-                </View>
-                <View style={[S.row, { gap: 8, marginTop: 8 }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={S.cellLabel}>How many</Text>
-                    <TextInput style={[S.cell, S.num]} keyboardType="numeric"
-                      value={l.qty} onChangeText={(t) => setLine(l.key, { qty: t })} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={S.cellLabel}>In that store</Text>
-                    <Text style={{ fontSize: 15, fontWeight: '700', color: C.muted,
-                                   paddingVertical: 11 }}>
-                      {qtyText(hereNow(l.item_id, l.batch))} {uqcShort(l.unit)}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            ))}
-          </>
+          <TouchableOpacity onPress={() => navigation.navigate('StockMove')}
+            style={{ marginTop: 26, paddingVertical: 14, paddingHorizontal: 13,
+                     borderRadius: 11, borderWidth: 1, borderColor: C.line,
+                     backgroundColor: C.surface }}>
+            <Text style={{ fontSize: 15, fontWeight: '700', color: C.accent }}>
+              Move goods between stores {'\u203A'}
+            </Text>
+            <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>
+              Under Stock, with the stock count. Nothing is bought or sold and no
+              tax arises — the same goods are simply somewhere else.
+            </Text>
+          </TouchableOpacity>
         )}
       </ScrollView>
 
-      {list.length > 1 && lines.length > 0 && (
-        <Foot>
-          <View style={{ flex: 1 }}>
-            <Text style={S.barTotL}>MOVING</Text>
-            <Text style={{ fontSize: 17, fontWeight: '800', color: C.ink }}>
-              {lines.filter((l) => num(l.qty) > 0).length} items
-            </Text>
-          </View>
-          <TouchableOpacity style={[S.btn, busy && { backgroundColor: C.faint }]}
-            onPress={move} disabled={busy}>
-            <Text style={S.btnText}>{busy ? 'Moving…' : 'Move them'}</Text>
-          </TouchableOpacity>
-        </Foot>
-      )}
     </Screen>
   );
 }

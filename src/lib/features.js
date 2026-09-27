@@ -41,6 +41,14 @@ export const showGodowns  = (org) => !!org?.godowns_enabled;
 // One item in several sizes, found as one name.
 export const showVariants = (org) => !!org?.variants_enabled;
 
+// THINGS MADE OF OTHER THINGS.
+//
+// A set put together as it is sold, and goods produced before they are sold.
+// Almost nobody selling across a counter needs either, and a hardware shop
+// should never learn that bill of materials exists — so it is off until a
+// shop that manufactures says otherwise.
+export const showMaking = (org) => !!org?.making_enabled;
+
 /* ---------------- reverse charge, which has two quite different sides ----- */
 
 // ON A SALE it means the BUYER pays the tax to the government instead of

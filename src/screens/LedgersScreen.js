@@ -8,7 +8,7 @@ import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import { sayPlainly } from '../lib/offline';
 import { fmt0, n2, num } from '../lib/money';
-import { ColHead, EditKey, Figure, Rule, Words } from '../components/Register';
+import { CardFigure, CardName, CardRow, EditKey } from '../components/Register';
 import { Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
 import { C, S } from '../theme';
 
@@ -204,50 +204,45 @@ export default function LedgersScreen({ navigation }) {
         <View style={{ paddingTop: 40 }}><ActivityIndicator color={C.accent} /></View>
       ) : (
         <>
-          <ColHead cols={[{ label: 'NAME' }, { label: 'BALANCE', width: 92 }]} />
           <FlatList
             data={shown}
             keyExtractor={(r) => String(r.id)}
-            contentContainerStyle={{ paddingBottom: 40 }}
-            renderItem={({ item, index }) => {
+            contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 40, paddingTop: 10 }}
+            renderItem={({ item }) => {
               const b = num(item.balance);
               return (
-                <View>
-                  <Rule last={index === shown.length - 1 && !b}
-                    onPress={() => navigation.navigate('Ledger', { partyId: item.id })}>
-                    <Words name={item.name}
-                      after={
-                        <EditKey label={`Edit ${item.name}`}
-                          onPress={() => navigation.navigate('Parties', { editId: item.id })} />
-                      }
-                      sub={[String(item.kind || 'customer') === 'supplier' ? 'supplier' : 'customer',
-                            item.area, item.phone].filter(Boolean).join(' \u00B7 ')} />
-                    <Figure width={92} size={15} weight="700"
-                            tone={b > 0 ? C.ink : b < 0 ? C.danger : C.faint}>
-                      {b === 0 ? '\u2014' : fmt0(Math.abs(b))}
-                    </Figure>
-                  </Rule>
+                <CardRow onPress={() => navigation.navigate('Ledger', { partyId: item.id })}>
+                  <CardName
+                    name={item.name}
+                    sub={[String(item.kind || 'customer') === 'supplier' ? 'supplier' : 'customer',
+                          item.area, item.phone].filter(Boolean).join(' \u00B7 ')}
+                    after={
+                      <EditKey label={`Edit ${item.name}`}
+                        onPress={() => navigation.navigate('Parties', { editId: item.id })} />
+                    } />
 
-                  {/* CHASING A DUE IS THE ONE THING HE ASKED FOR ON THE ROW.
-                      Receipt and payment buttons were here too and he did not
-                      ask for them: taking money is its own screen with a date,
-                      a mode and an amount on it, and a shortcut that lands him
-                      there mid-scroll is a way to mis-tap, not a saving. Gone.
-                      A row with nothing owing now carries no strip at all. */}
-                  {b > 0 && (
-                    <View style={[S.row, { justifyContent: 'flex-end',
-                                           paddingHorizontal: 14, paddingBottom: 10,
-                                           marginTop: -4,
-                                           borderBottomWidth: index === shown.length - 1 ? 0 : 1,
-                                           borderBottomColor: '#EDE9E0' }]}>
+                  <View style={[S.row, { marginTop: 10, gap: 10, alignItems: 'flex-end' }]}>
+                    <CardFigure
+                      label={b > 0 ? 'THEY OWE YOU' : b < 0 ? 'YOU OWE THEM' : 'SETTLED'}
+                      tone={b > 0 ? C.ink : b < 0 ? C.danger : C.faint}>
+                      {b === 0 ? '\u2014' : `\u20B9${fmt0(Math.abs(b))}`}
+                    </CardFigure>
+
+                    {/* CHASING A DUE IS THE ONE THING HE ASKED FOR ON THE ROW.
+                        Receipt and payment buttons were here too and he did
+                        not ask for them: taking money is its own screen with
+                        a date, a mode and an amount on it, and a shortcut
+                        that lands him there mid-scroll is a way to mis-tap,
+                        not a saving. */}
+                    {b > 0 && (
                       <RowKey label={`Ask ${item.name} to pay`} onPress={() => ask(item)}>
                         <Text style={{ fontSize: 11.5, fontWeight: '800', color: C.green }}>
                           ASK TO PAY
                         </Text>
                       </RowKey>
-                    </View>
-                  )}
-                </View>
+                    )}
+                  </View>
+                </CardRow>
               );
             }}
             ListEmptyComponent={
