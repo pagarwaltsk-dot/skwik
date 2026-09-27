@@ -492,6 +492,33 @@ export default function ReportsScreen({ route, navigation }) {
 
   /* ---------------- screen ---------------- */
 
+  // THE BOTTOM LINE HAS TO BE THE SERVER'S BOTTOM LINE.
+  //
+  // profit_and_loss works out net = sale − cost − expenses − written_off and
+  // hands the answer over with the rest. This screen threw that answer away
+  // and did the sum again here with one term missing: sale − cost − expenses.
+  // written_off came down the wire on every load and was never once read.
+  //
+  // Written off is the stock that went nowhere: the drum that was dented in
+  // the godown, the bag that split, a box that walked, anything the count
+  // screen took off the shelf. It is a real loss and the server subtracts it.
+  // A month where ₹20,000 of goods were written off read ₹20,000 better
+  // than it was, and it read that way on the one figure he actually decides
+  // on — what to draw for the house, whether he can pay for the next lot.
+  // Nothing on the card so much as hinted the line existed, so there was no
+  // way for him to notice it was missing.
+  //
+  // The server's own `net` is used as it stands, so this card and the books
+  // can never drift apart again. The sum is kept only as a fallback for a
+  // phone that has been updated while the database behind it has not — the
+  // same reason the long road under this screen still exists — and each term
+  // falls back to nought on its own, so one missing key cannot turn the whole
+  // figure into nothing.
+  const pnlNet = !pnl ? 0
+    : (pnl.net !== undefined && pnl.net !== null)
+      ? n2(pnl.net)
+      : n2((Number(pnl.sale) || 0) - (Number(pnl.cost) || 0)
+           - (Number(pnl.expenses) || 0) - (Number(pnl.written_off) || 0));
 
   const Card = ({ title, children }) => (
     <View style={S.card}>
@@ -594,8 +621,25 @@ export default function ReportsScreen({ route, navigation }) {
                   <Line k="What those goods cost" v={fmt(pnl.cost)} />
                   <Line k="Gross profit" v={fmt(n2(Number(pnl.sale) - Number(pnl.cost)))} />
                   {!!Number(pnl.expenses) && <Line k="Money out" v={fmt(pnl.expenses)} />}
-                  <Line k="Left" strong
-                        v={`₹${fmt(n2(Number(pnl.sale) - Number(pnl.cost) - Number(pnl.expenses)))}`} />
+                  {/* Only when there is one. A shop that has written nothing
+                      off should not be shown a line of noughts and left
+                      wondering what it is accusing him of. */}
+                  {!!Number(pnl.written_off) && (
+                    <Line k="Goods written off" v={fmt(pnl.written_off)} />
+                  )}
+                  {/* PURCHASES ARE NOT ON THIS CARD, AND THAT IS ON PURPOSE.
+                      profit_and_loss also sends `purchase`, what he bought in
+                      the period. It stays off, for two reasons. The Purchases
+                      card above already shows it, out of report_summary. And
+                      on a profit the figure that comes off the sale is what
+                      the goods that WENT OUT cost — not what came IN. Buy
+                      forty drums, sell two, and the money for the other
+                      thirty-eight is not lost: they are on the shelf, and they
+                      are on the balance sheet under Books. Put "Purchases"
+                      between "What those goods cost" and "Left" and he
+                      subtracts it in his head, reads a loss in a month he did
+                      well in, and stops buying stock. */}
+                  <Line k="Left" strong v={`₹${fmt(pnlNet)}`} />
                   {(pnl.heads || []).map((h) => (
                     <Line key={h.head} k={`   ${h.head}`} v={fmt(h.amount)} />
                   ))}

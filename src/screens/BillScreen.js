@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Modal, Platform, BackHandler,
+  Keyboard,
   Linking,
 } from 'react-native';
 import * as Print from 'expo-print';
@@ -56,6 +57,16 @@ const Marked = ({ text, toks, style }) => (
   </Text>
 );
 
+// THE DAY AFTER, IN HIS OWN TIME, NOT IN UTC.
+// toISOString would hand back yesterday's date for the whole of the Indian
+// morning, which is the bug the check in tools/check.mjs exists to catch.
+const dayAfter = (iso) => {
+  if (!iso) return undefined;
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  return today(d);
+};
+
 export default function BillScreen({ route, navigation }) {
   const vtypeParam = route.params?.vtype || 'sale';
   const editId = route.params?.voucherId || null;    // set when opening a saved bill
@@ -82,7 +93,28 @@ export default function BillScreen({ route, navigation }) {
   // what he wants, and on a cash sale there is no name at all. The name is a
   // bar at the top of the bill now — tap it whenever you like, and the bill
   // will not save without it, which is the only moment it is actually needed.
+  // A NEW BILL OPENS ON THE NAME, WITH THE KEYPAD UP.
+  //
+  // "When I click on Sale, or Purchase, direct a page opens ... where cursor is
+  // on bar, that types customer in case of sale, and supplier in case of
+  // purchase, and keypad opens automatically, this way we save around 2-3 taps,
+  // and that's being fast."
+  //
+  // It used to take three taps to type a letter: the page showed "Choose a
+  // customer" waiting to be tapped, tapping it opened a SHEET, and the sheet
+  // put the cursor in its box and left the keyboard down -- because a field
+  // focused inside a modal is focused before the modal has finished appearing,
+  // and the keypad never gets the message.
+  //
+  // The sheet was the mistake, not the missing keypad. The box belongs on the
+  // page, with the names listed under it, exactly as his own app does it -- and
+  // then it FOLDS AWAY into the title bar the moment a name is picked, so the
+  // goods get the whole screen. Tapping the name there brings it back.
+  // The sheet is only for CHANGING a name that is already on the bill. A bill
+  // with no name on it yet shows the box on the PAGE -- see custPicker below.
   const [custOpen, setCustOpen] = useState(false);
+  const custRef = useRef(null);        // the box on the page
+  const custSheetRef = useRef(null);   // the same box inside the sheet
   const [cq, setCq]       = useState('');
   const [cust, setCust]   = useState(null);          // {id?, name, phone, state_code…}
   const [isCash, setIsCash] = useState(false);
@@ -131,6 +163,9 @@ export default function BillScreen({ route, navigation }) {
   const asking = useRef({});                    // one request per item, not one per tap
   const [extraGst, setExtraGst] = useState('');    // '' = the dearest rate on the bill
   const [supNo, setSupNo] = useState('');
+  // whether the purchase's header is open. A bill being re-opened starts
+  // folded: it was filled in the day it was written.
+  const [headOpen, setHeadOpen] = useState(true);
   // What he TYPED, and what Skwik made of it, kept apart so a half-written
   // date is never handed to the database as a whole one.
   const [supDateText, setSupDateText] = useState(showDate(today()));
@@ -319,16 +354,27 @@ export default function BillScreen({ route, navigation }) {
             : allRows(() => supabase.from('stock_in_hand').select('item_id, qty')))
             .then((rows) => {
               const all = {}, at = {};
+              // GOODS SITTING AT NO STORE AT ALL. Stock written before he
+              // turned stores on, or brought in without one, has no godown on
+              // it -- so it belongs to the firm's total and to no store's, and
+              // it is counted here on its own rather than being quietly read as
+              // "at the other store", which is a figure with nowhere to go.
+              let loose = 0;
               (rows || []).forEach((r) => {
                 const id = r.item_id;
                 if (!id) return;
                 all[id] = num(all[id]) + num(r.qty);
-                if (byGodown && r.godown_id) {
-                  (at[r.godown_id] = at[r.godown_id] || {})[id] =
-                    num(at[r.godown_id][id]) + num(r.qty);
+                if (byGodown) {
+                  if (r.godown_id) {
+                    (at[r.godown_id] = at[r.godown_id] || {})[id] =
+                      num(at[r.godown_id][id]) + num(r.qty);
+                  } else if (num(r.qty)) { loose += 1; }
                 }
               });
-              setStock({ all, at });
+              // `byStore` is the fact that matters to every figure below: when
+              // stock is kept store by store, a store with nothing in it means
+              // NOTHING IN IT -- not "look at the firm's total instead".
+              setStock({ all, at, byStore: byGodown, loose });
             })
             .catch(() => {});
         }
@@ -413,6 +459,9 @@ export default function BillScreen({ route, navigation }) {
       setExtraNote(v.extra_note || '');
       setShowExtra(!!Number(v.extra_amount));
       setSupNo(v.supplier_invoice_no || '');
+      // A bill being re-opened was filled in the day it was written, so its
+      // header starts folded and the goods get the whole screen.
+      setHeadOpen(false);
       if (v.supplier_invoice_date) setSupDateText(showDate(v.supplier_invoice_date));
       // The store the goods really moved through, not today's default.
       if (v.godown_id) setGodown(v.godown_id);
@@ -464,13 +513,27 @@ export default function BillScreen({ route, navigation }) {
     return isBuy ? k === 'supplier' : k === 'customer';
   };
 
-  const custHits = cq.trim()
-    ? parties.filter((p) => {
-        const s = cashInfo.name.toLowerCase();
-        if (!s || !forThisBill(p)) return false;
-        return p.name.toLowerCase().indexOf(s) > -1 || String(p.phone || '').indexOf(s) > -1;
-      }).slice(0, 8)
-    : [];
+  // AN EMPTY BOX SHOWS THE BOOK, IT DOES NOT SHOW NOTHING.
+  //
+  // This listed names only once he had typed something, so the page opened on
+  // a box and a blank space beneath it. His own app lists everybody from the
+  // first moment -- which is what a man wants nine times in ten, because the
+  // customer he is billing is one of the same twenty people, and tapping a name
+  // is quicker than typing it.
+  //
+  // More of them are offered when nothing is typed, because the list IS the
+  // screen then; once he is filtering, eight is plenty.
+  const custHits = useMemo(() => {
+    const mine = parties.filter(forThisBill);
+    const s = cashInfo.name.toLowerCase();
+    if (!cq.trim() || !s) {
+      return mine.slice().sort((a, b) => a.name.localeCompare(b.name)).slice(0, 40);
+    }
+    return mine.filter((p) => p.name.toLowerCase().indexOf(s) > -1
+                           || String(p.phone || '').indexOf(s) > -1).slice(0, 8);
+    // Sorting a shop's whole customer book on every keystroke is work nobody
+    // asked for; it only changes when the book, or what he typed, does.
+  }, [parties, cq, cashInfo.name, isBuy]);
 
   const chooseCust = (p) => {
     setCust(p); setIsCash(cashInfo.isCash); setCustOpen(false);
@@ -489,6 +552,84 @@ export default function BillScreen({ route, navigation }) {
   //
   // No customer row is written for him. A walk-in with no name is not a name
   // to keep, and a book full of "CASH" is a book nobody can read.
+  // THE NAME BOX, WRITTEN ONCE AND SHOWN IN TWO PLACES.
+  //
+  // On the page while the bill has no name on it, and in a sheet when he taps
+  // the name in the title bar to change it. It is one function rather than two
+  // copies, because a picker that behaves differently depending on where it is
+  // drawn is how the two halves drift apart.
+  const custPicker = ({ inline }) => (
+    <>
+      <TextInput
+        ref={inline ? custRef : custSheetRef}
+        autoFocus={inline}
+        style={[S.input, inline ? { marginTop: 8 } : { marginTop: 14 }]}
+        placeholder={isOut ? 'Type the customer name' : 'Type the supplier name'}
+        placeholderTextColor={C.faint}
+        returnKeyType="next" submitBehavior="submit"
+        onSubmitEditing={() => {
+          // A NAME THAT MATCHES NOTHING IS A NEW CUSTOMER.
+          //
+          // Pressing next used to do nothing at all when the list was empty, so
+          // a name nobody has bought from before was a dead end — he had to
+          // find the + button with his other hand. Anything typed that matches
+          // nobody now opens the new-customer sheet with the name already in it.
+          if (custHits.length) return chooseCust(custHits[0]);
+          if (cashInfo.name) return newCust();
+          if (cashWalkIn) return startWalkIn();
+          if (cq.trim().length >= 2) return newCust();
+        }}
+        value={cq} onChangeText={setCq} />
+
+      {isOut && cashInfo.isCash && (
+        <Text style={{ marginTop: 8, fontSize: 12.5, fontWeight: '700', color: C.green }}>
+          Cash sale{cashInfo.name ? ` · ${cashInfo.name}'s name prints on the bill` : ''}
+        </Text>
+      )}
+
+      <ScrollView keyboardShouldPersistTaps="handled" nestedScrollEnabled
+        style={inline ? { maxHeight: 330, marginTop: 8 } : { marginTop: 12, flexShrink: 1 }}>
+        {custHits.map((p) => (
+          <TouchableOpacity key={p.id} onPress={() => chooseCust(p)}
+            style={{ paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: C.line }}>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: C.ink }}>{p.name}</Text>
+            <Text style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+              {[p.phone, p.state_name].filter(Boolean).join(' · ')}
+            </Text>
+          </TouchableOpacity>
+        ))}
+        {cashWalkIn && (
+          <TouchableOpacity onPress={startWalkIn}
+            style={{ paddingVertical: 15, marginTop: 8, borderRadius: 12,
+                     backgroundColor: C.greenL, alignItems: 'center' }}>
+            <Text style={{ fontWeight: '800', color: C.green, fontSize: 15.5 }}>
+              Cash sale — go to the items
+            </Text>
+            <Text style={{ fontSize: 12, color: C.green, marginTop: 3 }}>
+              No name goes in your customer book
+            </Text>
+          </TouchableOpacity>
+        )}
+        {!!cashInfo.name && (
+          <TouchableOpacity onPress={newCust}
+            style={{ paddingVertical: 14, marginTop: 8, borderRadius: 12,
+                     backgroundColor: C.greenL, paddingHorizontal: 13 }}>
+            <Text style={{ fontSize: 15, fontWeight: '800', color: C.greenD }}>
+              + Bill “{cashInfo.name}” as a new {isBuy ? 'supplier' : 'customer'}
+            </Text>
+          </TouchableOpacity>
+        )}
+        {!custHits.length && (
+          <Text style={{ fontSize: 13, color: C.muted, marginTop: 14, lineHeight: 19 }}>
+            {cq.trim() ? 'Nobody of that name yet — press the tab key to add them.'
+                       : 'Type a name or a phone number.'}
+            {isOut ? '\nFor a cash sale, type CASH, or CASH and the name.' : ''}
+          </Text>
+        )}
+      </ScrollView>
+    </>
+  );
+
   const cashWalkIn = isOut && cashInfo.isCash && !cashInfo.name;
   const startWalkIn = () => {
     setCust({ name: 'CASH', walkIn: true });
@@ -606,19 +747,58 @@ export default function BillScreen({ route, navigation }) {
   // that never turns this on sees exactly what it saw before.
   const wantRail = showThumbRail(org);
   const [sel, setSel] = useState(0);
+  // which row has been asked "where is it?", if any
+  const [whereOpen, setWhereOpen] = useState(null);
   const hitsRef = useRef(null);
 
   // A new search is a new list, so the highlight goes back to the top. It is
   // also clamped, because a list can get shorter under it while he types.
-  useEffect(() => { setSel(0); }, [q]);
+  useEffect(() => { setSel(0); setWhereOpen(null); rowAt.current = {}; seenY.current = 0; }, [q]);
   const at = hits.length ? Math.min(sel, hits.length - 1) : 0;
+
+  // WHERE EACH ROW ACTUALLY IS, MEASURED RATHER THAN ASSUMED.
+  //
+  // "When we tap on floating arrow, the selection goes down, but the rows
+  // remain there itself, so after 3 taps, the selection hides behind keypad."
+  //
+  // The scroll was `n * 56 - 112`: a guess that every row is 56 points tall.
+  // They are not. A row for an item held at the other store carries a second
+  // line under it with the store on it and is half again as tall -- so in a
+  // two-store shop the arithmetic drifted further out with every tap, and the
+  // highlight walked off the bottom of the window while the list sat still.
+  // Which is precisely the shop this feature was built for.
+  //
+  // So each row says where it is and how tall it is as it is laid out, the
+  // window says how tall IT is, and the list is moved only as far as it takes
+  // to bring the highlighted row inside -- never past it, so the page does not
+  // jump about under his thumb.
+  const rowAt = useRef({});      // where each row starts, and how tall it is
+  const boxH = useRef(0);        // how tall the window over the list is
+  const seenY = useRef(0);       // how far down the list is scrolled now
+
+  const showRow = (n) => {
+    const r = rowAt.current[n];
+    const box = boxH.current;
+    if (!r || !box) {
+      // nothing measured yet, on the very first tap: the old guess will do,
+      // and the next tap has real figures to work with
+      hitsRef.current?.scrollTo({ y: Math.max(0, n * 56 - 112), animated: true });
+      return;
+    }
+    const pad = 6;
+    const top = seenY.current;
+    if (r.y < top + pad) {
+      hitsRef.current?.scrollTo({ y: Math.max(0, r.y - pad), animated: true });
+    } else if (r.y + r.h > top + box - pad) {
+      hitsRef.current?.scrollTo({ y: Math.max(0, r.y + r.h - box + pad), animated: true });
+    }
+  };
 
   const walk = () => {
     if (!hits.length) return;
     const n = (at + 1) % hits.length;
     setSel(n);
-    // keep the highlighted row in the window without moving the page
-    hitsRef.current?.scrollTo({ y: Math.max(0, n * 56 - 112), animated: true });
+    showRow(n);
   };
 
   const takeSel = () => {
@@ -860,9 +1040,21 @@ export default function BillScreen({ route, navigation }) {
   // exactly the promise a shopkeeper must not make. With a store chosen, the
   // figure is that store's. With none chosen, or only one store kept, it is
   // the firm's. `null` back means the figures are not in yet.
+  // A STORE WITH NOTHING IN IT IS NOT THE WHOLE SHOP.
+  //
+  // This read `if (godown && stock.at[godown])` -- and `stock.at` only gets a
+  // key for a store that had at least one row of stock in it. So the moment his
+  // small store ran out of everything, or on a store just created, the test
+  // fell through and every row reported THE FIRM'S TOTAL as available here:
+  // "240 here" with all 240 of them three miles away. That is the one promise
+  // the comment above this function says must never be made, and it was being
+  // made in exactly the shop that most needed it not to be.
+  //
+  // The question is whether stock is being kept store by store at all, not
+  // whether this store happens to have something in it today.
   const haveOf = (id) => {
     if (!stock || !id) return null;
-    if (godown && stock.at[godown]) return num(stock.at[godown][id] || 0);
+    if (stock.byStore && godown) return num((stock.at[godown] || {})[id] || 0);
     return num(stock.all[id] || 0);
   };
 
@@ -978,19 +1170,37 @@ export default function BillScreen({ route, navigation }) {
       : { ...x, expiry: iso, expiryText: showDate(iso) })));
   };
 
+  // CHANGE ITEM READS THE SAME WAY THE SEARCH BAR DOES.
+  //
+  // "When we click on Change item, same kind of search bar will be more
+  // useful." It was a plain list of names -- no unit, no stock, no quantity --
+  // so choosing between "Steel Utensils (A)" and "Steel Utensils (M)" meant
+  // remembering which one he had any of. It is the same reader as the bar now:
+  // it takes "balty 5" and changes the item AND the quantity in one go, and
+  // every row says what is on the shelf here the way the bar's rows do.
+  const swapAsked = useMemo(() => parseQuery(sq), [sq]);
   const swapHits = useMemo(
     () => (swapFor == null ? [] : searchItems(items, sq || ' ', 12)), [items, sq, swapFor]);
 
-  // Swap the product, keep the quantity, take the new rate.
-  const doSwap = (h) => {
-    setLine(swapFor, {
+  // Swap the product, keep the quantity unless he typed a new one, take the
+  // new rate.
+  const doSwap = (h, storeId) => {
+    const patch = {
       item_id: h.p.id, item_name: h.p.name, hsn: h.p.hsn || '', unit: h.p.unit || 'PCS',
       gst_rate: Number(h.p.gst_rate) || 0,
       supply: supplyOf(h.p),
       rate: String(listRate(h.p) || ''),
       rateGuessed: !isBuy && rateIsGuessed(h.p, priceList),
       rateEdited: false,
-    });
+    };
+    // A figure typed after the name is a new quantity, exactly as it is in the
+    // bar above. `h.qty` is what the reader found on the row itself.
+    const asked = h.qty != null ? h.qty : swapAsked.qty;
+    if (asked != null && asked > 0) patch.qty = String(asked);
+    // And if he picked it out of a particular store, the line goes to that
+    // store -- otherwise it follows the bill, as it always did.
+    if (storeId !== undefined) patch.godown_id = storeId === godown ? null : storeId;
+    setLine(swapFor, patch);
     setSwapFor(null); setSq('');
   };
 
@@ -1285,7 +1495,10 @@ export default function BillScreen({ route, navigation }) {
         // A SALE CARRIES THE DAY HE SAYS. A purchase carries the day it was
         // entered -- goods received in September against a July bill belong
         // in September, and their own date is kept on its own column.
-        vdate: isBuy && !editId ? today() : (vdate || today()),
+        // A purchase carries the day it went into the books, which he can now
+        // set himself -- it defaults to today, so nothing changes for a man who
+        // never touches it. Its own bill date is kept on its own column.
+        vdate: vdate || today(),
         party_id: pty?.id || null, printed_name: cust.name, is_cash: isCash,
         supplier_invoice_no: isBuy ? supNo : null,
         supplier_invoice_date: isBuy ? supDate : null,
@@ -1390,6 +1603,10 @@ export default function BillScreen({ route, navigation }) {
       newParty.current = null; newItems.current = []; billId.current = null;
       if (holdOnly) { setSaved(null); goHome(navigation); }
       else setSaved(rec);
+      // The series has moved on. Ask again, so the next bill's number on the
+      // bar is the next bill's number and not this one's.
+      setPeekNo('');
+      askTheNumber();
     } catch (e) {
       // IF THE BOOKS WERE ALREADY WRITTEN, SAYING "could not save" IS A LIE,
       // and he answers it by writing the bill again. Tell him where it stands.
@@ -1511,11 +1728,34 @@ export default function BillScreen({ route, navigation }) {
   // What this bill will be numbered. An edit already has its number; a new
   // one gets the next in the series, with the prefix and the year the shop
   // has set, the same shape takeLocalNumber and the server both produce.
-  const nextNo = useMemo(() => {
-    if (editId) return loadedNo || '';
+  // THE NUMBER ON THE BAR IS THE NUMBER THAT GETS PRINTED.
+  //
+  // "In top Bar we see new Bill No 26-27/1, but we actually print other
+  // number." It was guessing, out of the copy of the firm the app loaded when
+  // it started -- and nothing reloads that after a bill is saved, so it said
+  // 26-27/1 for every bill written all session while the server handed out
+  // 1, 2, 3, 4. Three more ways the guess could be wrong even when fresh:
+  //
+  //   · it used the phone's idea of today while the server keys the series off
+  //     the BILL's date, so a bill backdated to 31 March got 25-26/n
+  //   · sales and estimates share one uniqueness check but count separately, so
+  //     an estimate numbered 5 makes the next sale skip past 5 in silence
+  //   · an offline bill and an imported bill both advance the real series
+  //     without touching the figure the guess was reading
+  //
+  // So it asks the server instead. peek_invoice_no() is the allocator's twin
+  // with every write taken out -- same year, same prefix, same rules, and it
+  // consumes nothing, so it can be asked as often as the screen likes. It is
+  // asked when the screen comes to the front, when the bill's date moves, and
+  // after each save.
+  //
+  // The old guess is still here as a fallback, for a phone updated ahead of its
+  // database. A number that is sometimes wrong beats no number at all.
+  const [peekNo, setPeekNo] = useState('');
+  const guessNo = useMemo(() => {
     const est = vtype === 'estimate';
     const n = Number(est ? org?.next_estimate_no : org?.next_invoice_no) || 0;
-    if (!n || isBuy) return '';
+    if (!n) return '';
     let pre = (est ? org?.estimate_prefix : org?.invoice_prefix) || '';
     if (org?.restart_each_year && org?.year_in_prefix !== false) {
       const d = new Date();
@@ -1523,8 +1763,25 @@ export default function BillScreen({ route, navigation }) {
       pre += `${String(y).slice(2)}-${String(y + 1).slice(2)}/`;
     }
     return `${pre}${n}`;
-  }, [editId, loadedNo, vtype, isBuy, org?.next_invoice_no, org?.next_estimate_no,
+  }, [vtype, org?.next_invoice_no, org?.next_estimate_no,
       org?.invoice_prefix, org?.estimate_prefix, org?.restart_each_year, org?.year_in_prefix]);
+
+  const askTheNumber = useCallback(async () => {
+    if (editId || isBuy) return;
+    try {
+      const { data, error } = await supabase.rpc('peek_invoice_no',
+        { p_date: vdate || today(), p_kind: vtype === 'estimate' ? 'estimate' : 'sale' });
+      if (!error && data) setPeekNo(String(data));
+    } catch (e) { /* no signal: the guess below stands */ }
+  }, [editId, isBuy, vtype, vdate]);
+
+  useFocusEffect(useCallback(() => { askTheNumber(); }, [askTheNumber]));
+
+  const nextNo = useMemo(() => {
+    if (editId) return loadedNo || '';
+    if (isBuy) return '';
+    return peekNo || guessNo;
+  }, [editId, loadedNo, isBuy, peekNo, guessNo]);
 
   const docName = editId
     ? (vtype === 'estimate' ? 'Editing estimate' : isBuy ? 'Editing purchase' : 'Editing bill')
@@ -1534,7 +1791,22 @@ export default function BillScreen({ route, navigation }) {
 
   // One way out, used by both the arrow and the phone's own back button, so the
   // two never disagree. A bill with lines on it is never thrown away silently.
-  const leave = () => {
+  // THE PHONE'S BACK BUTTON, WITH THE CURSOR IN A BOX.
+  //
+  // "When cursor is on top name bar, and we press back button, we are unable
+  // to do that." Quite: every branch below returns true, which tells Android
+  // the press has been dealt with -- and React Native only closes the keyboard
+  // on back when nothing else claims the press. So with the cursor in the item
+  // box, back either did nothing he could see or threw up "Leave this bill?"
+  // over a bill he was in the middle of writing, and there was no way to just
+  // put the keyboard away.
+  //
+  // Back now does what it does everywhere else on a phone: the first press
+  // closes the keyboard, the second leaves. `hardware` is true only for the
+  // phone's own button -- tapping the arrow at the top of the screen means
+  // leave, and always did.
+  const leave = (hardware) => {
+    if (hardware && keyGap > 0) { Keyboard.dismiss(); return true; }
     if (quick)          { setQuick(null);   return true; }
     if (swapFor != null){ setSwapFor(null); return true; }
     if (saved)          { return true; }              // already saved: use Done
@@ -1568,11 +1840,16 @@ export default function BillScreen({ route, navigation }) {
   //
   // The handler is read through a ref so it always runs the newest `leave`
   // without the listener being torn down and rebuilt on every keystroke.
+  // ONCE A NAME IS PICKED the cursor goes to the goods, and chooseCust,
+  // startWalkIn and newCust each do that themselves -- one call, from the thing
+  // that knows the name has been settled. An effect here as well would be two
+  // things reaching for the cursor on one tap.
+
   const leaveRef = useRef(leave);
   leaveRef.current = leave;
   useFocusEffect(useCallback(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress',
-      () => leaveRef.current());
+      () => leaveRef.current(true));
     return () => sub.remove();
   }, []));
 
@@ -1598,13 +1875,27 @@ export default function BillScreen({ route, navigation }) {
             document this is, its number, and what it comes to. */}
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text numberOfLines={1} style={S.barName}>
-            {docName}{nextNo ? `  ·  ${nextNo}` : ''}
+            {docName}
           </Text>
-          {keyGap === 0 && !!cust && (
+          {/* THE NUMBER AND THE NAME, ON ONE LINE, WITH A PENCIL.
+              *
+              * Once a name is on the bill the card below goes away, so this is
+              * where the name lives -- beside the bill number, where he can see
+              * it without it costing a line of the goods, and tappable for the
+              * one bill in fifty made out to the wrong man. The pencil is there
+              * so it reads as something that can be changed rather than as a
+              * heading. */}
+          <TouchableOpacity onPress={() => { setCq(''); setCustOpen(true); }}
+            disabled={!cust}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text numberOfLines={1} style={S.barSub}>
-              {isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name}
+              {nextNo || ''}
+              {nextNo && cust ? '  ·  ' : ''}
+              {cust
+                ? `${isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name}  ✎`
+                : ''}
             </Text>
-          )}
+          </TouchableOpacity>
         </View>
         {/* CASH OR UDHAR, SAID OUT LOUD.
             This was decided only by whether he happened to type "cash" in
@@ -1677,7 +1968,40 @@ export default function BillScreen({ route, navigation }) {
         </View>
       )}
 
-      {isBuy && !!cust && (
+      {/* THE HEAD OF A PURCHASE, FOLDED AWAY ONCE IT IS WRITTEN.
+          *
+          * "Once we enter suppliers Bill Number, Date, Supplier Name, we should
+          * be able to press done, and this hides the fields, and small edit
+          * button appears, so that if we need to change anything, we can
+          * reactivate that field, doing this will give us more space."
+          *
+          * Three boxes and two lines of explanation sat above the goods for the
+          * whole of a purchase -- a third of a phone screen, on the one entry
+          * where the list of goods is longest. They are filled in once, at the
+          * start, off the paper in his hand, and then they are just furniture.
+          *
+          * So: Done folds them into one line, and the line can be tapped to
+          * open them again. It folds itself when he moves to the goods, because
+          * a man who has started typing item names has finished with the header
+          * whether or not he pressed anything.
+          */}
+      {isBuy && !!cust && !headOpen && (
+        <TouchableOpacity onPress={() => setHeadOpen(true)}
+          style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
+                   borderBottomWidth: 1, borderBottomColor: C.line }}>
+          <View style={[S.row, { alignItems: 'center', gap: 8 }]}>
+            <Text numberOfLines={1} style={{ flex: 1, fontSize: 12.5, color: C.muted }}>
+              <Text style={{ fontWeight: '800', color: C.ink }}>{cust.name}</Text>
+              {supNo ? `  \u00b7  his bill ${supNo}` : '  \u00b7  no bill number'}
+              {supDate ? `  \u00b7  ${showDate(supDate)}` : ''}
+              {vdate && vdate !== today() ? `  \u00b7  entered ${showDate(vdate)}` : ''}
+            </Text>
+            <Text style={{ fontSize: 12.5, fontWeight: '800', color: C.green }}>edit</Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
+      {isBuy && !!cust && headOpen && (
         <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingTop: 10,
                        paddingBottom: 4, borderBottomWidth: 1, borderBottomColor: C.line }}>
           <View style={[S.row, { gap: 10, alignItems: 'flex-start' }]}>
@@ -1708,10 +2032,47 @@ export default function BillScreen({ route, navigation }) {
               </View>
             </View>
           </View>
-          <Text style={[S.hint, { marginBottom: 8 }]}>
-            The date printed on HIS bill. Your own books use the day you enter
-            it, so a July bill entered today does not land back in July.
+          {/* AND THE DAY IT GOES INTO HIS OWN BOOKS.
+              *
+              * "Also we should be able to provide date of entry, as we might
+              * enter transaction in some other date." A purchase has always
+              * taken the day it was entered, on purpose -- a July bill entered
+              * in September belongs in September, not back in a filed month --
+              * but "the day it was entered" was whatever day he got to the
+              * phone. Goods received on Saturday and typed on Monday belonged
+              * to Saturday. So it is a figure he can set, defaulting to today,
+              * fenced by the same rules a sale's date is: nothing in a month he
+              * has closed, and nothing in the future.
+              */}
+          <View style={[S.row, { alignItems: 'center', gap: 10, marginTop: 4,
+                                 marginBottom: 8 }]}>
+            <Text style={[S.cellLabel, { flex: 0 }]}>ENTERED</Text>
+            <Text style={[{ fontSize: 14.5, fontWeight: '700', color: C.ink }, S.num]}>
+              {showDate(vdate)}
+            </Text>
+            <TouchableOpacity onPress={() => setDateCal(true)}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+              <Text style={{ fontSize: 13, fontWeight: '800', color: C.green }}>change</Text>
+            </TouchableOpacity>
+            <View style={{ flex: 1 }} />
+            {vdate !== today() && (
+              <Text style={{ fontSize: 11.5, fontWeight: '700', color: C.muted }}>not today</Text>
+            )}
+          </View>
+
+          <Text style={[S.hint, { marginBottom: 6 }]}>
+            His bill's own date is for the law and for matching 2B. Your books use
+            the ENTERED day, so a July bill entered now does not land back in July.
           </Text>
+
+          <TouchableOpacity onPress={() => { setHeadOpen(false); qRef.current?.focus(); }}
+            style={{ alignSelf: 'flex-start', marginBottom: 10, paddingHorizontal: 14,
+                     paddingVertical: 8, borderRadius: 9, borderWidth: 1,
+                     borderColor: C.accent, backgroundColor: C.accentSoft }}>
+            <Text style={{ fontSize: 13, fontWeight: '800', color: C.accent }}>
+              Done — on to the goods
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -1724,31 +2085,6 @@ export default function BillScreen({ route, navigation }) {
       {(
         <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingVertical: 8,
                        borderBottomWidth: 1, borderBottomColor: C.line }}>
-
-          {/* WHO IT IS FOR. Empty, it is outlined in the accent colour and
-              says what it wants; filled, it goes quiet and shows the name. */}
-          <TouchableOpacity onPress={() => setCustOpen(true)} activeOpacity={0.7}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 10,
-                     paddingHorizontal: 12, paddingVertical: 10, marginBottom: 8,
-                     borderRadius: 11, borderWidth: 1.5,
-                     borderColor: cust ? C.line : C.accent,
-                     backgroundColor: cust ? C.card : C.accentSoft }}>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ fontSize: 10.5, letterSpacing: 0.8, fontWeight: '700',
-                             color: cust ? C.muted : C.accent }}>
-                {isBuy ? 'SUPPLIER' : 'CUSTOMER'}
-              </Text>
-              <Text numberOfLines={1}
-                style={{ fontSize: 16, fontWeight: '700', marginTop: 1,
-                         color: cust ? C.ink : C.accent }}>
-                {cust
-                  ? (isCash ? `CASH ${cust.name}`.replace(/^CASH CASH$/, 'CASH') : cust.name)
-                  : (isBuy ? 'Choose a supplier' : 'Choose a customer')}
-              </Text>
-            </View>
-            <Text style={{ fontSize: 20, fontWeight: '700',
-                           color: cust ? C.muted : C.accent }}>›</Text>
-          </TouchableOpacity>
 
           <TextInput
             ref={qRef}
@@ -1766,6 +2102,23 @@ export default function BillScreen({ route, navigation }) {
               if (k === 'Tab') { e.preventDefault?.(); takeSel(); }
               else if (k === 'ArrowDown') { e.preventDefault?.(); walk(); }
             }} />
+
+          {/* THE NAME, ON THE PAGE, WITH THE NAMES UNDER IT.
+              *
+              * Shown only while the bill has no name on it. The moment one is
+              * picked this whole card goes, the name appears in the title bar
+              * with a pencil beside it, and the goods have the screen. */}
+          {!cust && (
+            <View style={{ marginTop: 10, borderWidth: 1.5, borderColor: C.line,
+                           borderRadius: 12, backgroundColor: C.card,
+                           paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12 }}>
+              <Text style={{ fontSize: 10.5, letterSpacing: 0.8, fontWeight: '700',
+                             color: C.muted }}>
+                {isBuy ? 'SUPPLIER' : 'CUSTOMER'}
+              </Text>
+              {custPicker({ inline: true })}
+            </View>
+          )}
 
           {/* A CODE STILL LOOKING FOR ITS ITEM.
               He said "find the item", the sheet shut, and then there was
@@ -1811,12 +2164,31 @@ export default function BillScreen({ route, navigation }) {
             </TouchableOpacity>
           )}
 
+          {/* WHICH STORE THESE FIGURES ARE, SAID ONCE.
+              Every row used to end in the word "here", forty times down a list,
+              and "here" never said where here was. The store is named once
+              above the list instead, and the rows are left to be figures. */}
+          {!!q.trim() && godowns.length >= 2 && !!stock?.byStore && !!godown && (
+            <Text style={{ fontSize: 11, color: C.muted, marginTop: 7 }}>
+              {'Billing from '}
+              <Text style={{ fontWeight: '800', color: C.ink }}>{godownName(godown)}</Text>
+              {' \u00b7 tap a figure to see where the rest is'}
+            </Text>
+          )}
+
           {!!q.trim() && (
             <View style={{ marginTop: 6, maxHeight: 280, borderWidth: 1, borderColor: C.line,
                            borderRadius: 9, backgroundColor: C.surface, overflow: 'hidden' }}>
-              <ScrollView ref={hitsRef} keyboardShouldPersistTaps="handled">
+              <ScrollView ref={hitsRef} keyboardShouldPersistTaps="handled"
+                scrollEventThrottle={16}
+                onLayout={(e) => { boxH.current = e.nativeEvent.layout.height; }}
+                onScroll={(e) => { seenY.current = e.nativeEvent.contentOffset.y; }}>
                 {hits.map((h, hi) => (
-                  <View key={h.p.id}>
+                  <View key={h.p.id}
+                    onLayout={(e) => {
+                      const { y, height } = e.nativeEvent.layout;
+                      rowAt.current[hi] = { y, h: height };
+                    }}>
                   <TouchableOpacity onPress={() => addHit(h)}
                     style={[S.hit, wantRail && hi === at && {
                       backgroundColor: C.accentSoft,
@@ -1847,22 +2219,42 @@ export default function BillScreen({ route, navigation }) {
                             </Text>
                           </>
                         );
-                        const all = totalOf(h.p.id);
-                        const elsewhere = all - here;
+                        // WHERE IT IS, BEHIND A TAP.
+                        //
+                        // He picked this shape out of five. The row stays a row
+                        // -- one figure, this store's -- and what is at the
+                        // other store waits behind a small word he can tap,
+                        // instead of a second figure competing with the first on
+                        // every line of a list he reads forty times a day.
+                        //
+                        // "elsewhere" is gone. It was the one word that hid the
+                        // answer: it never said WHICH store, and it counted
+                        // goods sitting at no store at all, so a row could
+                        // offer 46 elsewhere and then no store to fetch them
+                        // from.
+                        const where = whereItIs(h.p.id).filter((g) => g.qty > 0);
+                        const others = where.filter((g) => g.id !== godown);
+                        const many = godowns.length >= 2 && stock.byStore;
                         return (
                           <>
                             <Text style={[S.hitPr, S.num, here <= 0 && { color: C.red }]}>
                               {qty(here)}
                             </Text>
                             <Text style={{ fontSize: 10, color: here <= 0 ? C.red : C.muted }}>
-                              {uqcShort(h.p.unit)} here
+                              {uqcShort(h.p.unit)}
                             </Text>
-                            {/* WHAT IS AT THE OTHER STORE, said plainly rather
-                                than left to look like nothing. */}
-                            {elsewhere > 0 && (
-                              <Text style={{ fontSize: 10, color: C.accent, marginTop: 1 }}>
-                                {qty(elsewhere)} elsewhere
-                              </Text>
+                            {many && (
+                              <TouchableOpacity
+                                onPress={() => setWhereOpen(whereOpen === h.p.id ? null : h.p.id)}
+                                hitSlop={{ top: 8, bottom: 8, left: 10, right: 10 }}>
+                                <Text style={{ fontSize: 10, marginTop: 2, fontWeight: '700',
+                                               color: others.length ? C.accent : C.faint }}>
+                                  {!where.length ? 'nowhere'
+                                    : !others.length ? 'here only'
+                                    : `${others.length + (here > 0 ? 1 : 0)} store${
+                                        others.length + (here > 0 ? 1 : 0) === 1 ? '' : 's'} ${'\u203A'}`}
+                                </Text>
+                              </TouchableOpacity>
                             )}
                           </>
                         );
@@ -1870,39 +2262,60 @@ export default function BillScreen({ route, navigation }) {
                     </View>
                   </TouchableOpacity>
 
-                  {/* ONE TAP TO THE STORE THAT ACTUALLY HAS IT.
+                  {/* AND WHAT IS BEHIND THE TAP.
                       *
-                      * "If we have stock of a particular item in another
-                      * godown, not the default one, we generally won't bill
-                      * them." Quite — so rather than making him go and look,
-                      * the row says where it is and puts the line there, with
-                      * the store already set on it.
+                      * Every store that has any of it, with how much, and a
+                      * button that writes the line against that store -- so
+                      * "we generally won't bill them" stops being true: the
+                      * goods at the other store are one tap from being on this
+                      * bill, with the store already set on the line.
                       *
-                      * Only shown when this store is short and another is not,
-                      * which is the only moment it is any use.
+                      * It opens only for the row he asked about, and closes when
+                      * he asks again or picks anything, so the list never grows
+                      * two panels deep.
                       */}
-                  {(() => {
-                    if (!stock || godowns.length < 2) return null;
-                    const here = haveOf(h.p.id);
-                    if (here === null || here > 0) return null;
-                    const other = whereItIs(h.p.id).filter((g) => g.id !== godown);
-                    if (!other.length) return null;
+                  {whereOpen === h.p.id && (() => {
+                    const where = whereItIs(h.p.id).filter((g) => g.qty > 0);
+                    const loose = num(stock.all[h.p.id] || 0)
+                                - where.reduce((t, g) => t + g.qty, 0);
                     return (
-                      <View style={[S.row, { gap: 6, flexWrap: 'wrap',
-                                             paddingHorizontal: 12, paddingBottom: 10,
-                                             marginTop: -4 }]}>
-                        {other.slice(0, 3).map((g) => (
-                          <TouchableOpacity key={g.id}
-                            onPress={() => addHit(h, g.id)}
-                            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
-                            style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
-                                     borderWidth: 1, borderColor: C.accent,
-                                     backgroundColor: C.accentSoft }}>
-                            <Text style={{ fontSize: 11.5, fontWeight: '800', color: C.accent }}>
-                              {qty(g.qty)} in {g.name}  {'\u2192'}
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
+                      <View style={{ paddingHorizontal: 12, paddingBottom: 11, marginTop: -2,
+                                     borderTopWidth: 1, borderTopColor: C.line, paddingTop: 9 }}>
+                        {!where.length && (
+                          <Text style={{ fontSize: 12, color: C.muted }}>
+                            None of this at any store.
+                          </Text>
+                        )}
+                        {where.map((g) => {
+                          const isHere = g.id === godown;
+                          return (
+                            <View key={g.id} style={[S.row, { alignItems: 'center', gap: 10,
+                                                              paddingVertical: 4 }]}>
+                              <Text numberOfLines={1}
+                                style={{ flex: 1, fontSize: 12.5, fontWeight: '700', color: C.ink }}>
+                                {g.name}{isHere ? '  (billing from here)' : ''}
+                              </Text>
+                              <Text style={[{ fontSize: 12.5, color: C.ink }, S.num]}>
+                                {qty(g.qty)} {uqcShort(h.p.unit)}
+                              </Text>
+                              <TouchableOpacity onPress={() => { setWhereOpen(null); addHit(h, g.id); }}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                style={{ paddingHorizontal: 9, paddingVertical: 5, borderRadius: 7,
+                                         borderWidth: 1, borderColor: C.accent,
+                                         backgroundColor: C.accentSoft }}>
+                                <Text style={{ fontSize: 11, fontWeight: '800', color: C.accent }}>
+                                  {isHere ? 'Add' : 'Bill from here'}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          );
+                        })}
+                        {loose > 0.0001 && (
+                          <Text style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 16 }}>
+                            {qty(loose)} {uqcShort(h.p.unit)} is not at any store yet — set a store
+                            on it under Stock before you bill it from one.
+                          </Text>
+                        )}
                       </View>
                     );
                   })()}
@@ -2055,16 +2468,68 @@ export default function BillScreen({ route, navigation }) {
               {swapFor === l.key && (
                 <View style={{ marginBottom: 9 }}>
                   <TextInput style={[S.input, { paddingVertical: 9 }]} autoFocus
-                    placeholder="Change to another item" value={sq} onChangeText={setSq}
+                    placeholder="Change to another item — balty 5" value={sq} onChangeText={setSq}
                     returnKeyType="next" submitBehavior="submit"
                     onSubmitEditing={() => { if (swapHits.length) doSwap(swapHits[0]); }} />
-                  <ScrollView style={{ maxHeight: 180 }} keyboardShouldPersistTaps="handled">
-                    {swapHits.map((h) => (
-                      <TouchableOpacity key={h.p.id} onPress={() => doSwap(h)}
-                        style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.line }}>
-                        <Text style={{ fontSize: 14.5, fontWeight: '700', color: C.ink }}>{h.p.name}</Text>
-                      </TouchableOpacity>
-                    ))}
+                  <ScrollView style={{ maxHeight: 200 }} keyboardShouldPersistTaps="handled">
+                    {swapHits.map((h) => {
+                      const here = haveOf(h.p.id);
+                      const where = whereItIs(h.p.id).filter((g) => g.qty > 0);
+                      const others = where.filter((g) => g.id !== godown);
+                      return (
+                        <View key={h.p.id}
+                          style={{ borderBottomWidth: 1, borderBottomColor: C.line }}>
+                          <TouchableOpacity onPress={() => doSwap(h)}
+                            style={[S.row, { paddingVertical: 10, gap: 8, alignItems: 'center' }]}>
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <View style={[S.row, { gap: 6 }]}>
+                                <Marked text={h.p.name} toks={h.toks}
+                                  style={[{ fontSize: 14.5, fontWeight: '700', color: C.ink,
+                                            flexShrink: 1 }]} />
+                                {h.qty != null && (
+                                  <Text style={[S.qbadge, S.num]}>&times; {h.qty}</Text>
+                                )}
+                              </View>
+                              <Text numberOfLines={1} style={S.hitSub}>
+                                {uqcShort(h.p.unit)}{h.p.alias ? ` \u00b7 ${h.p.alias}` : ''}
+                              </Text>
+                            </View>
+                            {here !== null ? (
+                              <View style={{ alignItems: 'flex-end' }}>
+                                <Text style={[{ fontSize: 14, fontWeight: '700' }, S.num,
+                                              here <= 0 && { color: C.red }]}>
+                                  {qty(here)}
+                                </Text>
+                                <Text style={{ fontSize: 10, color: here <= 0 ? C.red : C.muted }}>
+                                  {uqcShort(h.p.unit)}
+                                </Text>
+                              </View>
+                            ) : (
+                              <Text style={[{ fontSize: 14, color: C.muted }, S.num]}>
+                                {fmt0(listRate(h.p))}
+                              </Text>
+                            )}
+                          </TouchableOpacity>
+                          {/* and the other store, one tap away, same as the bar */}
+                          {here !== null && here <= 0 && !!others.length && (
+                            <View style={[S.row, { gap: 6, flexWrap: 'wrap', paddingBottom: 9,
+                                                   marginTop: -3 }]}>
+                              {others.slice(0, 2).map((g) => (
+                                <TouchableOpacity key={g.id} onPress={() => doSwap(h, g.id)}
+                                  hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                                  style={{ paddingHorizontal: 9, paddingVertical: 5, borderRadius: 7,
+                                           borderWidth: 1, borderColor: C.accent,
+                                           backgroundColor: C.accentSoft }}>
+                                  <Text style={{ fontSize: 11, fontWeight: '800', color: C.accent }}>
+                                    {qty(g.qty)} in {g.name}  {'\u2192'}
+                                  </Text>
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
                   </ScrollView>
                   <TouchableOpacity onPress={() => setSwapFor(null)} style={{ paddingVertical: 8 }}>
                     <Text style={{ fontWeight: '700', color: C.muted }}>Keep this one</Text>
@@ -2315,7 +2780,7 @@ export default function BillScreen({ route, navigation }) {
                   onSubmitEditing={() => xRef.current?.focus()} />
                 <TextInput style={[S.input, { width: 110 }, S.num]} ref={xRef}
                   keyboardType="numeric" placeholder="0" value={extra} onChangeText={setExtra}
-                  returnKeyType="done" onBlur={() => setExtra(settle(extra))} />
+                  returnKeyType="next" onBlur={() => setExtra(settle(extra))} />
               </View>
             )}
 
@@ -2353,7 +2818,7 @@ export default function BillScreen({ route, navigation }) {
                 keyboardType="numeric" placeholder="0" placeholderTextColor={C.faint}
                 selectTextOnFocus value={less}
                 onChangeText={setLess} onBlur={() => setLess(settle(less))}
-                returnKeyType="done" />
+                returnKeyType="next" />
             </View>
             {discAsked > discTotal && (
               <Text style={{ fontSize: 11.5, color: C.flagInk, marginBottom: 4 }}>
@@ -2556,6 +3021,7 @@ export default function BillScreen({ route, navigation }) {
           * a new bill cannot be left with nobody on it by a stray tap.
           */}
       <TopSheet visible={custOpen}
+        onShow={() => custSheetRef.current?.focus()}
         onClose={() => { if (cust) setCustOpen(false); }}
         onBackdrop={() => { if (cust) setCustOpen(false); }}>
           <View style={S.row}>
@@ -2567,69 +3033,7 @@ export default function BillScreen({ route, navigation }) {
               </Text>
             </TouchableOpacity>
           </View>
-          <TextInput style={[S.input, { marginTop: 14 }]} autoFocus
-            placeholder={isOut ? 'Name, phone, or CASH' : 'Supplier name or phone'}
-            placeholderTextColor={C.faint}
-            returnKeyType="next" submitBehavior="submit"
-            onSubmitEditing={() => {
-              // A NAME THAT MATCHES NOTHING IS A NEW CUSTOMER.
-              //
-              // Pressing next used to do nothing at all when the list was
-              // empty, so a name nobody has bought from before was a dead end
-              // — he had to find the + button with his other hand. Anything
-              // typed that matches nobody now opens the new-customer sheet
-              // with the name already in it.
-              if (custHits.length) return chooseCust(custHits[0]);
-              if (cashInfo.name) return newCust();
-              if (cashWalkIn) return startWalkIn();
-              if (cq.trim().length >= 2) return newCust();
-            }}
-            value={cq} onChangeText={setCq} />
-          {isOut && cashInfo.isCash && (
-            <Text style={{ marginTop: 8, fontSize: 12.5, fontWeight: '700', color: C.green }}>
-              Cash sale{cashInfo.name ? ` · ${cashInfo.name}'s name prints on the bill` : ''}
-            </Text>
-          )}
-          {!cq.trim() && (
-            <Text style={{ fontSize: 13.5, color: C.muted, marginTop: 20, lineHeight: 20 }}>
-              Start typing a name or a phone number.
-              {isOut ? '\nFor a cash sale, type CASH, or CASH and the name.' : ''}
-            </Text>
-          )}
-
-          <ScrollView keyboardShouldPersistTaps="handled"
-                      style={{ marginTop: 12, flexShrink: 1 }}>
-            {custHits.map((p) => (
-              <TouchableOpacity key={p.id} onPress={() => chooseCust(p)}
-                style={{ paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.line }}>
-                <Text style={{ fontSize: 16.5, fontWeight: '700', color: C.ink }}>{p.name}</Text>
-                <Text style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
-                  {[p.phone, p.state_name].filter(Boolean).join(' · ')}
-                </Text>
-              </TouchableOpacity>
-            ))}
-            {cashWalkIn && (
-              <TouchableOpacity onPress={startWalkIn}
-                style={{ paddingVertical: 17, marginTop: 8, borderRadius: 12,
-                         backgroundColor: C.greenL, alignItems: 'center' }}>
-                <Text style={{ fontWeight: '800', color: C.green, fontSize: 16 }}>
-                  Cash sale — go to the items
-                </Text>
-                <Text style={{ fontSize: 12, color: C.green, marginTop: 3 }}>
-                  No name goes in your customer book
-                </Text>
-              </TouchableOpacity>
-            )}
-            {!!cashInfo.name && (
-              <TouchableOpacity onPress={newCust}
-                style={{ paddingVertical: 15, marginTop: 8, borderRadius: 12, backgroundColor: C.greenL,
-                         paddingHorizontal: 13 }}>
-                <Text style={{ fontSize: 15, fontWeight: '800', color: C.greenD }}>
-                  + Bill “{cashInfo.name}” as a new {isBuy ? 'supplier' : 'customer'}
-                </Text>
-              </TouchableOpacity>
-            )}
-          </ScrollView>
+          {custPicker({ inline: false })}
       </TopSheet>
 
       {/* ---------- a name that is not in the book yet ---------- */}
@@ -2959,10 +3363,18 @@ export default function BillScreen({ route, navigation }) {
         </View>
       </Modal>
       {/* the days the numbering allows, and the reason in his own words */}
+      {/* A PURCHASE HAS NO NUMBERING WINDOW, so the server does not fence its
+          date at all -- but the books lock and the calendar do. Nothing in a
+          month he has closed, and nothing in the future: goods cannot have been
+          received on a day that has not happened. */}
       <Calendar visible={dateCal} value={vdate || today()}
-        min={win?.from} max={win?.to}
-        title={docName === 'Estimate' ? 'Date this estimate' : `Date this ${docName.toLowerCase()}`}
-        note={win?.why}
+        min={isBuy ? dayAfter(org?.books_locked_upto) : win?.from}
+        max={isBuy ? today() : win?.to}
+        title={isBuy ? 'The day this goes into your books'
+          : docName === 'Estimate' ? 'Date this estimate' : `Date this ${docName.toLowerCase()}`}
+        note={isBuy
+          ? 'Your books use this day. His own bill date stays where you typed it.'
+          : win?.why}
         onPick={(iso) => { setVdate(iso); setDateCal(false); }}
         onClose={() => setDateCal(false)} />
 

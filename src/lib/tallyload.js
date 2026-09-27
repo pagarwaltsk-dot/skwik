@@ -31,6 +31,52 @@
 // already written stays valid because each piece was written whole.
 
 import { guessUqc } from './uqc';
+import { STATES, codeForState } from './states';
+
+/* ============== WHERE A NAME IS, AND WHETHER HE IS REGISTERED ==============
+ *
+ * Every party an import created used to be given the shop's own state and no
+ * GST number. His fourteen Delhi suppliers all came in as Assam, and because
+ * a supplier with no GST number cannot have charged any, the next purchase he
+ * passed to one of them took no tax at all. Two lines of code, and his input
+ * credit was gone.
+ *
+ * THE GST NUMBER IS THE BETTER ANSWER WHEN THERE IS ONE. Its first two digits
+ * ARE the state, by law, so 07BFKPB0689A1ZS is Delhi whatever the file says
+ * elsewhere. Failing that, the state Tally wrote. Failing both, the shop's own
+ * state, which is what a walk-in customer is.
+ */
+
+// The two digits at the front of a GST number, when they are a real state.
+const codeInGstin = (g) => {
+  const two = String(g || '').trim().slice(0, 2);
+  return /^\d\d$/.test(two) && STATES[two] ? two : '';
+};
+
+// A state's code from the name Tally wrote, e.g. "Delhi" -> "07".
+const codeFor = (name) => {
+  const c = codeForState(name);
+  return c && STATES[c] ? String(c) : '';
+};
+
+// Where a party is, in the order the answers are worth trusting.
+const stateOf = (gstin, stateName, org) =>
+  codeInGstin(gstin) || codeFor(stateName) || String(org?.state_code || '');
+
+// A GST NUMBER, AND NEVER THE SHOP'S OWN.
+//
+// Tally writes the shop's own registration on every voucher, more than once and
+// under more than one name, and a number that is the shop's is not the party's
+// -- it is only proof that the file is this shop's file. Writing it onto a
+// customer would make him look registered, make his state the shop's, and put
+// the shop's own number on his bill.
+const cleanGstin = (g, ownGstin, org) => {
+  const t = String(g || '').trim().toUpperCase();
+  if (!/^[0-9]{2}[A-Z0-9]{13}$/.test(t)) return '';
+  const mine = [String(ownGstin || '').trim().toUpperCase(),
+                String(org?.gstin || '').trim().toUpperCase()].filter(Boolean);
+  return mine.includes(t) ? '' : t;
+};
 
 /* ===================== the same id, every time ===================== */
 
@@ -122,8 +168,28 @@ export function planLoad(book, have = {}) {
     if (!k || godowns.has(k) || newGodowns.has(k)) return;
     newGodowns.set(k, { name });
   };
-  const wantParty = (name, kind) => {
+  // WHAT THE FILE KNOWS ABOUT A NAME, whether or not the name is new.
+  //
+  // A name already in the shop is never overwritten -- but it can be FILLED
+  // IN, and it has to be: he has already imported once with the old code, so
+  // the names are all sitting there with no GST number and the shop's own
+  // state. So the details are collected for every name the file mentions, and
+  // the writer decides what to do with them.
+  const knownParties = new Map();
+  const noteParty = (name, v) => {
     const k = norm(name);
+    if (!k) return;
+    const on = knownParties.get(k) || { name };
+    // The first GST number and the first state win; a later voucher for the
+    // same man says the same thing.
+    if (!on.gstin && v?.party_gstin) on.gstin = v.party_gstin;
+    if (!on.state_name && v?.party_state) on.state_name = v.party_state;
+    if (!on.own_gstin && v?.own_gstin) on.own_gstin = v.own_gstin;
+    knownParties.set(k, on);
+  };
+  const wantParty = (name, kind, v) => {
+    const k = norm(name);
+    noteParty(name, v);
     if (!k || parties.has(k)) return;
     if (newParties.has(k)) return;
     newParties.set(k, { name, kind: kind || 'customer' });
@@ -144,7 +210,7 @@ export function planLoad(book, have = {}) {
 
   for (const v of book.vouchers) {
     wantParty(v.party, v.vtype === 'purchase' || v.vtype === 'purchase_return'
-      ? 'supplier' : 'customer');
+      ? 'supplier' : 'customer', v);
     v.lines.forEach((l) => { wantItem(l); wantGodown(l.godown); });
   }
   for (const p of book.payments) {
@@ -156,10 +222,23 @@ export function planLoad(book, have = {}) {
     t.lines.forEach((l) => { wantItem(l); wantGodown(l.from); wantGodown(l.to); });
   }
 
+  // Whatever the file said about each name, carried onto the ones being made
+  // so they are born with it rather than mended a moment later.
+  for (const [k, np] of newParties) {
+    const known = knownParties.get(k);
+    if (known) {
+      np.gstin = known.gstin || '';
+      np.state_name = known.state_name || '';
+      np.own_gstin = known.own_gstin || '';
+    }
+  }
+
   return {
     newItems: [...newItems.values()],
     newParties: [...newParties.values()],
     newGodowns: [...newGodowns.values()],
+    // every name the file mentions, new or not, with what the file knows
+    knownParties: [...knownParties.values()],
     bills: book.vouchers.length,
     payments: book.payments.length,
     transfers: book.transfers.length,
@@ -228,7 +307,22 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   {
     const { data, error } = await supabase.rpc('import_begin',
       { p_kind: 'daybook', p_note: note });
-    if (error) throw new Error(`Could not start the import: ${error.message}`);
+    // AN APP THAT HAS GOT AHEAD OF ITS DATABASE SAYS SO IN WORDS HE CAN ACT ON.
+    //
+    // If the SQL files have not been run yet, this is the first thing that
+    // fails, and "function public.import_begin does not exist" tells a
+    // shopkeeper nothing. It stops rather than going ahead, on purpose: an
+    // import that cannot be marked is an import that cannot be taken back
+    // out, and that is exactly the press you want to be able to undo.
+    if (error) {
+      const missing = /does not exist|schema cache|42883|PGRST202/i.test(
+        `${error.message || ''} ${error.code || ''}`);
+      throw new Error(missing
+        ? 'This copy of Skwik is newer than your database. Run the SQL files under '
+          + 'supabase/migrations first \u2014 in the order in RUN-THESE-IN-ORDER.txt \u2014 '
+          + 'then try the import again. Nothing has been written.'
+        : `Could not start the import: ${error.message}`);
+    }
     run = data || null;
   }
 
@@ -258,15 +352,58 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   // In blocks, because ninety round trips on a mobile pack is a minute of
   // staring at a spinner and one dropped request away from stopping.
   for (let i = 0; i < plan.newParties.length; i += 50) {
-    const block = plan.newParties.slice(i, i + 50).map((p) => ({
-      org_id: org.id, name: p.name, kind: p.kind,
-      state_code: org.state_code, state_name: org.state_name,
-    }));
+    const block = plan.newParties.slice(i, i + 50).map((p) => {
+      const gstin = cleanGstin(p.gstin, p.own_gstin, org);
+      const code = stateOf(gstin, p.state_name, org);
+      return {
+        org_id: org.id, name: p.name, kind: p.kind,
+        gstin: gstin || null,
+        state_code: code,
+        state_name: STATES[code] || org.state_name,
+      };
+    });
     const { data, error } = await supabase.from('parties').insert(block.map((x) => ({ ...x, import_run: run }))).select();
     if (error) fail('could not add the customers and suppliers', error);
     (data || []).forEach((r) => parties.set(norm(r.name), r));
     made.parties += block.length;
     block.forEach((p) => step(`name ${p.name}`));
+  }
+
+  /* ---- and the names that were already here, but bare ---- */
+  //
+  // A NAME ALREADY IN THE SHOP IS NEVER OVERWRITTEN -- except that a blank is
+  // not a fact. He has already imported once with the old code, so fifty-nine
+  // names sit in his books with no GST number and the wrong state. Asking him
+  // to find and retype them is not an answer; importing the same file again
+  // fills them in, and the bills themselves are skipped as already written.
+  //
+  // Only ever a blank being filled. A number he has typed himself, or a state
+  // he has corrected by hand, is left exactly as it is.
+  {
+    const mend = [];
+    for (const p of plan.knownParties || []) {
+      const on = parties.get(norm(p.name));
+      if (!on) continue;
+      const gstin = cleanGstin(p.gstin, p.own_gstin, org);
+      const code = stateOf(gstin, p.state_name, org);
+      const patch = {};
+      if (gstin && !String(on.gstin || '').trim()) patch.gstin = gstin;
+      // The state only moves when it is still sitting on the shop's own and we
+      // now know better -- never off a state he set himself.
+      if (code && code !== String(on.state_code || '')
+          && String(on.state_code || '') === String(org.state_code || '')
+          && code !== String(org.state_code || '')) {
+        patch.state_code = code; patch.state_name = STATES[code] || on.state_name;
+      }
+      if (Object.keys(patch).length) mend.push({ id: on.id, ...patch });
+    }
+    for (const m of mend) {
+      const { id, ...patch } = m;
+      const { error } = await supabase.from('parties').update(patch).eq('id', id);
+      if (error) fail('could not fill in a customer or supplier', error);
+      made.mended = (made.mended || 0) + 1;
+    }
+    if (mend.length) step(`${mend.length} name${mend.length === 1 ? '' : 's'} filled in`);
   }
 
   /* ---- the items ---- */
@@ -306,7 +443,24 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
         cgst: inter ? 0 : round2(tax / 2),
         sgst: inter ? 0 : round2(tax / 2),
         igst: inter ? tax : 0,
-        amount: round2(taxable + tax),
+        // THE TAX COUNTED TWICE, ON EVERY IMPORTED BILL.
+        //
+        // This was `taxable + tax`. Everywhere else in Skwik a line's `amount`
+        // IS its taxable value -- computeBill writes `amount: t` where t is the
+        // line net of discount, and the printed bill puts that in the amount
+        // column and then adds the tax rows underneath it. So a line with the
+        // tax already inside it was taxed a second time by the paper:
+        //
+        //     10 pc at 500      goods 5,000
+        //     stored as          amount 5,250     <- tax already in
+        //     printed as         5,250 + 125 + 125 = 5,500
+        //     Tally says                            5,250
+        //
+        // Measured on his own day book: 74 of his 90 bills printed wrong, his
+        // bill 1380 at 41,632.79 against Tally's 38,855.00. The bill's own
+        // stored total was right all along, which is why his reports looked
+        // fine and only the paper was wrong.
+        amount: taxable,
         batch: l.batch || null,
         godown_id: idOf(godowns, l.godown),
       };
@@ -320,11 +474,34 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       party_id: v.is_cash ? null : idOf(parties, v.party),
       printed_name: v.party || 'CASH',
       is_cash: !!v.is_cash,
-      taxable: v.taxable, cgst: v.cgst, sgst: v.sgst, igst: v.igst,
+      // THE BILL'S TAXABLE VALUE INCLUDES WHAT RIDES ON IT.
+      //
+      // computeBill folds freight into the bill's taxable value, because under
+      // section 15(2) it is part of the value of the supply. The import did not,
+      // so a bill with freight on it stored a taxable value short by the
+      // freight -- which is the figure the profit report and GSTR-1 both read.
+      // And any other charge loaded onto a stock item was counted in `total`
+      // and stored nowhere at all, so the bill did not add up to itself.
+      taxable: round2(Number(v.taxable || 0) + Number(v.charge || 0)),
+      cgst: v.cgst, sgst: v.sgst, igst: v.igst,
       round_off: v.round_off, total: v.total,
-      extra_amount: v.freight || 0,
-      extra_note: v.freight ? 'Freight' : null,
-      tax_mode: v.igst > 0 ? 'igst' : (v.cgst || v.sgst) ? 'cgst_sgst' : 'none',
+      extra_amount: v.charge || 0,
+      extra_gst_rate: v.charge_rate || 0,
+      extra_note: v.charge ? (v.freight ? 'Freight' : 'Charges') : null,
+      // A TRANSPORTER'S BILL IS NOT A BILL WITH NO TAX ON IT.
+      // Sixteen of his purchases are freight under reverse charge: the party's
+      // leg equals the bill and there is no tax ledger, because the tax is his
+      // own to pay. Read as an ordinary bill it looked untaxed; marked here, it
+      // reaches GSTR-3B where it belongs.
+      reverse_charge: !!v.reverse_charge,
+      tax_mode: v.igst > 0 ? 'igst' : (v.cgst || v.sgst) ? 'cgst_sgst'
+              : v.reverse_charge ? (stateOf(cleanGstin(v.party_gstin, v.own_gstin, org), v.party_state, org) === String(org.state_code || '')
+                                     ? 'cgst_sgst' : 'igst')
+              : 'none',
+      // Place of supply, which no imported bill had.
+      place_of_supply_code: codeFor(v.place_of_supply)
+        || (v.vtype === 'purchase' ? String(org.state_code || '')
+            : stateOf(cleanGstin(v.party_gstin, v.own_gstin, org), v.party_state, org)) || null,
       notes: v.narration || null,
       // A purchase keeps the supplier's own bill number where it belongs.
       supplier_invoice_no: v.vtype === 'purchase' ? (v.no || null) : null,

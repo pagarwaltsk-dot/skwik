@@ -152,6 +152,37 @@ export default function ReturnScreen({ route, navigation }) {
         // return one-sided — sales in it, returns not.
         supply: supplyOf(r),
         disc: Math.round(num(r.disc) * share * 100) / 100,
+        // A DOZEN COMING BACK IS TWELVE PIECES COMING BACK.
+        //
+        // This note was built out of the fields the arithmetic needed and
+        // nothing else, so four things the original line was carrying were
+        // dropped on the way here: `per`, the batch, the expiry and the store.
+        //
+        // `per` is how many stock units one billed unit is — 12 on a line
+        // sold by the dozen. save_voucher cannot guess it and takes it as 1.
+        // So 2 Doz of glasses going out took 24 pieces off the shelf, and the
+        // same 2 Doz coming back put 2 pieces on it. Twenty-two glasses sitting
+        // in the shop that the book says are not there, on every dozen
+        // returned, and nothing on screen to show it — it surfaces months
+        // later as a shortage when he counts, by which time there is no
+        // telling which return caused it.
+        //
+        // The other three lose smaller things the same quiet way. Without the
+        // batch the goods land on the no-batch pile instead of the lot they
+        // were sold out of, so the lot he is trying to trace is short and the
+        // pile he never sells from grows. Without the expiry they come back
+        // undated and a packet past its date stops being flagged. Without the
+        // store they come home to wherever the shop counts as default, so
+        // Chamber Road quietly gains what Napaukhry gave back.
+        //
+        // All four are copied straight off the bill's own line, because a
+        // return is the same goods going the other way and nothing about the
+        // goods themselves has changed. computeBill spreads the line it is
+        // given, so they ride through the sums untouched.
+        per: Number(r.per) || 1,
+        batch: r.batch || null,
+        expiry: r.expiry || null,
+        godown_id: r.godown_id || null,
         note: r.note || null, flag: false, checked: false,
       };
     }), [rows]);
@@ -219,6 +250,13 @@ export default function ReturnScreen({ route, navigation }) {
           disc: num(l.disc), supply: l.supply || 'taxable',
           taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst,
           amount: l.amount, flag: false, checked: false, note: l.note,
+          // named again here because this list is written out field by field:
+          // anything not on it does not reach the server, however carefully it
+          // was put on the line above
+          per: Number(l.per) || 1,
+          batch: l.batch || null,
+          expiry: l.expiry || null,
+          godown_id: l.godown_id || null,
         })),
       };
 

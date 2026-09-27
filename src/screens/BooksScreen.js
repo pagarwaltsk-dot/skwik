@@ -7,7 +7,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
-import { fmt0, n2, num, today } from '../lib/money';
+import { fmt0, n2, num, qty as qtyText, today } from '../lib/money';
 import { ColHead, Figure, Rule, Words } from '../components/Register';
 import { Head, Screen, Sections, Swipe, useChainSwipe, useSectionSwipe } from '../components/Chrome';
 import { CalButton } from '../components/DatePick';
@@ -193,6 +193,27 @@ export default function BooksScreen({ navigation, route }) {
     </View>
   );
 
+  // WHAT THE SHELF FIGURE LEAVES OUT, SAID ON THE SHEET ITSELF.
+  //
+  // An item with no purchase price on it used to be valued here at what he
+  // SELLS it for. That put profit he has not earned yet into what he owns: a
+  // shelf of glasses bought for ₹18 and priced at ₹25 was carried at 25,
+  // and his capital was the shop's takings for a year it has not had. It is
+  // now counted at nothing, which is the truer of the two answers, because a
+  // cost nobody has entered is a cost nobody knows.
+  //
+  // But a figure that is short and silent about being short is its own kind of
+  // wrong. ₹4,20,000 of stock and ₹4,20,000 of stock plus sixty uncosted items
+  // read exactly the same on this sheet, and he would take the sum to his
+  // accountant either way. So the sheet says how many are missing from the
+  // figure and how much of them, and the line is the door to the screen where
+  // the price is entered rather than an apology he can do nothing about.
+  const unpricedNote = num(sheet?.stock_unpriced)
+    ? `${fmt0(sheet.stock_unpriced)} item${num(sheet.stock_unpriced) === 1 ? '' : 's'} on the shelf `
+      + (num(sheet?.stock_unpriced_qty) ? `(${qtyText(sheet.stock_unpriced_qty)} in all) ` : '')
+      + 'have no cost price on them, so they count as nothing above. '
+    : '';
+
   return (
     <Screen>
       <Head navigation={navigation} title="The books" />
@@ -276,6 +297,17 @@ export default function BooksScreen({ navigation, route }) {
           {!(sheet?.banks || []).length && <SheetRow label="In the bank" amount={sheet?.bank} />}
           <SheetRow label="Owed by customers" amount={sheet?.debtors} />
           <SheetRow label="Goods on the shelf (at cost)" amount={sheet?.stock} />
+          {!!unpricedNote && (
+            <TouchableOpacity onPress={() => navigation.navigate('Items')}
+              style={{ paddingHorizontal: 14, paddingTop: 7, paddingBottom: 9 }}>
+              <Text style={{ fontSize: 12, color: C.muted, lineHeight: 17 }}>
+                {unpricedNote}
+                <Text style={{ fontWeight: '700', color: C.accent }}>
+                  {'Put a purchase price on them under Items \u203A'}
+                </Text>
+              </Text>
+            </TouchableOpacity>
+          )}
           {/* GST ALREADY IN HAND. It has been worked out on this sheet all
               along and never shown; a credit balance is money the government
               owes him and belongs among what he has. */}

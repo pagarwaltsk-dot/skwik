@@ -257,9 +257,15 @@ export function Sections({ navigation, org, isOwner, id }) {
 //
 // `onBackdrop` is left out when there is nothing safe to go back to, and the
 // backdrop then does nothing rather than stranding him.
-export function TopSheet({ visible, onClose, onBackdrop, children, maxHeight = '86%' }) {
+// `onShow` is passed through to the Modal, and it matters more than it looks.
+// autoFocus on a field inside a Modal puts the CURSOR in it and leaves the
+// keyboard down on Android -- the focus happens before the modal has finished
+// appearing, and the keyboard never gets the message. So a sheet that wants the
+// keyboard up asks for the field to be focused once the sheet is really there.
+export function TopSheet({ visible, onClose, onBackdrop, onShow, children, maxHeight = '86%' }) {
   return (
-    <Modal visible={!!visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={!!visible} transparent animationType="fade" onRequestClose={onClose}
+      onShow={onShow}>
       <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-start' }}>
         <View style={{ backgroundColor: C.bg,
                        borderBottomLeftRadius: 26, borderBottomRightRadius: 26,
@@ -333,7 +339,8 @@ export function useBring() {
 //
 // A shopkeeper filling a form should never have to put his thumb down to move
 // on. Give a field the ref of the one after it and the phone's own arrow key
-// carries him there; the last field in a form says "done" and can save.
+// carries him there; the last field in a form saves. The key is always the
+// tab key -- see the note on returnKeyType below.
 //
 //   const rate = useRef(null);
 //   <Box next={rate} … />
@@ -348,7 +355,18 @@ export const Box = React.forwardRef(function Box(
       style={[S.input, style]}
       placeholderTextColor={C.faint}
       multiline={multiline}
-      returnKeyType={multiline ? undefined : (last ? 'done' : 'next')}
+      // ALWAYS THE TAB KEY, NEVER A TICK.
+      //
+      // Asked for more than once, and he should not have to ask again: the key
+      // at the bottom right of his keyboard must be the one that moves to the
+      // next field. It used to turn into a tick on the LAST box of every chain
+      // -- so the key under his thumb changed shape depending on which box he
+      // was in, and the one habit he bills by, running down a bill on the tab
+      // key, broke on the last field of every group.
+      //
+      // Only the glyph changes. `submitBehavior` below still saves on the last
+      // box exactly as it did, so pressing it does what it always did.
+      returnKeyType={multiline ? undefined : 'next'}
       submitBehavior={multiline ? 'newline' : (last ? 'blurAndSubmit' : 'submit')}
       {...rest}
       {...bring(rest)}
@@ -402,7 +420,6 @@ export const NumCell = React.forwardRef(function NumCell(
     setText(outside);
   }
 
-  const last = !next;
   // THE SPREAD GOES FIRST, AND IT MATTERS.
   //
   // With {...rest} at the END it quietly replaced this component's own
@@ -417,7 +434,7 @@ export const NumCell = React.forwardRef(function NumCell(
       style={style}
       value={text}
       keyboardType="numeric"
-      returnKeyType={last ? 'done' : 'next'}
+      returnKeyType="next"          /* never a tick -- see the note in Box */
       submitBehavior="submit"
       selection={sel}
       onFocus={(e) => {
