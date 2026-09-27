@@ -18,8 +18,8 @@
 // This builds the file. It does not file the return — that is still done on
 // the portal, by whoever files it, who should read it first.
 
-import { extraAsLine, n2, num, supplyOf, isTaxableLine } from './money';
-import { guessUqc, isUqc } from './uqc';
+import { extraAsLine, n2, num, supplyOf, isTaxableLine } from './money.js';
+import { guessUqc, isUqc } from './uqc.js';
 
 // One lakh, not the two and a half it used to be: Notification 12/2024 cut it
 // with effect from 1 August 2024, so bills between 1 and 2.5 lakh that used to

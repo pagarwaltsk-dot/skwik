@@ -50,7 +50,7 @@
 
 import {
   blocksOf, nameAttr, numOf, qtyOf, tagOf, tagTop, unesc,
-} from './transfer';
+} from './transfer.js';
 
 /* ===================== what each Tally kind becomes ===================== */
 

@@ -30,8 +30,8 @@
 // went in. It stops, says what failed and how far it got, and everything
 // already written stays valid because each piece was written whole.
 
-import { guessUqc } from './uqc';
-import { STATES, codeForState } from './states';
+import { guessUqc } from './uqc.js';
+import { STATES, codeForState } from './states.js';
 
 /* ============== WHERE A NAME IS, AND WHETHER HE IS REGISTERED ==============
  *

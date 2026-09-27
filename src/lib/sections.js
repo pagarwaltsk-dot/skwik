@@ -19,7 +19,7 @@
 // NOTHING IS HIDDEN AND NOTHING NEW IS BUILT. Every screen here already
 // existed and is unchanged; this only decides which of them stand together.
 
-import { showExpenses, showRecon, showReports, showStock } from './features';
+import { showExpenses, showRecon, showReports, showStock } from './features.js';
 
 // A REGULAR DEALER, IN THE SENSE THE RETURNS MEAN IT.
 //

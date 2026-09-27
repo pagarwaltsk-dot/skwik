@@ -291,6 +291,117 @@ rule('no picker sheet grows up from the bottom of the screen', (() => {
 })());
 
 // -------------------------------------------------------------------------
+// 13. A WHOLE BOOK THAT GOES OUT MUST BE ABLE TO COME BACK.
+//     The backup writes one table per kind of row and the server puts them
+//     back one kind at a time. Add a table to one side and forget the other,
+//     and a restore drops it in silence -- which is the one kind of bug a
+//     backup must never have. So the two lists are compared.
+rule('every table a backup writes can be put back', (() => {
+  const bad = [];
+  const save = src['src/lib/booksave.js'] || '';
+  if (!save) return ['there is no src/lib/booksave.js'];
+  const block = save.match(/export const BOOK_TABLES = \[([\s\S]*?)\];/);
+  if (!block) return ['BOOK_TABLES is not a plain list any more -- this check cannot read it'];
+  const tables = [...block[1].matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]);
+  if (tables.length < 10) bad.push(`only ${tables.length} tables in a whole book -- something is missing`);
+
+  const slice = allSql.match(/create or replace function public\.book_restore_slice[\s\S]*?\n\$rp\$;/);
+  if (!slice) return ['there is no book_restore_slice in the migrations'];
+  for (const t of tables) {
+    if (!new RegExp(`p_table = '${t}'`).test(slice[0])) {
+      bad.push(`${t} goes out in a backup and the server has no way to put it back`);
+    }
+  }
+
+  // and the reader it is asked for with must allow it too
+  const cut = allSql.match(/create or replace function public\.book_slice[\s\S]*?\n\$sl\$;/);
+  if (!cut) bad.push('there is no book_slice in the migrations');
+  else for (const t of tables) {
+    if (!new RegExp(`'${t}'`).test(cut[0])) bad.push(`${t} cannot be asked for a page at a time`);
+  }
+  return bad;
+})());
+
+// -------------------------------------------------------------------------
+// 14. THE FILE READER IS HANDED A FILE, NOT A LIST OF FILE TYPES.
+//     "Put a book back" was written as readPickedFile(['application/json',
+//     'text/plain', '*/*']) -- the list of types where the reader wants the
+//     file itself. It had never once worked, and it is the button a shop
+//     presses on the day it has lost everything.
+rule('nothing reads a file by handing over a list of file types', (() => {
+  const bad = [];
+  for (const f of APP) {
+    const re = /readPickedFile\(\s*\[/g;
+    let m;
+    while ((m = re.exec(src[f]))) bad.push(`${f}:${lineOf(src[f], m.index)} readPickedFile wants a file, not a list of types`);
+    const re2 = /readPickedFile\(\s*['"`]/g;
+    while ((m = re2.exec(src[f]))) {
+      const after = src[f].slice(m.index, m.index + 60);
+      if (/\*\/\*|application\/|text\//.test(after)) {
+        bad.push(`${f}:${lineOf(src[f], m.index)} readPickedFile is being given a file type`);
+      }
+    }
+  }
+  return bad;
+})());
+
+// -------------------------------------------------------------------------
+// 15. NO WHOLE FILE IS PULLED INTO MEMORY IN ONE PIECE.
+//     The Tally import died on his phone with OutOfMemoryError before it had
+//     read a single ledger, because the reader asked for the file as one
+//     string. Every reader now goes through pickfile.js or bigfile.js.
+rule('no screen reads a whole file into memory by itself', (() => {
+  const bad = [];
+  for (const f of APP) {
+    if (f === 'src/lib/pickfile.js' || f === 'src/lib/bigfile.js') continue;
+    const re = /new File\(([^)]*)\)\s*\.\s*(text|base64|bytes)\s*\(/g;
+    let m;
+    while ((m = re.exec(src[f]))) {
+      bad.push(`${f}:${lineOf(src[f], m.index)} reads a whole file at once -- use readPickedFile`);
+    }
+  }
+  return bad;
+})());
+
+// -------------------------------------------------------------------------
+// 16. THE BROWSER PAGE RUNS THE APP'S OWN FILES, SO THEY MUST STAY LOADABLE.
+//     web/skwik-io.html imports straight out of src/lib with no build step.
+//     A browser will not resolve `from './uqc'` -- it wants the extension --
+//     so one import written the old way silently breaks the whole page, and
+//     nothing on the phone would ever notice.
+rule('every library import carries the extension a browser needs', (() => {
+  const bad = [];
+  for (const f of APP) {
+    if (!f.startsWith('src/lib/')) continue;
+    for (const m of src[f].matchAll(/from '(\.\/[a-zA-Z0-9_]+)'/g)) {
+      bad.push(`${f}:${lineOf(src[f], m.index)}  ${m[1]} needs to be ${m[1]}.js`);
+    }
+  }
+  return bad;
+})());
+
+// 17. AND EVERYTHING THE PAGE IMPORTS HAS TO BE THERE.
+rule('the browser page imports nothing that does not exist', (() => {
+  const bad = [];
+  const dir = path.join(ROOT, 'web');
+  if (!fs.existsSync(dir)) return [];
+  for (const f of fs.readdirSync(dir)) {
+    if (!/\.(html|js)$/.test(f)) continue;
+    const s = fs.readFileSync(path.join(dir, f), 'utf8');
+    for (const m of s.matchAll(/from ['"](\.[^'"]+)['"]/g)) {
+      const t = path.resolve(dir, m[1]);
+      if (!fs.existsSync(t)) bad.push(`web/${f}: ${m[1]} is not there`);
+    }
+    // and nothing fetched off somebody else's server, which is the whole
+    // point of a page with no build step
+    for (const m of s.matchAll(/(?:from|import\()\s*['"](https?:\/\/[^'"]+)['"]/g)) {
+      bad.push(`web/${f}: loads ${m[1]} from outside`);
+    }
+  }
+  return bad;
+})());
+
+// -------------------------------------------------------------------------
 console.log('');
 if (!fails.length) {
   console.log(`${pass} checks passed. Nothing the audit found has come back.\n`);
