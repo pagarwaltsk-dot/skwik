@@ -872,6 +872,69 @@ function sideOf(groups, parent, depth = 0) {
   return sideOf(groups, g.parent, depth + 1);
 }
 
+// THE TILL AND THE BANK ACCOUNTS, OUT OF THE SAME FILE AS EVERYTHING ELSE.
+//
+// partiesFromTallyXml keeps only the people who owe money or are owed it, so
+// Cash and the bank ledgers came out as "skipped" -- and a shopkeeper who had
+// just imported his whole book was then asked to type his bank account in by
+// hand, and his opening cash with it, while his stores and his customers had
+// arrived on their own. There was no reason for that; the ledgers were sitting
+// in the file the whole time.
+//
+// THE SIGN IS THE WHOLE POINT. Tally writes a debit balance negative and a
+// credit balance positive, so on his own export:
+//
+//   Cash                             Cash-in-hand    -200000.00   he HAS 2 lakh
+//   Cash Credit Account Fedral Bank  Bank Accounts   2350069.58   he OWES 23.5 lakh
+//
+// A cash credit account is an overdraft. Read as written it would show 23 lakh
+// sitting in the bank instead of 23 lakh owed to it, so the sign is turned
+// round here and an overdraft arrives as the negative balance it is.
+export function moneyLedgersFromTallyXml(xml) {
+  xml = cleanText(xml);
+  const groups = ledgerGroupsFromTallyXml(xml);
+  const banks = [];
+  let cash = null;
+  let sawClosing = false, sawOpening = false;
+
+  // the group decides, walking up the chain when the ledger does not say
+  const roleOf = (parent, primary, depth = 0) => {
+    for (const g of [primary, parent]) {
+      const t = String(g || '');
+      if (!t) continue;
+      if (/^cash-?in-?hand$/i.test(t.replace(/\s+/g, '')) || /\bcash\s*in\s*hand\b/i.test(t)) return 'cash';
+      if (/\bbank\b/i.test(t)) return 'bank';
+    }
+    if (depth > 8) return '';
+    const up = groups[String(parent || '').toLowerCase()];
+    if (!up) return '';
+    return roleOf(up.parent, up.primary, depth + 1);
+  };
+
+  for (const b of blocksOf(xml, 'LEDGER')) {
+    const name = nameAttr(b) || tagTop(b, 'NAME');
+    if (!name) continue;
+    const role = roleOf(tagTop(b, 'PARENT'), tagTop(b, 'PRIMARYGROUP'));
+    if (role !== 'cash' && role !== 'bank') continue;
+
+    const bal = balanceOf(b);
+    if (bal.basis === 'closing') sawClosing = true; else sawOpening = true;
+    // debit is written negative, and a debit is money he HAS
+    const opening = Math.round(-bal.value * 100) / 100;
+
+    if (role === 'cash') {
+      // one till. If a file somehow holds two, the first one wins and the
+      // second is left alone rather than guessed between.
+      if (!cash) cash = { name, opening };
+    } else {
+      banks.push({ name, opening });
+    }
+  }
+
+  return { banks, cash,
+           basis: sawClosing && !sawOpening ? 'closing' : sawClosing ? 'mixed' : 'opening' };
+}
+
 export function partiesFromTallyXml(xml) {
   xml = cleanText(xml);
   const out = [];

@@ -228,10 +228,24 @@ export function planLoad(book, have = {}) {
   // and arrived nowhere, so the account is made if the file names one Skwik
   // has never heard of.
   const newAccounts = new Map();
+
+  // THE BANK ACCOUNTS AS LEDGERS, WITH WHAT THEY OPENED AT.
+  //
+  // His stores and his customers arrived on their own; his bank account did
+  // not, and he was asked to type it in by hand after importing his whole
+  // book. The ledgers were in the file all along -- only the customers and
+  // suppliers were being read out of them.
+  for (const b of (book.money?.banks || [])) {
+    const k = norm(b.name);
+    if (!k || accounts.has(k) || newAccounts.has(k)) continue;
+    newAccounts.set(k, { name: b.name, opening: Number(b.opening) || 0 });
+  }
+
+  // and any account a deposit went into that the ledgers did not name
   for (const m of (book.cashMoves || [])) {
     const k = norm(m.account);
     if (!k || accounts.has(k) || newAccounts.has(k)) continue;
-    newAccounts.set(k, { name: m.account });
+    newAccounts.set(k, { name: m.account, opening: 0 });
   }
 
   // Whatever the file said about each name, carried onto the ones being made
@@ -266,6 +280,39 @@ export function planLoad(book, have = {}) {
   //  blocks never get a say over the bills beside them. Everything the bills
   //  mentioned is already in the two maps above, and neither loop below
   //  overwrites a name that is in them: THE BILLS WIN, always.
+  // -------------------------------------------------------------------
+  //  WHAT WAS ON THE SHELF BEFORE THE FIRST BILL.
+  //
+  //  A Tally day book carries its own stock item blocks, and they hold the
+  //  quantity and the rate the year OPENED with -- 18,049.15 Kg of Steel
+  //  Utensils (A) at 189.26. Those blocks were deliberately passed over,
+  //  because on an item that was actually billed the bills are the better
+  //  authority on its name, its unit and its rate.
+  //
+  //  That was right about all of those and wrong about the one thing the bills
+  //  can never know: the bills cannot tell you what was in the godown before
+  //  the first of them. So every one of his 480 items opened at nought, his
+  //  stock showed only what had moved since April, and 285 items had no cost
+  //  at all -- which makes them worth nothing on the balance sheet and free in
+  //  the profit report.
+  //
+  //  The opening figures are therefore read from EVERY file, separately from
+  //  the question of which items get created.
+  // -------------------------------------------------------------------
+  const openAt = new Map();
+  for (const r of (book.openings || [])) {
+    const k = norm(r.name);
+    if (!k) continue;
+    const qty  = Number(r.opening_stock) || 0;
+    const cost = Number(r.purchase_price) || 0;
+    if (!qty && !cost) continue;
+    const on = openAt.get(k) || { name: r.name, qty: 0, cost: 0 };
+    // the first figure wins; a second file saying the same thing says the same
+    if (!on.qty)  on.qty = qty;
+    if (!on.cost) on.cost = cost;
+    openAt.set(k, on);
+  }
+
   const nothingBilled = !book.vouchers.length && !book.payments.length
     && !(book.transfers || []).length;
   if (book.masters) {
@@ -296,6 +343,37 @@ export function planLoad(book, have = {}) {
     }
   }
 
+  // ---- and NOW the opening figures, once the list of items is final ----
+  //
+  // This ran before the masters were folded in, so 495 items created out of a
+  // masters file were born opening at nought and had to be mended on the next
+  // pass -- which is the very fault this whole change is about, reintroduced
+  // one step further along. Order matters: nothing knows an item's opening
+  // stock until it is known which items there are.
+  // onto the items being created
+  for (const [k, it] of newItems) {
+    const o = openAt.get(k);
+    if (!o) continue;
+    if (!it.opening_stock)  it.opening_stock  = o.qty;
+    if (!it.purchase_price) it.purchase_price = o.cost;
+  }
+
+  // AND ONTO THE ONES ALREADY THERE, where the figure is missing.
+  //
+  // He has already imported -- five runs of it -- so 480 items sit in his
+  // books opening at nought. Asking him to type them in is not an answer.
+  // Only ever a blank being filled: a quantity or a cost he has entered
+  // himself is left exactly as it is.
+  const mendItems = [];
+  for (const r of (have.items || [])) {
+    const o = openAt.get(norm(r.name));
+    if (!o) continue;
+    const patch = {};
+    if (o.qty  && !Number(r.opening_stock))  patch.opening_stock  = o.qty;
+    if (o.cost && !Number(r.purchase_price)) patch.purchase_price = o.cost;
+    if (Object.keys(patch).length) mendItems.push({ id: r.id, name: r.name, ...patch });
+  }
+
   return {
     newItems: [...newItems.values()],
     newParties: [...newParties.values()],
@@ -303,6 +381,11 @@ export function planLoad(book, have = {}) {
     // every name the file mentions, new or not, with what the file knows
     knownParties: [...knownParties.values()],
     newAccounts: [...newAccounts.values()],
+    // what the file knows about the shelf before the first bill
+    openings: [...openAt.values()],
+    mendItems,
+    // and what was in the till on the day the year opened
+    openingCash: book.money?.cash ? Number(book.money.cash.opening) || 0 : null,
     bills: book.vouchers.length,
     payments: book.payments.length,
     transfers: book.transfers.length,
@@ -334,13 +417,34 @@ export async function readMasters(supabase) {
     return out;
   };
   const [items, parties, godowns, accounts] = await Promise.all([
-    page('items', 'id, name', (q) => q.eq('is_active', true)),
+    // the opening stock and the cost come back too: filling in a BLANK is
+    // right, writing over a figure he typed himself is not, and the only way
+    // to tell them apart is to look
+    page('items', 'id, name, opening_stock, purchase_price', (q) => q.eq('is_active', true)),
     page('parties', 'id, name'),
     page('godowns', 'id, name'),
     // the bank accounts too, so a deposit can find the one it went into
     page('bank_accounts', 'id, name'),
   ]);
   return { items, parties, godowns, accounts };
+}
+
+// THE DAY THE YEAR OPENED, which is what Tally's opening figures are as at.
+//
+// Taken from the earliest entry in the file rather than from today: a book
+// imported in September is still a book that opened in April, and dating the
+// opening figure today would put it after the bills it comes before.
+export function fyStart(book) {
+  const days = [
+    ...(book?.vouchers || []).map((v) => v.vdate),
+    ...(book?.payments || []).map((p) => p.vdate),
+  ].filter(Boolean).sort();
+  const first = days[0];
+  if (!first) return '';
+  const y = Number(String(first).slice(0, 4));
+  const m = Number(String(first).slice(5, 7));
+  // April to March: a bill in January belongs to the year that began last April
+  return `${m >= 4 ? y : y - 1}-04-01`;
 }
 
 // `onStep({ done, total, what })` is called as it goes, so a shopkeeper on a
@@ -366,7 +470,8 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   const plan = planLoad(book, have);
   const total = plan.newGodowns.length + plan.newParties.length + plan.newItems.length
               + plan.newAccounts.length
-              + plan.bills + plan.payments + plan.transfers + plan.cashMoves;
+              + plan.bills + plan.payments + plan.transfers + plan.cashMoves
+              + (plan.mendItems || []).length;
   let done = 0;
   const step = (what) => { done += 1; onStep({ done, total, what }); };
 
@@ -399,7 +504,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   }
 
   const made = { godowns: 0, parties: 0, items: 0, bills: 0, already: 0, payments: 0,
-                 transfers: 0, accounts: 0, banked: 0, run };
+                 transfers: 0, accounts: 0, banked: 0, opened: 0, run };
   const fail = (what, e) => {
     const err = new Error(`${what}: ${e?.message || e}`);
     err.made = made; err.done = done; err.total = total;
@@ -485,12 +590,32 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       org_id: org.id, name: it.name, unit: it.unit,
       hsn: it.hsn || null, gst_rate: it.gst_rate || 0,
       sale_price: it.sale_price || 0, is_active: true,
+      // WHAT WAS ON THE SHELF IN APRIL, AND WHAT IT COST.
+      // Dropped before, so every item opened at nought and 285 of his had no
+      // cost -- worth nothing on the sheet, free in the profit report.
+      opening_stock: it.opening_stock || 0,
+      purchase_price: it.purchase_price || 0,
     }));
     const { data, error } = await supabase.from('items').insert(block.map((x) => ({ ...x, import_run: run }))).select();
     if (error) fail('could not add the items', error);
     (data || []).forEach((r) => items.set(norm(r.name), r));
     made.items += block.length;
     block.forEach((it) => step(`item ${it.name}`));
+  }
+
+  /* ---- and the items that were already here, opening at nought ---- */
+  //
+  // Same rule as the names: a blank is not a fact. He has imported five times
+  // already, so his items are all sitting at nought; importing again fills
+  // them in. A quantity or a cost he typed himself is never written over.
+  for (const m of (plan.mendItems || [])) {
+    const { id, name, ...patch } = m;
+    const { error } = await supabase.from('items').update(patch).eq('id', id);
+    if (error) fail(`could not fill in the opening stock of ${name}`, error);
+    made.opened = (made.opened || 0) + 1;
+  }
+  if ((plan.mendItems || []).length) {
+    step(`${plan.mendItems.length} item(s) given their opening stock`);
   }
 
   const idOf = (map, name) => (map.get(norm(name)) || {}).id || null;
@@ -630,6 +755,22 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     step(`transfer of ${t.vdate}`);
   }
 
+  /* ---- what was in the till when the year opened ---- */
+  //
+  // Only ever filled in, never written over: a figure he has typed himself is
+  // his. Without it the cash book begins at nil and every figure after it is
+  // short by the same amount -- which is exactly what the Accounts screen
+  // already warns about, and exactly what an import should not leave him to do
+  // by hand after bringing in two thousand bills.
+  if (plan.openingCash && !Number(org.opening_cash || 0)) {
+    const { error } = await supabase.from('orgs')
+      .update({ opening_cash: plan.openingCash, opening_cash_on: fyStart(book) || null })
+      .eq('id', org.id);
+    if (error) fail('could not set the opening cash', error);
+    made.openingCash = plan.openingCash;
+    step(`opening cash ${plan.openingCash}`);
+  }
+
   /* ---- the money he banked, and took back out ---- */
   //
   // A deposit is one movement with two ends -- out of the till, into the
@@ -639,7 +780,11 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   // skipped by being the same deposit.
   for (const a of plan.newAccounts) {
     const { data, error } = await supabase.from('bank_accounts')
-      .insert({ org_id: org.id, name: a.name, opening: 0,
+      // WHAT IT OPENED AT, not nought. A cash credit account opens OWING the
+      // bank, so its figure is negative, and a bank book that starts at nil is
+      // wrong by the whole overdraft on every line after it.
+      .insert({ org_id: org.id, name: a.name, opening: Number(a.opening) || 0,
+                opening_on: fyStart(book) || null,
                 is_active: true, is_default: accounts.size === 0 })
       .select().single();
     if (error) fail(`could not add the bank account ${a.name}`, error);
@@ -676,7 +821,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       bills: made.bills, already: made.already, money: made.payments,
       moves: made.transfers, items: made.items, names: made.parties,
       godowns: made.godowns, banked: made.banked,
-      accounts: made.accounts } }).catch(() => {});
+      accounts: made.accounts, opened: made.opened } }).catch(() => {});
   }
 
   return { ...made, total, done };

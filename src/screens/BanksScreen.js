@@ -191,6 +191,28 @@ export default function BanksScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
+        {/* A WAY IN THAT IS NEVER HIDDEN.
+            This whole card used to appear only once a bank account existed,
+            so on a firm with none -- which is most firms on their first day --
+            there was nothing on the screen to press and nothing to say why.
+            It shows either way now: with the entry when there is somewhere for
+            the money to go, and with the reason and a way forward when there
+            is not. */}
+        {!rows.filter((r) => r.is_active).length && (
+          <View style={[S.card, { marginTop: 16 }]}>
+            <Text style={S.eyebrow}>Money moved to or from the bank</Text>
+            <Text style={{ fontSize: 12.5, color: C.muted, lineHeight: 18, marginBottom: 12 }}>
+              Cash banked, or cash drawn out. Add a bank account first -- money
+              paid in has to go somewhere, and without one your cash in hand
+              would go down with nothing to show where it went.
+            </Text>
+            <TouchableOpacity style={[S.btn, { paddingVertical: 12 }]}
+              onPress={() => setEdit({ ...blank, is_default: true })}>
+              <Text style={[S.btnText, { fontSize: 14 }]}>Add a bank account</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {!!rows.filter((r) => r.is_active).length && (
           <View style={[S.card, { marginTop: 16 }]}>
             <Text style={S.eyebrow}>Money moved to or from the bank</Text>
