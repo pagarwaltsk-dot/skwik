@@ -7,6 +7,7 @@ import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, n2, num, qty as qtyText, today } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
+import { showGodowns } from '../lib/features';
 import { Head, Screen } from '../components/Chrome';
 import { C, S } from '../theme';
 
@@ -67,10 +68,19 @@ export default function ItemMovesScreen({ route, navigation }) {
   const unit     = route.params?.unit || '';
   // Which store the Stock screen was set to when he tapped the item. Empty
   // means Everywhere.
+  // WHICH STORE, AND HE CAN CHANGE IT HERE.
+  //
+  // The store used to be fixed by whoever opened this page, so seeing the same
+  // item's movements in the other store meant backing out, changing the store
+  // on the Stock screen and coming in again -- for every item, every time. It
+  // is chosen here now; the store the page was opened with is only where it
+  // starts.
   const godownId   = route.params?.godownId || null;
   const godownName = route.params?.godownName || '';
   const { org } = useApp();
 
+  const [where, setWhere] = useState(godownId || 'all');
+  const [stores, setStores] = useState([]);
   const [range, setRange] = useState('month');
   const [data, setData]   = useState(null);     // { opening, rows }
   const [busy, setBusy]   = useState(true);
@@ -79,6 +89,18 @@ export default function ItemMovesScreen({ route, navigation }) {
   const [failed, setFailed] = useState('');
   // True when he asked for one store and the database could not give him one.
   const [stale, setStale] = useState(false);
+
+  // the stores to choose from, read once
+  useFocusEffect(useCallback(() => {
+    let on = true;
+    (async () => {
+      if (!showGodowns(org)) return;
+      const { data } = await supabase.from('godowns')
+        .select('id, name').eq('is_active', true).order('name');
+      if (on) setStores(data || []);
+    })();
+    return () => { on = false; };
+  }, [org?.godowns_enabled]));
 
   useFocusEffect(useCallback(() => {
     let on = true;
@@ -93,9 +115,10 @@ export default function ItemMovesScreen({ route, navigation }) {
         // missing function falls back to the old three-argument one and the
         // page says plainly that it is showing the whole firm.
         let d = null, error = null, whole = false;
-        if (godownId) {
+        const pick = where === 'all' ? null : where;
+        if (pick) {
           ({ data: d, error } = await supabase.rpc('item_moves',
-            { p_item: itemId, p_from: from, p_to: to, p_godown: godownId }));
+            { p_item: itemId, p_from: from, p_to: to, p_godown: pick }));
           if (error) {
             ({ data: d, error } = await supabase.rpc('item_moves',
               { p_item: itemId, p_from: from, p_to: to }));
@@ -117,7 +140,7 @@ export default function ItemMovesScreen({ route, navigation }) {
       }
     })();
     return () => { on = false; };
-  }, [itemId, range, godownId]));
+  }, [itemId, range, where]));
 
   // He asked for one store but is being shown the firm — the old database.
   const onWholeFirm = !!godownId && stale;
@@ -156,7 +179,7 @@ export default function ItemMovesScreen({ route, navigation }) {
     // the balance BEFORE its own line.
     return { rows: out, opening: num(data?.opening), inTotal: n2(gotIn),
              outTotal: n2(gotOut), closing: bal };
-  }, [data, godownId, onWholeFirm]);
+  }, [data, where, onWholeFirm]);
 
   // ONLY THE NEWEST FEW, AND THE TWO DIRECTIONS COUNTED APART.
   //
@@ -205,19 +228,45 @@ export default function ItemMovesScreen({ route, navigation }) {
     <Screen>
       <Head navigation={navigation} title={itemName} />
 
-      {/* WHOSE SHELF THIS IS. Two registers of the same item read almost the
-          same, so the page has to say which one is open. */}
-      {(!!godownName || !!godownId) && (
+      {/* WHOSE SHELF THIS IS -- AND HE CAN CHANGE IT WITHOUT LEAVING.
+          Two registers of the same item read almost the same, so the page has
+          to say which one is open. It used to only say: the store was fixed by
+          whoever opened the page, and seeing the other one meant backing out,
+          changing the store on the Stock screen and coming in again. */}
+      {stores.length > 1 && (
+        <View style={{ backgroundColor: C.surface, paddingHorizontal: 12, paddingTop: 10,
+                       paddingBottom: 8 }}>
+          <View style={[S.row, { gap: 6, flexWrap: 'wrap' }]}>
+            {[{ id: 'all', name: 'Everywhere' }, ...stores].map((g) => {
+              const on = where === g.id;
+              return (
+                <TouchableOpacity key={g.id} onPress={() => setWhere(g.id)}
+                  style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 9,
+                           borderWidth: 1, borderColor: on ? C.green : C.line,
+                           backgroundColor: on ? C.accentSoft : C.surface }}>
+                  <Text style={{ fontSize: 12.5, fontWeight: '700',
+                                 color: on ? C.green : C.muted }}>{g.name}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      )}
+
+      {stores.length <= 1 && (!!godownName || !!godownId) && (
         <View style={{ paddingHorizontal: 16, paddingTop: 10 }}>
           <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.accent }}>
             {onWholeFirm ? 'Whole firm' : godownName || 'One store'}
           </Text>
-          {onWholeFirm && (
-            <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2, lineHeight: 16 }}>
-              One store on its own needs the 1.9.20 update run on your database.
-              Until then this is every store together.
-            </Text>
-          )}
+        </View>
+      )}
+
+      {onWholeFirm && (
+        <View style={{ paddingHorizontal: 16, paddingTop: 6 }}>
+          <Text style={{ fontSize: 11.5, color: C.muted, lineHeight: 16 }}>
+            One store on its own needs the 1.9.20 update run on your database.
+            Until then this is every store together.
+          </Text>
         </View>
       )}
 

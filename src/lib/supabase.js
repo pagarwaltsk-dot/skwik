@@ -55,14 +55,43 @@ export const phoneToEmail = (phone) =>
 // between them drops one and repeats another.
 const PAGE = 1000;
 
+// AND NOT ONE PAGE AT A TIME, WAITING FOR EACH.
+//
+// This asked for a thousand rows, waited for the answer, then asked for the
+// next thousand. On a stock screen that is three questions one after another
+// before anything appears, and on a mobile pack a question and its answer is
+// most of a second -- which is the "stock takes a few seconds to load" he
+// reported. The database was never the problem: the view itself answers in
+// twenty milliseconds and folding the rows on the phone takes two.
+//
+// So pages are asked for in a handful at a time. The first handful usually
+// covers the whole list, and where it does not the next handful goes out
+// together as well. Nothing else changes: the same rows come back in the same
+// order, because each page still asks for its own range.
+const AT_ONCE = 4;
+
 export async function allRows(build, { pageSize = PAGE, cap = 100000 } = {}) {
   const out = [];
-  for (let from = 0; from < cap; from += pageSize) {
-    const { data, error } = await build().range(from, from + pageSize - 1);
-    if (error) throw error;
-    const got = data || [];
-    out.push(...got);
-    if (got.length < pageSize) break;
+  let from = 0;
+  while (from < cap) {
+    const asks = [];
+    for (let k = 0; k < AT_ONCE && from + k * pageSize < cap; k++) {
+      const a = from + k * pageSize;
+      asks.push(build().range(a, a + pageSize - 1));
+    }
+    const answers = await Promise.all(asks);
+    let short = false;
+    for (const { data, error } of answers) {
+      if (error) throw error;
+      const got = data || [];
+      out.push(...got);
+      // A PAGE THAT CAME BACK SHORT IS THE LAST PAGE. The ones asked for after
+      // it in the same handful are empty, which is harmless -- but nothing
+      // beyond this handful is worth asking for.
+      if (got.length < pageSize) { short = true; break; }
+    }
+    if (short) break;
+    from += AT_ONCE * pageSize;
   }
   return out;
 }

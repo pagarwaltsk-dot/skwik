@@ -10,10 +10,10 @@ not there yet.
 
 Nothing here breaks the version you are running today. Every one of
 these files adds; none of them takes anything away. So you can run all
-25 this evening and upload the code tomorrow, and the app on your phone
+27 this evening and upload the code tomorrow, and the app on your phone
 carries on exactly as it does now in between.
 
-IF YOU HAVE ALREADY RUN 1 TO 24, YOU ONLY NEED NUMBER 25.
+IF YOU HAVE ALREADY RUN 1 TO 26, YOU ONLY NEED NUMBER 27.
 It is new since the last lot. Running the earlier ones again is harmless
 if you would rather be sure.
 
@@ -43,7 +43,9 @@ Copy each file into the Supabase SQL editor and press Run, top to bottom.
   22.  1.9.52-quiet-start.sql
   23.  1.10.0-imports-and-backup.sql
   24.  1.10.2-big-books.sql
-  25.  1.10.3-cost-and-import.sql     <-- NEW
+  25.  1.10.3-cost-and-import.sql
+  26.  1.10.6-cash-to-bank.sql
+  27.  1.10.7-opening-by-godown.sql   <-- NEW
 
 
 DO NOT USE THE ORDER GITHUB SHOWS YOU
@@ -84,6 +86,16 @@ reading:
            on for 1. No row was changed.
            This one is telling you that switching the defaults off for NEW
            shops did not switch anything off for yours.
+
+  1.10.7   prints nothing. It adds ONE function, for putting the opening
+           stock into the store it is actually in. Nothing on any existing
+           row moves until you import again.
+
+  1.10.6   prints nothing. It adds ONE table - the money you move between
+           the till and a bank account - and teaches the balance sheet, the
+           cash book and the bank book about it. Nothing on any existing row
+           moves. Your cash in hand and your bank balances read exactly as
+           they do today until you record a deposit or import one from Tally.
 
   1.10.3   bills: N line(s) had the tax inside the amount and were put right
            bills: N bill(s) did not count the freight in their taxable value

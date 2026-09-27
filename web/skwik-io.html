@@ -133,8 +133,10 @@
     </div>
     <div id="planBox" class="hide">
       <div id="whyBox"></div>
+      <div id="openBox"></div>
       <table id="planTable"></table>
       <div id="perFile"></div>
+      <div id="skipBox"></div>
       <div id="leaveOut"></div>
       <div id="stopBox"></div>
       <div class="row" style="margin-top:16px">
@@ -179,7 +181,8 @@ import { project } from './project.js';
 import { vouchersFromTallyXml, checkBook } from '../src/lib/tallybook.js';
 import { loadBook, planLoad, readMasters } from '../src/lib/tallyload.js';
 import { saveBook, sayWhatWentOut } from '../src/lib/booksave.js';
-import { itemsFromTallyXml, partiesFromTallyXml } from '../src/lib/transfer.js';
+import { itemsFromTallyXml, partiesFromTallyXml, moneyLedgersFromTallyXml,
+         openingByGodownFromTallyXml } from '../src/lib/transfer.js';
 
 const $ = (id) => document.getElementById(id);
 const show = (el, on = true) => el.classList.toggle('hide', !on);
@@ -303,18 +306,72 @@ $('file').onchange = async () => {
   // a new file is being read, is how a bill goes missing twice.
   $('writeMsg').innerHTML = '';
   $('writeBar').style.width = '0%';
-  book = { vouchers: [], payments: [], transfers: [], counts: [], skipped: [] };
+  book = { vouchers: [], payments: [], transfers: [], counts: [],
+           cashMoves: [], skipped: [] };
   const mItems = [], mParties = [];
+  const openings = [];
+  const openingAt = [];
+  const banks = [];
+  let till = null;
+  let closingSeen = null;
   const perFile = [];
 
   for (let i = 0; i < texts.length; i++) {
     const one = vouchersFromTallyXml(texts[i]);
-    const billed = one.vouchers.length + one.payments.length + (one.transfers || []).length;
+    const billed = one.vouchers.length + one.payments.length
+                 + (one.transfers || []).length + (one.cashMoves || []).length;
+
+    // ---------------------------------------------------------------
+    //  WHAT WAS ON THE SHELF BEFORE THE FIRST BILL, out of any file.
+    //
+    //  A day book carries stock item blocks of its own, holding the quantity
+    //  and rate the YEAR OPENED with. They are read here whether or not the
+    //  file also holds bills, because the bills cannot know what was in the
+    //  godown before them -- his 480 items all opened at nought for exactly
+    //  that reason.
+    //
+    //  AND ONLY IF THEY ARE OPENING FIGURES. Tally can be asked for closing
+    //  balances instead, and writing today's stock into the opening field
+    //  would count every movement of the year twice. The reader says which it
+    //  gave; anything but 'opening' is refused and said out loud.
+    // ---------------------------------------------------------------
+    // THE TILL AND THE BANK ACCOUNTS, out of the ledgers, like the stores and
+    // the customers already are. Read from every file for the same reason the
+    // opening stock is: which file they are in is Tally's business, not his.
+    const money = moneyLedgersFromTallyXml(texts[i]);
+    if (money.basis !== 'closing') {
+      for (const b of (money.banks || [])) {
+        if (!banks.some((x) => x.name.trim().toLowerCase() === b.name.trim().toLowerCase())) banks.push(b);
+      }
+      if (!till && money.cash) till = money.cash;
+    }
+
+    // WHERE the opening stock is, not only how much of it there is. Tally
+    // holds one figure per item per store and his are spread across five.
+    const where = openingByGodownFromTallyXml(texts[i]);
+    if (where.basis !== 'closing') openingAt.push(...(where.rows || []));
+
+    const stock = itemsFromTallyXml(texts[i]);
+    if ((stock.rows || []).length) {
+      if (stock.basis && stock.basis !== 'opening') {
+        closingSeen = { name: files[i].name, basis: stock.basis };
+      } else {
+        openings.push(...stock.rows.filter((r) => Number(r.opening_stock) || Number(r.purchase_price)));
+      }
+    }
     if (billed) {
       book.vouchers.push(...one.vouchers);
       book.payments.push(...one.payments);
       book.transfers.push(...(one.transfers || []));
       book.counts.push(...(one.counts || []));
+      // THE ONE THAT WAS LEFT OUT.
+      //
+      // Five lists were carried over from each file and the sixth was not, so
+      // every Contra the reader found was dropped here -- eighteen deposits a
+      // year, thrown away by the merge that was meant to join the files up.
+      // They did not even land in the passed-over list, so nothing on any
+      // screen said a word about them.
+      book.cashMoves.push(...(one.cashMoves || []));
       book.skipped.push(...(one.skipped || []));
       perFile.push({ name: files[i].name, as: 'bills', bills: one.vouchers.length,
                      payments: one.payments.length });
@@ -329,6 +386,9 @@ $('file').onchange = async () => {
     }
   }
   if (mItems.length || mParties.length) book.masters = { items: mItems, parties: mParties };
+  book.openings = openings;
+  book.openingAt = openingAt;
+  book.money = { banks, cash: till };
 
   // the one file that gave nothing at all, for the explanation below
   const duds = perFile.filter((f) => f.as === 'masters' && !f.items && !f.parties);
@@ -347,12 +407,39 @@ $('file').onchange = async () => {
     rows.push(['Money in and out', n(book.payments.length)]);
     rows.push(['Transfers between stores', n(book.transfers?.length || 0)]);
   }
+  if (anyBills) {
+    // MONEY BANKED, SAID OUT LOUD.
+    //
+    // The plan counted bills, money, transfers, items and names -- and not the
+    // banking. So when a file held no Contra there was nothing on the screen
+    // that said so, and the only way to find out was to bring the file in and
+    // then go looking in the database for why nothing arrived.
+    rows.push(['Cash paid into or taken from the bank', n((book.cashMoves || []).length)]);
+  }
   if (book.masters) {
     rows.push(['Stock items in the masters', n((book.masters.items || []).length)]);
     rows.push(['Names in the masters', n((book.masters.parties || []).length)]);
   }
   rows.push(['Items that are new', n(plan.newItems.length)]);
   rows.push(['Names that are new', n(plan.newParties.length)]);
+  if ((plan.openings || []).length) {
+    rows.push(['Items with an opening stock in the file', n(plan.openings.length)]);
+  }
+  if ((plan.mendItems || []).length) {
+    rows.push(['Items already here to be given their opening stock',
+               n(plan.mendItems.length)]);
+  }
+  if ((plan.openingAt || []).length) {
+    const stores = new Set(plan.openingAt.map((r) => r.godown || 'the main store'));
+    rows.push([`Opening stock to place, across ${n(stores.size)} store(s)`,
+               n(plan.openingAt.length)]);
+  }
+  if ((plan.newAccounts || []).length) {
+    rows.push(['Bank accounts to be made', n(plan.newAccounts.length)]);
+  }
+  if (plan.openingCash) {
+    rows.push(['Cash in the till when the year opened', n(plan.openingCash)]);
+  }
   if (anyBills) {
     rows.push(['Stores that are new', n(plan.newGodowns.length)]);
     rows.push(['Passed over', n(book.skipped?.length || 0)]);
@@ -367,6 +454,26 @@ $('file').onchange = async () => {
     ).join('<br>') + '</p>';
   $('planTable').innerHTML = '<tr><th>What the file holds</th><th class="n">How many</th></tr>'
     + rows.map(([k, v]) => `<tr><td>${k}</td><td class="n">${v}</td></tr>`).join('');
+
+  // WHAT WAS PASSED OVER, BY KIND AND WITH A REASON.
+  //
+  // "Passed over: 14" tells a shopkeeper nothing, and the danger was never that
+  // an entry was skipped -- it is that he could not tell WHICH, so a whole kind
+  // of voucher could be missing from his books with nothing on any screen
+  // saying so.
+  const byWhy = new Map();
+  for (const v of (book.skipped || [])) {
+    const k = `${v.tally_type || v.vtype || 'something'}|${v.why || 'Skwik has no place for it'}`;
+    byWhy.set(k, (byWhy.get(k) || 0) + 1);
+  }
+  $('skipBox').innerHTML = byWhy.size
+    ? `<div class="flag"><strong>${n(book.skipped.length)} entr(y/ies) passed over — nothing
+         was written for these</strong><ul class="plain">`
+      + [...byWhy.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
+          .map(([k, c]) => { const [what, why] = k.split('|');
+            return `<li>${n(c)} × <strong>${what}</strong> — ${why}</li>`; }).join('')
+      + '</ul></div>'
+    : '';
 
   const stop = report.stop || [], warn = report.warn || [];
   $('stopBox').innerHTML =
@@ -408,6 +515,31 @@ $('file').onchange = async () => {
         + 'wrong. Keep the file and send it on.';
     }
   }
+  // THE OPENING STOCK IS ONLY RIGHT IF THE BOOK STARTS WHERE IT DOES.
+  //
+  // Tally's opening quantity is the figure as at the first of April. If the day
+  // book starts later than that, the movements in between are simply not in
+  // the file, and opening + what moved does not come to what is on the shelf.
+  // No code can invent the missing months, so it is said plainly instead.
+  const firstBill = book.vouchers.length
+    ? book.vouchers.map((v) => v.vdate).sort()[0] : '';
+  const startsLate = firstBill && !/-0?4-0?1$/.test(firstBill)
+    && (plan.openings || []).length;
+  $('openBox').innerHTML =
+    (closingSeen ? `<div class="flag bad"><strong>The opening stock in
+       ${closingSeen.name} was not read</strong><p class="note" style="margin:6px 0 0">
+       Tally gave closing balances in that file, not opening ones — the stock as
+       it is today rather than as it was in April. Writing that in as an opening
+       figure would count this year's movements twice, so it was left alone.
+       Export it again with opening balances.</p></div>` : '')
+    + (startsLate ? `<div class="flag"><strong>The day book starts on
+       ${firstBill}, not 1 April</strong><p class="note" style="margin:6px 0 0">
+       The opening quantities in this file are the ones from 1 April, so
+       anything that moved between then and ${firstBill} is not here and the
+       stock will read short by it. Export the Day Book from 1 April to today
+       and bring it in again — nothing already in your books is written twice.
+       </p></div>` : '');
+
   $('whyBox').innerHTML = saidWhy
     ? `<div class="flag bad"><strong>Nothing to bring in from this file</strong>
          <p class="note" style="margin:6px 0 0">${saidWhy}</p></div>` : '';

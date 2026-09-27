@@ -872,6 +872,133 @@ function sideOf(groups, parent, depth = 0) {
   return sideOf(groups, g.parent, depth + 1);
 }
 
+// WHERE THE OPENING STOCK ACTUALLY IS.
+//
+// Tally does not hold one opening figure per item -- it holds one per item PER
+// GODOWN, and his are spread across four:
+//
+//   Steel Utensils (A)   18,049.15 Kg in all
+//      Chamber Road  3,652.06    TRANSPORT  7,393.29
+//      Na-Paukhry    6,890.70    R(3rd)       113.10
+//
+// Read as a single number, all of it lands nowhere in particular: the total is
+// right and the godown-wise view is empty, which for a shop that moves goods
+// between two stores every day is the view that matters.
+//
+// Only OPENING figures are read, never closing ones -- the same rule the item
+// opening follows, and for the same reason: a closing balance written in as an
+// opening would count the whole year's movements twice.
+export function openingByGodownFromTallyXml(xml) {
+  xml = cleanText(xml);
+  const rows = [];
+  let sawClosing = false, sawOpening = false, noGodown = 0;
+
+  for (const b of blocksOf(xml, 'STOCKITEM')) {
+    const name = nameAttr(b) || tagTop(b, 'NAME');
+    if (!name) continue;
+
+    // the item's own total, which is what a file with no godowns gives
+    const whole = balanceOf(b, true);
+    if (whole.basis === 'closing') { sawClosing = true; continue; }
+    sawOpening = true;
+
+    // and the split, if Tally wrote one
+    const parts = [];
+    for (const ba of blocksOf(b, 'BATCHALLOCATIONS.LIST')) {
+      // READ STRAIGHT OFF THE BLOCK, NOT THROUGH stripLists.
+      //
+      // stripLists throws away every *.LIST inside a chunk so a parent's own
+      // tags can be read without a child's getting in the way -- and a batch
+      // allocation IS a .LIST, so passing it through stripLists deleted the
+      // whole thing and every godown came back empty.
+      const g = tagOf(ba, 'GODOWNNAME');
+      if (!g) continue;
+      const q = qtyOf(tagOf(ba, 'OPENINGBALANCE'));
+      const v = numOf(tagOf(ba, 'OPENINGVALUE'));
+      if (!q) continue;
+      parts.push({ godown: g, qty: q,
+                   // the rate it opened at, worked back from the value Tally
+                   // wrote against that godown's own quantity
+                   cost: q ? Math.round((Math.abs(v) / q) * 100) / 100 : 0 });
+    }
+
+    if (parts.length) {
+      for (const pt of parts) rows.push({ name, ...pt });
+    } else if (whole.value) {
+      // no split in the file: it is still stock, it just has no store named
+      // against it. The writer puts it in the main one.
+      noGodown += 1;
+      rows.push({ name, godown: '', qty: whole.value, cost: 0 });
+    }
+  }
+
+  return { rows, noGodown,
+           basis: sawClosing && !sawOpening ? 'closing' : sawClosing ? 'mixed' : 'opening' };
+}
+
+// THE TILL AND THE BANK ACCOUNTS, OUT OF THE SAME FILE AS EVERYTHING ELSE.
+//
+// partiesFromTallyXml keeps only the people who owe money or are owed it, so
+// Cash and the bank ledgers came out as "skipped" -- and a shopkeeper who had
+// just imported his whole book was then asked to type his bank account in by
+// hand, and his opening cash with it, while his stores and his customers had
+// arrived on their own. There was no reason for that; the ledgers were sitting
+// in the file the whole time.
+//
+// THE SIGN IS THE WHOLE POINT. Tally writes a debit balance negative and a
+// credit balance positive, so on his own export:
+//
+//   Cash                             Cash-in-hand    -200000.00   he HAS 2 lakh
+//   Cash Credit Account Fedral Bank  Bank Accounts   2350069.58   he OWES 23.5 lakh
+//
+// A cash credit account is an overdraft. Read as written it would show 23 lakh
+// sitting in the bank instead of 23 lakh owed to it, so the sign is turned
+// round here and an overdraft arrives as the negative balance it is.
+export function moneyLedgersFromTallyXml(xml) {
+  xml = cleanText(xml);
+  const groups = ledgerGroupsFromTallyXml(xml);
+  const banks = [];
+  let cash = null;
+  let sawClosing = false, sawOpening = false;
+
+  // the group decides, walking up the chain when the ledger does not say
+  const roleOf = (parent, primary, depth = 0) => {
+    for (const g of [primary, parent]) {
+      const t = String(g || '');
+      if (!t) continue;
+      if (/^cash-?in-?hand$/i.test(t.replace(/\s+/g, '')) || /\bcash\s*in\s*hand\b/i.test(t)) return 'cash';
+      if (/\bbank\b/i.test(t)) return 'bank';
+    }
+    if (depth > 8) return '';
+    const up = groups[String(parent || '').toLowerCase()];
+    if (!up) return '';
+    return roleOf(up.parent, up.primary, depth + 1);
+  };
+
+  for (const b of blocksOf(xml, 'LEDGER')) {
+    const name = nameAttr(b) || tagTop(b, 'NAME');
+    if (!name) continue;
+    const role = roleOf(tagTop(b, 'PARENT'), tagTop(b, 'PRIMARYGROUP'));
+    if (role !== 'cash' && role !== 'bank') continue;
+
+    const bal = balanceOf(b);
+    if (bal.basis === 'closing') sawClosing = true; else sawOpening = true;
+    // debit is written negative, and a debit is money he HAS
+    const opening = Math.round(-bal.value * 100) / 100;
+
+    if (role === 'cash') {
+      // one till. If a file somehow holds two, the first one wins and the
+      // second is left alone rather than guessed between.
+      if (!cash) cash = { name, opening };
+    } else {
+      banks.push({ name, opening });
+    }
+  }
+
+  return { banks, cash,
+           basis: sawClosing && !sawOpening ? 'closing' : sawClosing ? 'mixed' : 'opening' };
+}
+
 export function partiesFromTallyXml(xml) {
   xml = cleanText(xml);
   const out = [];

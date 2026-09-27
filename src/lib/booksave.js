@@ -50,6 +50,9 @@ export const BOOK_TABLES = [
   'payments',
   'expenses',
   'stock_moves',
+  // money moved between the till and an account -- needs the accounts, which
+  // are second in this list
+  'cash_moves',
   'invoice_series',
 ];
 

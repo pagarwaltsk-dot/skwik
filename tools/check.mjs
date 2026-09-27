@@ -305,7 +305,14 @@ rule('every table a backup writes can be put back', (() => {
   const tables = [...block[1].matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]);
   if (tables.length < 10) bad.push(`only ${tables.length} tables in a whole book -- something is missing`);
 
-  const slice = allSql.match(/create or replace function public\.book_restore_slice[\s\S]*?\n\$rp\$;/);
+  // THE LAST DEFINITION, NOT THE FIRST.
+  //
+  // A function gets replaced by a later migration, and matching the first
+  // definition asks what it looked like before the change -- so a table added
+  // to both the backup AND the restore still read as missing. The rest of this
+  // file already knows to look at the last one; this check did not.
+  const lastOf = (re) => { const all = [...allSql.matchAll(re)]; return all.length ? all[all.length - 1] : null; };
+  const slice = lastOf(/create or replace function public\.book_restore_slice[\s\S]*?\n\$rp\$;/g);
   if (!slice) return ['there is no book_restore_slice in the migrations'];
   for (const t of tables) {
     if (!new RegExp(`p_table = '${t}'`).test(slice[0])) {
@@ -314,7 +321,7 @@ rule('every table a backup writes can be put back', (() => {
   }
 
   // and the reader it is asked for with must allow it too
-  const cut = allSql.match(/create or replace function public\.book_slice[\s\S]*?\n\$sl\$;/);
+  const cut = lastOf(/create or replace function public\.book_slice[\s\S]*?\n\$sl\$;/g);
   if (!cut) bad.push('there is no book_slice in the migrations');
   else for (const t of tables) {
     if (!new RegExp(`'${t}'`).test(cut[0])) bad.push(`${t} cannot be asked for a page at a time`);
@@ -466,6 +473,119 @@ rule('nothing imports a file by a route that was built for another shape', (() =
       // count mentions outside the import line itself
       const uses = (s.match(new RegExp('\\b' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g')) || []).length;
       if (uses < 2) bad.push(`web/skwik-io.html imports ${name} and never uses it`);
+    }
+  }
+  return bad;
+})());
+
+rule('every part a screen draws is one it has actually got', (() => {
+  // WHY THIS IS NOT THE LINTER'S JOB.
+  //
+  // A screen that draws <CalButton> without importing it renders as far as the
+  // line that needs it and then throws, and the modal it was in simply never
+  // opens. eslint cannot see it: without the React plugin a name used only as a
+  // JSX tag is not counted as a reference at all -- it reports the import as
+  // UNUSED and no-undef stays silent either way. So the tags are read here.
+  const bad = [];
+  const walk = (d) => {
+    for (const f of fs.readdirSync(d)) {
+      const q = path.join(d, f);
+      if (fs.statSync(q).isDirectory()) { walk(q); continue; }
+      if (!f.endsWith('.js')) continue;
+      const raw = fs.readFileSync(q, 'utf8');
+      const noComments = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+      // WHAT THE FILE HAS. Read with the strings still in place, because an
+      // import is nothing but a name and a quoted path.
+      const known = new Set(['React', 'Fragment']);
+      for (const m of noComments.matchAll(/import\s+([\s\S]*?)\s+from\s+['"][^'"]*['"]/g)) {
+        for (const part of m[1].replace(/[{}]/g, ',').split(',')) {
+          const nm = part.trim().split(/\s+as\s+/).pop().trim().replace(/^\*\s*/, '');
+          if (/^[A-Za-z_$][\w$]*$/.test(nm)) known.add(nm);
+        }
+      }
+      for (const m of noComments.matchAll(/(?:const|let|var|function|class)\s+([A-Z][\w$]*)/g)) known.add(m[1]);
+      for (const m of noComments.matchAll(/([A-Z][\w$]*)\s*[:=]/g)) known.add(m[1]);
+
+      // WHAT IT DRAWS. Read with the strings taken OUT, because the Tally
+      // readers are full of XML tag names in quotes and those are not tags
+      // being drawn.
+      const code = noComments
+        .replace(/'(?:\\.|[^'\\])*'/g, "''")
+        .replace(/"(?:\\.|[^"\\])*"/g, '""')
+        .replace(/`(?:\\.|[^`\\])*`/g, '``');
+      for (const m of code.matchAll(/<([A-Z][\w$]*)/g)) {
+        if (!known.has(m[1])) bad.push(`${path.relative(ROOT, q)} draws <${m[1]}> but never got it`);
+      }
+    }
+  };
+  // only the places that draw: the libraries render nothing
+  for (const d of ['screens', 'components']) {
+    const dir = path.join(ROOT, 'src', d);
+    if (fs.existsSync(dir)) walk(dir);
+  }
+  return [...new Set(bad)];
+})());
+
+rule('the version on the phone can tell one build from the next', (() => {
+  // WHY THIS IS A RULE AND NOT A HABIT.
+  //
+  // Three builds went out in one afternoon, all of them reading 1.10.5 with
+  // versionCode 66, and when he asked "was it the 1.10.5 APK?" there was no
+  // answer -- the number could not distinguish the build with a feature in it
+  // from the build without. MoreScreen's own comment says the number matters
+  // exactly when you are telling whether the phone has the build you just
+  // made, so a delivery that changes the app and not the number breaks the one
+  // promise that screen makes.
+  const bad = [];
+  const f = path.join(ROOT, 'app.json');
+  if (!fs.existsSync(f)) return ['there is no app.json'];
+  let j;
+  try { j = JSON.parse(fs.readFileSync(f, 'utf8')); }
+  catch (e) { return ['app.json is not valid JSON -- nothing will build']; }
+  const v = j?.expo?.version;
+  const c = j?.expo?.android?.versionCode;
+  if (!v) bad.push('app.json has no version');
+  if (!Number.isInteger(c)) bad.push('app.json has no android versionCode');
+  // Android refuses an update whose versionCode did not go up, so the two have
+  // to move together -- a new version with the old code installs as the same
+  // build and the phone keeps what it has.
+  if (v && Number.isInteger(c)) {
+    const parts = String(v).split('.').map(Number);
+    if (parts.some((n) => !Number.isFinite(n))) {
+      bad.push(`the version "${v}" is not a plain number.number.number`);
+    }
+  }
+  return bad;
+})());
+
+rule('the browser page carries over everything the reader found', (() => {
+  // WHY THIS EXISTS.
+  //
+  // The page reads each picked file on its own and joins the books together.
+  // It carried five of the reader's six lists and quietly dropped the sixth,
+  // so every Contra in every import went in the bin -- eighteen deposits a
+  // year, never written, never even counted as passed over, with nothing on
+  // any screen saying a word. The test that was meant to catch it asked for
+  // "a digit" and nought is a digit.
+  // READ FROM DISK, NOT FROM THE src MAP -- that map holds src/*.js only, so
+  // asking it for the web page gave nothing and this check quietly passed on
+  // an empty string. Which is the same shape of fault it was written to catch.
+  const pageFile = path.join(ROOT, 'web', 'skwik-io.html');
+  const readerFile = path.join(ROOT, 'src', 'lib', 'tallybook.js');
+  if (!fs.existsSync(pageFile) || !fs.existsSync(readerFile)) return [];
+  const page = fs.readFileSync(pageFile, 'utf8');
+  const reader = fs.readFileSync(readerFile, 'utf8');
+  if (!page || !reader) return ['the page or the reader is empty'];
+  // what the reader hands back
+  const m = reader.match(/const book = \{([\s\S]*?)\};/);
+  if (!m) return ['vouchersFromTallyXml does not build its book in one place any more'];
+  const lists = [...m[1].matchAll(/([a-zA-Z]+)\s*:\s*\[\]/g)].map((x) => x[1]);
+  if (lists.length < 4) return ['this check can no longer read the lists the reader builds'];
+  const bad = [];
+  for (const k of lists) {
+    if (!new RegExp(`book\\.${k}\\.push`).test(page)) {
+      bad.push(`the page never carries over book.${k} from each file`);
     }
   }
   return bad;
