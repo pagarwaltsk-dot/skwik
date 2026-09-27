@@ -95,8 +95,14 @@ export default function ItemMovesScreen({ route, navigation }) {
     let on = true;
     (async () => {
       if (!showGodowns(org)) return;
+      // THERE IS NO is_active ON godowns, AND THE FILTER EMPTIED THE LIST.
+      // The table has id, org_id, name, is_main, created_at and import_run —
+      // nothing else. PostgREST answers a filter on a column that is not
+      // there with an error, not with rows, so `data` came back undefined and
+      // the store picker on this screen was blank for every shop that keeps
+      // godowns. The six other places that read godowns ask for them all.
       const { data } = await supabase.from('godowns')
-        .select('id, name').eq('is_active', true).order('name');
+        .select('id, name').order('name');
       if (on) setStores(data || []);
     })();
     return () => { on = false; };
