@@ -97,7 +97,25 @@ export function restClient({ url, key, token }) {
           if (q.op === 'insert') { q.back = true; return api; }
           q.sel = sel || '*'; return api;
         },
-        eq(k, v) { q.filters.push([k, v]); return api; },
+        // A FILTER CARRIES ITS OPERATOR.
+        //
+        // This used to keep only `[key, value]` and write `eq.` into every
+        // filter by hand. Then a lib reached for `.is('account_id', null)`
+        // -- which the phone's library has -- and the browser page died on
+        // "is is not a function". So each filter now carries the word
+        // PostgREST wants, and the ones the app actually uses all exist.
+        eq(k, v) { q.filters.push([k, 'eq', v]); return api; },
+        neq(k, v) { q.filters.push([k, 'neq', v]); return api; },
+        gt(k, v) { q.filters.push([k, 'gt', v]); return api; },
+        gte(k, v) { q.filters.push([k, 'gte', v]); return api; },
+        lt(k, v) { q.filters.push([k, 'lt', v]); return api; },
+        lte(k, v) { q.filters.push([k, 'lte', v]); return api; },
+        like(k, v) { q.filters.push([k, 'like', v]); return api; },
+        ilike(k, v) { q.filters.push([k, 'ilike', v]); return api; },
+        // `.is(col, null)` asks for "still empty", which is not the same
+        // question as `= null` -- that matches nothing at all.
+        is(k, v) { q.filters.push([k, 'is', v]); return api; },
+        in(k, list) { q.filters.push([k, 'in', list]); return api; },
         order() { return api; },
         limit(n) { q.from = 0; q.to = n - 1; return api; },
         range(a, b) { q.from = a; q.to = b; return api; },
@@ -125,9 +143,20 @@ export function restClient({ url, key, token }) {
 
         async run() {
           try {
-            const where = q.filters
-              .map(([k, v]) => `${encodeURIComponent(k)}=eq.${encodeURIComponent(v)}`)
-              .join('&');
+            const where = q.filters.map(([k, opName, v]) => {
+              const col = encodeURIComponent(k);
+              if (opName === 'is') {
+                const word = v === null ? 'null' : (v === true ? 'true'
+                  : v === false ? 'false' : String(v));
+                return `${col}=is.${word}`;
+              }
+              if (opName === 'in') {
+                const list = (Array.isArray(v) ? v : [v])
+                  .map((x) => `"${String(x).replace(/"/g, '\\"')}"`).join(',');
+                return `${col}=in.(${encodeURIComponent(list)})`;
+              }
+              return `${col}=${opName}.${encodeURIComponent(v)}`;
+            }).join('&');
 
             if (q.op === 'insert') {
               const prefer = [
