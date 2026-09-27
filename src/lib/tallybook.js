@@ -65,10 +65,11 @@ export const FROM_PARENT = {
   'receipt':        { kind: 'payment', ptype: 'receipt' },
   'payment':        { kind: 'payment', ptype: 'payment' },
   'stock journal':  { kind: 'transfer' },
-  // Contra moves money between the till and the bank. Skwik has no such entry
-  // — the cash book and the bank book are both built from receipts and
-  // payments — so it is named rather than guessed at.
-  'contra':         { kind: 'skip', why: 'moves money between cash and bank' },
+  // Contra moves money between the till and the bank -- he banks his takings
+  // every evening and this is how Tally writes it. It used to be named and
+  // skipped, because Skwik had no entry for it: cash in hand only ever went up
+  // and a bank balance never rose from a deposit. It has one now.
+  'contra':         { kind: 'cashmove' },
   // A journal is whatever an accountant needed it to be. Importing one blind
   // would put a figure somewhere it does not belong.
   'journal':        { kind: 'skip', why: 'a general journal entry' },
@@ -313,6 +314,7 @@ function readVoucher(block, types, leds) {
   if (map.kind === 'skip') return { ...v, kind: 'skip', why: map.why };
 
   if (map.kind === 'transfer') return readTransfer(block, v);
+  if (map.kind === 'cashmove') return readCashMove(block, v, leds);
   if (map.kind === 'payment')  return readPayment(block, v, map.ptype, leds);
   if (map.kind === 'count')    return readCount(block, v);
   return readBill(block, v, map.vtype, leds);
@@ -502,6 +504,55 @@ function readBill(block, v, vtype, leds) {
 // which cannot be read off the sign, because Tally's sign depends on the
 // voucher kind — so the party is the one named on the voucher header and the
 // other leg is the till or the bank.
+// MONEY MOVED BETWEEN HIS OWN TILL AND HIS OWN BANK.
+//
+// Tally calls it a Contra and writes it as two money legs and nothing else:
+//
+//   Cash                              400000.00     (credit -- out of the till)
+//   Cash Credit Account Fedral Bank  -400000.00     (debit  -- into the bank)
+//
+// So there is no party to find, only which leg is the till and which is the
+// bank, and which way the money went. The sign answers the last part: on the
+// cash leg a credit is money leaving the drawer, which is a deposit.
+//
+// Both legs are money, so the trick readPayment uses -- "the money leg is the
+// one filed under Cash-in-hand or a Bank group" -- cannot tell them apart on
+// its own. The GROUP does: one is cash, the other is a bank.
+function readCashMove(block, v, leds) {
+  const legs = blocksOf(block, 'ALLLEDGERENTRIES.LIST').map((b) => ({
+    name: top(b, 'LEDGERNAME'),
+    raw: numOf(top(b, 'AMOUNT')),
+  })).filter((l) => l.name && l.raw);
+
+  const roleOf = (n) => ((leds && leds[String(n).toLowerCase()]) || {}).role || '';
+  const looksLikeTill = (n) => /^cash$|cash\s*in\s*hand|petty\s*cash|^till$/i.test(String(n).trim());
+
+  // The masters answer this when they are in the file; the name answers it
+  // when they are not, and a file with no ledger masters is common enough.
+  let till = legs.find((l) => roleOf(l.name) === 'cash');
+  if (!till) till = legs.find((l) => looksLikeTill(l.name));
+  const bank = legs.find((l) => l !== till);
+
+  // A CONTRA BETWEEN TWO BANKS IS NOT A DEPOSIT, and guessing would move money
+  // out of a till that was never involved. Named, not guessed at.
+  if (!till) {
+    return { ...v, kind: 'skip', why: 'moves money between two bank accounts' };
+  }
+  if (legs.length > 2) {
+    return { ...v, kind: 'skip', why: 'moves money between more than two places at once' };
+  }
+
+  return {
+    ...v,
+    kind: 'cashmove',
+    // On the till's leg, a credit (written positive, the way a party's leg is
+    // on a purchase) is money going OUT of the drawer.
+    direction: till.raw > 0 ? 'deposit' : 'withdrawal',
+    amount: round2(Math.abs(till.raw)),
+    account: bank ? bank.name : '',
+  };
+}
+
 function readPayment(block, v, ptype, leds) {
   const legs = blocksOf(block, 'ALLLEDGERENTRIES.LIST').map((b) => ({
     name: top(b, 'LEDGERNAME'),
@@ -619,7 +670,8 @@ export function vouchersFromTallyXml(xml) {
   const leds = ledgersIn(xml);
   const all = blocksOf(xml, 'VOUCHER').map((b) => readVoucher(b, types, leds));
 
-  const book = { vouchers: [], payments: [], transfers: [], counts: [], skipped: [] };
+  const book = { vouchers: [], payments: [], transfers: [], counts: [],
+                 cashMoves: [], skipped: [] };
   for (const v of all) {
     if (v.kind === 'skip')          book.skipped.push(v);
     else if (v.cancelled)           book.skipped.push({ ...v, why: 'cancelled in Tally' });
@@ -627,6 +679,7 @@ export function vouchersFromTallyXml(xml) {
     else if (v.kind === 'voucher')  book.vouchers.push(v);
     else if (v.kind === 'payment')  book.payments.push(v);
     else if (v.kind === 'transfer') book.transfers.push(v);
+    else if (v.kind === 'cashmove') book.cashMoves.push(v);
     else if (v.kind === 'count')    book.counts.push(v);
   }
   return book;

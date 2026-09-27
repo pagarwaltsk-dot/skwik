@@ -241,6 +241,7 @@ const PLAIN = {
   payments: 'Money in and out',
   expenses: 'Expenses',
   stock_moves: 'Stock movements',
+  cash_moves: 'Cash paid into and taken from the bank',
   invoice_series: 'Bill numbers',
 };
 

@@ -9,6 +9,7 @@ import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0, num, settle, today } from '../lib/money';
 import { Box, Head, KeyForm, Screen } from '../components/Chrome';
+import { CalButton } from '../components/DatePick';
 import { C, S } from '../theme';
 
 // THE SHOP'S ACCOUNTS.
@@ -31,6 +32,15 @@ export default function BanksScreen({ navigation }) {
   const [rows, setRows] = useState([]);
   const [edit, setEdit] = useState(null);
   const [cash, setCash] = useState('');
+  // MONEY MOVED BETWEEN THE TILL AND AN ACCOUNT.
+  //
+  // He banks his takings every evening. Skwik had no entry for it at all, so
+  // cash in hand only ever went up and no bank balance ever rose from a
+  // deposit -- the two figures he checks most, drifting apart a little further
+  // every day. This is that entry: one movement, no customer or supplier in
+  // sight, which is why it lives here and not on the money screen.
+  const [move, setMove] = useState(null);
+  const [saving, setSaving] = useState(false);
   // THE DAY THE BOOKS BEGAN, NOT A DATE HE HAS TO THINK ABOUT.
   //
   // An opening balance IS the figure on the day the books started — there is
@@ -105,6 +115,41 @@ export default function BanksScreen({ navigation }) {
     Alert.alert('Saved', 'The cash book starts from that figure.');
   };
 
+  const saveMove = async () => {
+    const amt = num(move.amount);
+    if (!(amt > 0)) return Alert.alert('How much?', 'Put in the amount that moved.');
+    if (!move.account_id) {
+      return Alert.alert('Which account?', 'Say which bank account the money moved to or from.');
+    }
+    setSaving(true);
+    try {
+      const { error } = await supabase.from('cash_moves').insert({
+        org_id: org.id,
+        direction: move.direction,
+        mdate: move.mdate || today(),
+        amount: amt,
+        account_id: move.account_id,
+        note: move.note || null,
+      });
+      if (error) throw error;
+      const acc = rows.find((r) => r.id === move.account_id);
+      Alert.alert('Saved',
+        move.direction === 'deposit'
+          ? `\u20b9${fmt0(amt)} out of the cash box and into ${acc ? acc.name : 'the bank'}.`
+          : `\u20b9${fmt0(amt)} out of ${acc ? acc.name : 'the bank'} and into the cash box.`);
+      setMove(null);
+      load();
+    } catch (e) {
+      // THE SAME DEPOSIT TWICE IS THE ONE MISTAKE WORTH NAMING PLAINLY -- the
+      // database refuses it, and "duplicate key" tells a shopkeeper nothing.
+      const msg = String(e?.message || e);
+      Alert.alert('Not saved', /duplicate key|unique constraint|23505/i.test(msg)
+        ? 'That exact movement is already in your books -- same day, same amount, '
+          + 'same account. Nothing was recorded twice.'
+        : sayPlainly(e));
+    } finally { setSaving(false); }
+  };
+
   if (!isOwner) {
     return (
       <Screen>
@@ -145,6 +190,39 @@ export default function BanksScreen({ navigation }) {
             <Text style={[S.btnText, { fontSize: 14.5 }]}>Save the cash opening</Text>
           </TouchableOpacity>
         </View>
+
+        {!!rows.filter((r) => r.is_active).length && (
+          <View style={[S.card, { marginTop: 16 }]}>
+            <Text style={S.eyebrow}>Money moved to or from the bank</Text>
+            <Text style={{ fontSize: 12.5, color: C.muted, lineHeight: 18, marginBottom: 12 }}>
+              Cash banked, or cash drawn out. It is not a receipt or a payment --
+              nobody is paying anybody -- so it belongs to no customer and no
+              supplier. It goes out of one of your own pockets and into another.
+            </Text>
+            <View style={S.row}>
+              <TouchableOpacity style={{ flex: 1 }}
+                onPress={() => setMove({ direction: 'deposit', amount: '', note: '',
+                  mdate: today(),
+                  account_id: (rows.find((r) => r.is_default && r.is_active)
+                            || rows.find((r) => r.is_active) || {}).id })}>
+                <View style={[S.btn, { paddingVertical: 12 }]}>
+                  <Text style={[S.btnText, { fontSize: 14 }]}>Paid into bank</Text>
+                </View>
+              </TouchableOpacity>
+              <View style={{ width: 10 }} />
+              <TouchableOpacity style={{ flex: 1 }}
+                onPress={() => setMove({ direction: 'withdrawal', amount: '', note: '',
+                  mdate: today(),
+                  account_id: (rows.find((r) => r.is_default && r.is_active)
+                            || rows.find((r) => r.is_active) || {}).id })}>
+                <View style={[S.btn, { paddingVertical: 12, backgroundColor: C.card,
+                                       borderWidth: 1, borderColor: C.line }]}>
+                  <Text style={[S.btnText, { fontSize: 14, color: C.ink }]}>Taken from bank</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         <Text style={[S.eyebrow, { marginTop: 22 }]}>Bank accounts</Text>
 
@@ -190,6 +268,61 @@ export default function BanksScreen({ navigation }) {
           </View>
         )}
       </ScrollView>
+
+      <Modal visible={!!move} animationType="slide" onRequestClose={() => setMove(null)}>
+        {!!move && (
+          <KeyForm style={S.screen} keyboardShouldPersistTaps="handled"
+                   contentContainerStyle={{ padding: 20, paddingTop: 54 }}>
+            <Text style={{ fontSize: 23, fontWeight: '700', color: C.ink }}>
+              {move.direction === 'deposit' ? 'Paid into bank' : 'Taken from bank'}
+            </Text>
+            <Text style={{ fontSize: 12.5, color: C.muted, lineHeight: 18, marginTop: 6 }}>
+              {move.direction === 'deposit'
+                ? 'Out of the cash box, into the account. Your cash in hand goes down by this and the account goes up by it.'
+                : 'Out of the account, into the cash box. The account goes down by this and your cash in hand goes up by it.'}
+            </Text>
+
+            <Text style={[S.label, { marginTop: 18 }]}>How much</Text>
+            <Box style={[{ marginTop: 6 }, S.num]} keyboardType="numeric" placeholder="0"
+              autoFocus value={move.amount}
+              onChangeText={(t) => setMove({ ...move, amount: t })}
+              onBlur={() => setMove({ ...move, amount: settle(move.amount) })} />
+
+            <Text style={[S.label, { marginTop: 16 }]}>
+              {move.direction === 'deposit' ? 'Into which account' : 'Out of which account'}
+            </Text>
+            {rows.filter((r) => r.is_active).map((a) => (
+              <TouchableOpacity key={a.id} onPress={() => setMove({ ...move, account_id: a.id })}
+                style={[S.row, { paddingVertical: 12, borderBottomWidth: 1,
+                                 borderBottomColor: C.line }]}>
+                <Text style={{ flex: 1, fontSize: 15, fontWeight: move.account_id === a.id ? '800' : '600',
+                               color: move.account_id === a.id ? C.accent : C.ink }}>
+                  {a.name}
+                </Text>
+                {move.account_id === a.id && (
+                  <Text style={{ fontSize: 15, fontWeight: '800', color: C.accent }}>SELECTED</Text>
+                )}
+              </TouchableOpacity>
+            ))}
+
+            <Text style={[S.label, { marginTop: 16 }]}>On what day</Text>
+            <CalButton value={move.mdate} onChange={(d) => setMove({ ...move, mdate: d })} />
+
+            <Text style={[S.label, { marginTop: 16 }]}>A note, if you want one</Text>
+            <Box style={{ marginTop: 6 }} placeholder="the evening's takings"
+              value={move.note} onChangeText={(t) => setMove({ ...move, note: t })} />
+
+            <TouchableOpacity style={[S.btn, { marginTop: 22 }]} disabled={saving}
+              onPress={saveMove}>
+              <Text style={S.btnText}>{saving ? 'Saving\u2026' : 'Save it'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={{ marginTop: 14, alignItems: 'center' }}
+              onPress={() => setMove(null)}>
+              <Text style={{ fontSize: 14, fontWeight: '700', color: C.muted }}>Leave it</Text>
+            </TouchableOpacity>
+          </KeyForm>
+        )}
+      </Modal>
 
       <Modal visible={!!edit} animationType="slide" onRequestClose={() => setEdit(null)}>
         {!!edit && (

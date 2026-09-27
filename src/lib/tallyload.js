@@ -154,6 +154,7 @@ export function planLoad(book, have = {}) {
   const items = indexBy(have.items);
   const parties = indexBy(have.parties);
   const godowns = indexBy(have.godowns);
+  const accounts = indexBy(have.accounts);
 
   // ONE ITEM MAY APPEAR ON TWENTY BILLS. The first line that mentions it is
   // the one that decides its unit, its HSN and its GST rate, because they are
@@ -220,6 +221,17 @@ export function planLoad(book, have = {}) {
   for (const t of book.transfers) {
     wantGodown(t.from); wantGodown(t.to);
     t.lines.forEach((l) => { wantItem(l); wantGodown(l.from); wantGodown(l.to); });
+  }
+
+  // THE ACCOUNT HE BANKED IT INTO, which may not be in Skwik yet. A deposit
+  // with nowhere to land would sit on the sheet as money that left the till
+  // and arrived nowhere, so the account is made if the file names one Skwik
+  // has never heard of.
+  const newAccounts = new Map();
+  for (const m of (book.cashMoves || [])) {
+    const k = norm(m.account);
+    if (!k || accounts.has(k) || newAccounts.has(k)) continue;
+    newAccounts.set(k, { name: m.account });
   }
 
   // Whatever the file said about each name, carried onto the ones being made
@@ -290,9 +302,11 @@ export function planLoad(book, have = {}) {
     newGodowns: [...newGodowns.values()],
     // every name the file mentions, new or not, with what the file knows
     knownParties: [...knownParties.values()],
+    newAccounts: [...newAccounts.values()],
     bills: book.vouchers.length,
     payments: book.payments.length,
     transfers: book.transfers.length,
+    cashMoves: (book.cashMoves || []).length,
     // true when there were no bills at all and everything above came out of
     // the masters instead
     fromMasters: nothingBilled && !!book.masters
@@ -319,12 +333,14 @@ export async function readMasters(supabase) {
     }
     return out;
   };
-  const [items, parties, godowns] = await Promise.all([
+  const [items, parties, godowns, accounts] = await Promise.all([
     page('items', 'id, name', (q) => q.eq('is_active', true)),
     page('parties', 'id, name'),
     page('godowns', 'id, name'),
+    // the bank accounts too, so a deposit can find the one it went into
+    page('bank_accounts', 'id, name'),
   ]);
-  return { items, parties, godowns };
+  return { items, parties, godowns, accounts };
 }
 
 // `onStep({ done, total, what })` is called as it goes, so a shopkeeper on a
@@ -349,7 +365,8 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
   const plan = planLoad(book, have);
   const total = plan.newGodowns.length + plan.newParties.length + plan.newItems.length
-              + plan.bills + plan.payments + plan.transfers;
+              + plan.newAccounts.length
+              + plan.bills + plan.payments + plan.transfers + plan.cashMoves;
   let done = 0;
   const step = (what) => { done += 1; onStep({ done, total, what }); };
 
@@ -382,7 +399,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   }
 
   const made = { godowns: 0, parties: 0, items: 0, bills: 0, already: 0, payments: 0,
-                 transfers: 0, run };
+                 transfers: 0, accounts: 0, banked: 0, run };
   const fail = (what, e) => {
     const err = new Error(`${what}: ${e?.message || e}`);
     err.made = made; err.done = done; err.total = total;
@@ -392,6 +409,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   const godowns = indexBy(have.godowns);
   const parties = indexBy(have.parties);
   const items   = indexBy(have.items);
+  const accounts = indexBy(have.accounts);
 
   /* ---- the stores ---- */
   for (const g of plan.newGodowns) {
@@ -612,13 +630,53 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     step(`transfer of ${t.vdate}`);
   }
 
+  /* ---- the money he banked, and took back out ---- */
+  //
+  // A deposit is one movement with two ends -- out of the till, into the
+  // account -- so it is one row, and the database refuses the same day, amount,
+  // account and direction twice. That is what makes pressing the import again
+  // safe: the bills are already skipped by their own ids, and a deposit is
+  // skipped by being the same deposit.
+  for (const a of plan.newAccounts) {
+    const { data, error } = await supabase.from('bank_accounts')
+      .insert({ org_id: org.id, name: a.name, opening: 0,
+                is_active: true, is_default: accounts.size === 0 })
+      .select().single();
+    if (error) fail(`could not add the bank account ${a.name}`, error);
+    accounts.set(norm(a.name), data);
+    made.accounts += 1; step(`account ${a.name}`);
+  }
+
+  for (const m of (book.cashMoves || [])) {
+    const acc = idOf(accounts, m.account);
+    const { error } = await supabase.from('cash_moves').insert({
+      org_id: org.id,
+      direction: m.direction,
+      mdate: m.vdate,
+      amount: m.amount,
+      account_id: acc,
+      note: m.narration || (m.direction === 'deposit' ? 'paid into bank' : 'taken from bank'),
+      import_run: run,
+    });
+    // THE SAME DEPOSIT TWICE IS NOT AN ERROR, it is the second press of a
+    // button that is meant to be safe to press twice. The database says no by
+    // its own unique index, and that no is the right answer, not a failure.
+    if (error && !/duplicate key|unique constraint|23505/i.test(
+        `${error.message || ''} ${error.code || ''}`)) {
+      fail(`could not record the money banked on ${m.vdate}`, error);
+    }
+    if (!error) made.banked += 1;
+    step(`banked ${m.amount}`);
+  }
+
   // THE RUN IS CLOSED, with what it actually brought in written on it. That
   // is what the History tab reads back, and what the undo button counts.
   if (run) {
     await supabase.rpc('import_end', { p_run: run, p_counts: {
       bills: made.bills, already: made.already, money: made.payments,
       moves: made.transfers, items: made.items, names: made.parties,
-      godowns: made.godowns } }).catch(() => {});
+      godowns: made.godowns, banked: made.banked,
+      accounts: made.accounts } }).catch(() => {});
   }
 
   return { ...made, total, done };
