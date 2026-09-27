@@ -401,6 +401,76 @@ rule('the browser page imports nothing that does not exist', (() => {
   return bad;
 })());
 
+rule('the browser page points at the same project as the app', (() => {
+  const a = path.join(ROOT, 'src', 'lib', 'supabase.js');
+  const b = path.join(ROOT, 'web', 'project.js');
+  if (!fs.existsSync(a) || !fs.existsSync(b)) return [];
+  const grab = (f) => {
+    const s = fs.readFileSync(f, 'utf8');
+    const u = s.match(/SUPABASE_URL\s*=\s*'([^']*)'/);
+    const k = s.match(/SUPABASE_ANON_KEY\s*=\s*'([^']*)'/);
+    return { url: u && u[1], key: k && k[1] };
+  };
+  const app = grab(a), web = grab(b);
+  const bad = [];
+  if (!web.url || !web.key) bad.push('web/project.js is missing one of the two values');
+  else {
+    if (app.url !== web.url) bad.push('web/project.js has a different address from src/lib/supabase.js');
+    if (app.key !== web.key) bad.push('web/project.js has a different anon key from src/lib/supabase.js');
+  }
+  return bad;
+})());
+
+rule('the browser page never asks a shopkeeper for the project details', (() => {
+  const f = path.join(ROOT, 'web', 'skwik-io.html');
+  if (!fs.existsSync(f)) return [];
+  const s = fs.readFileSync(f, 'utf8');
+  const bad = [];
+  if (/id="url"/.test(s)) bad.push('there is still a box asking for the Supabase address');
+  if (/id="key"/.test(s)) bad.push('there is still a box asking for the anon key');
+  return bad;
+})());
+
+rule("a link cannot send the page at somebody else's server", (() => {
+  const f = path.join(ROOT, 'web', 'project.js');
+  if (!fs.existsSync(f)) return [];
+  const s = fs.readFileSync(f, 'utf8');
+  const bad = [];
+  // the ?project= door has to be shut to everything but this machine, or the
+  // link becomes a way to collect a shopkeeper's password
+  if (/URLSearchParams/.test(s) && !/127\.0\.0\.1/.test(s)) {
+    bad.push('web/project.js reads the address off the link without checking it is local');
+  }
+  return bad;
+})());
+
+rule('nothing imports a file by a route that was built for another shape', (() => {
+  const f = path.join(ROOT, 'web', 'skwik-io.html');
+  if (!fs.existsSync(f)) return [];
+  const raw0 = fs.readFileSync(f, 'utf8');
+  // The note explaining the fault mentions the name, so the CODE is what is
+  // read here, not the comments around it.
+  const s = raw0.split('\n').filter((ln) => !/^\s*(\/\/|\*|\/\*)/.test(ln)).join('\n');
+  const bad = [];
+  // mergeFiles wants {name, text} objects and gives back rows of masters, not
+  // XML. Handed plain text and its answer handed to the voucher reader, it
+  // silently lost ninety bills. Nothing here may use it again.
+  if (/mergeFiles\s*\(/.test(s) || /\bmergeFiles\b[^(]*\}\s*from/.test(s)) {
+    bad.push('web/skwik-io.html uses mergeFiles, which returns rows and not XML');
+  }
+  // and an import nobody calls is how that fault hid for a whole build
+  for (const m of s.matchAll(/import \{([^}]+)\} from ['"]([^'"]+)['"]/g)) {
+    for (const raw of m[1].split(',')) {
+      const name = raw.trim().split(/\s+as\s+/).pop().trim();
+      if (!name) continue;
+      // count mentions outside the import line itself
+      const uses = (s.match(new RegExp('\\b' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g')) || []).length;
+      if (uses < 2) bad.push(`web/skwik-io.html imports ${name} and never uses it`);
+    }
+  }
+  return bad;
+})());
+
 // -------------------------------------------------------------------------
 console.log('');
 if (!fails.length) {

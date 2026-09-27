@@ -397,6 +397,27 @@ function readBill(block, v, vtype, leds) {
                   : 1;
   const round = roundRaw * roundSign;
 
+  // A CHARGE BOOKED WITH NO STOCK ITEM UNDER IT IS STILL ON THE BILL.
+  //
+  // His insurance and his packing & forwarding are ledger legs and nothing
+  // else -- no inventory entry, so no stock item to ride on:
+  //
+  //   National Insurance Company Limited    17518.00
+  //   Fire Insurance (Godown)             -14846.00
+  //   CGST                                 -1336.14
+  //   SGST                                 -1336.14
+  //   Round Off                                 0.28
+  //
+  // Only the charges riding on a stock item were being counted, so this bill
+  // added up to 2672 against Tally's 17518 -- the whole of it missing but the
+  // tax. Three of his bills stopped the import dead for exactly this.
+  //
+  // The sign is read the same way the round off is, and for the same reason:
+  // Tally writes a charge on the same side as the taxes, so whichever way
+  // they face is "added to the bill". A discount, written the other way,
+  // therefore comes off it instead of being piled on.
+  for (const o of others) o.amount = round2(o.amount * roundSign);
+
   // the charges that were riding on a stock item
   //
   // AND WHAT RATE THEY CARRY, which was thrown away. Sixteen of his purchases
@@ -422,7 +443,35 @@ function readBill(block, v, vtype, leds) {
   }
 
   const goods = lines.reduce((t, l) => t + (l.amount || l.qty * l.rate), 0);
-  const carried = others.filter((x) => x.on_item).reduce((t, x) => t + x.amount, 0);
+  // EVERY charge on the bill, whether it rode on a stock item or stood on its
+  // own as a ledger. Counting only the first is what lost the insurance.
+  const carried = others.reduce((t, x) => t + x.amount, 0);
+
+  // WHAT RATE THE CHARGE WAS TAXED AT, WHEN THE FILE DOES NOT SAY.
+  //
+  // A ledger charge carries no rate of its own -- Tally puts the tax on the
+  // tax ledgers and leaves the charge bare. Left at nought, the charge shows
+  // up in the HSN summary as 14,846 with no tax against it while the bill
+  // header carries 2,672.28, so the summary stops adding up to the bill and
+  // the same hole turns up in his GSTR-1.
+  //
+  // It is not guessed: it is what is left over. The goods account for their
+  // own tax at their own rates, and whatever tax remains belongs to the
+  // charge. The answer is only kept if it lands on a real GST rate -- 18% on
+  // his insurance, 5% on the aluminium packing -- and left at nought if it
+  // does not, because a rate that is nearly right is worse than none.
+  if (!chargeRate && carried > 0.5) {
+    const taxOnBill = cgst + sgst + igst;
+    const taxOfGoods = lines.reduce((t, l) =>
+      t + ((l.amount || l.qty * l.rate) * (Number(l.gst_rate) || 0)) / 100, 0);
+    const over = taxOnBill - taxOfGoods;
+    if (over > 0.5) {
+      const asked = (over / carried) * 100;
+      const real = [0.1, 0.25, 1, 1.5, 3, 5, 6, 12, 18, 28]
+        .find((r) => Math.abs(r - asked) < 0.2);
+      if (real) chargeRate = real;
+    }
+  }
   return {
     ...v, kind: 'voucher', vtype, lines,
     party: paidOver ? '' : v.party,
@@ -626,10 +675,18 @@ export function checkBook(book, { items = [], parties = [], godowns = [] } = {})
   // 3. THE PIECES MUST ADD UP TO WHAT TALLY SAYS THE BILL CAME TO.
   //    Two rupees is a rounding difference; two hundred is a column read
   //    wrong, and that is worth stopping for.
+  const wontAddUp = [];
   for (const v of book.vouchers) {
     if (!v.tally_total) continue;
     const off = Math.abs(v.total - v.tally_total);
     if (off > 2) {
+      // WHICH bills, not only that some. One odd bill in a year used to stop
+      // the whole import, and "put it right first" is no answer when the bill
+      // is a shape Skwik has not met yet. Named here, they can be left out
+      // and entered by hand while the other nine hundred go in.
+      if (off > 50) wontAddUp.push({ no: v.no, vdate: v.vdate, vtype: v.vtype,
+        tally_type: v.tally_type, total: round2(v.total),
+        tally_total: round2(v.tally_total), off: round2(off) });
       (off > 50 ? stop : warn).push(
         `${v.tally_type} ${v.no}: the lines and tax come to ${v.total.toFixed(2)}, `
         + `Tally says ${v.tally_total.toFixed(2)}`);
@@ -678,7 +735,7 @@ export function checkBook(book, { items = [], parties = [], godowns = [] } = {})
   }
 
   return {
-    stop, warn,
+    stop, warn, wontAddUp,
     newItems: [...newItems], newParties: [...newParties], newGodowns: [...newGodowns],
     counts: {
       bills: book.vouchers.length,
