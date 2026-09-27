@@ -11,7 +11,7 @@
 // Every word you type must appear somewhere in the product — its name, its
 // search words, its local names. Order never matters.
 
-import { calc } from './money';
+import { calc } from './money.js';
 
 export const tok = (s) =>
   String(s || '').trim().toLowerCase().split(/\s+/).filter(Boolean);

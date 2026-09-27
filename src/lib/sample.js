@@ -30,7 +30,7 @@
 //   WHO HE SELLS TO. His own customers, in his own proportion of cash to
 //   credit, spread over working days.
 
-import { computeBill, n2, num, saleRate, taxModeFor } from './money';
+import { computeBill, n2, num, saleRate, taxModeFor } from './money.js';
 
 /* ---------------- small, predictable randomness ---------------- */
 

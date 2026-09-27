@@ -1,6 +1,22 @@
 RUN THESE IN THIS ORDER
 =======================
 
+SQL FIRST, THEN THE CODE.
+
+Run these in Supabase before you upload the new code to GitHub. The
+database can always be ahead of the app; it is the app being ahead of
+the database that leaves you with screens asking for things that are
+not there yet.
+
+Nothing here breaks the version you are running today. Every one of
+these files adds; none of them takes anything away. So you can run all
+25 this evening and upload the code tomorrow, and the app on your phone
+carries on exactly as it does now in between.
+
+IF YOU HAVE ALREADY RUN 1 TO 24, YOU ONLY NEED NUMBER 25.
+It is new since the last lot. Running the earlier ones again is harmless
+if you would rather be sure.
+
 Copy each file into the Supabase SQL editor and press Run, top to bottom.
 
    1.  1.9-fixes.sql
@@ -26,6 +42,8 @@ Copy each file into the Supabase SQL editor and press Run, top to bottom.
   21.  1.9.51-bill-date-window.sql
   22.  1.9.52-quiet-start.sql
   23.  1.10.0-imports-and-backup.sql
+  24.  1.10.2-big-books.sql
+  25.  1.10.3-cost-and-import.sql     <-- NEW
 
 
 DO NOT USE THE ORDER GITHUB SHOWS YOU
@@ -34,13 +52,13 @@ GitHub sorts these names as words, not as numbers, so on screen it puts
 1.10.0 FIRST and 1.9.3 eighth. Run them that way and files will fail,
 because each one expects the ones above it to have run already.
 
-The list above is the right order. 1.10.0 is LAST.
+The list above is the right order. The three 1.10 files are LAST.
 
 
 RUNNING ONE TWICE COSTS NOTHING
 -------------------------------
 Every one of these is written so that running it again does nothing.
-Tested: all 23 were run a second time, in order, on a database that
+Tested: all 25 were run a second time, in order, on a database that
 already had bills, money, stock and ledgers in it. They ran clean and
 not one figure moved.
 
@@ -66,6 +84,16 @@ reading:
            on for 1. No row was changed.
            This one is telling you that switching the defaults off for NEW
            shops did not switch anything off for yours.
+
+  1.10.3   bills: N line(s) had the tax inside the amount and were put right
+           bills: N bill(s) did not count the freight in their taxable value
+           THESE TWO ARE MENDING THE BILLS YOUR IMPORT ALREADY WROTE. On a
+           shop that imported a Tally day book the first will be in the
+           hundreds. If both say 0 and you have imported, tell me.
+
+  1.10.2   prints nothing. It only adds functions - for taking your whole
+           book out a page at a time instead of all in one breath, and for
+           putting it back the same way. Nothing on any existing row moves.
 
 A message that starts with NOTICE is the file talking to you. A message
 that starts with ERROR is a problem - stop there and send it to me.

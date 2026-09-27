@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skwik — Import and Export</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ctext y=%2713%27 font-size=%2713%27%3E%E2%82%B9%3C/text%3E%3C/svg%3E">
+<!--
+  ===========================================================================
+   THE WHOLE BOOK, ON A LAPTOP.
+
+   Exporting out of Tally happens on a computer. Sending the file to a phone
+   afterwards, a month at a time because a phone cannot hold a year, is work
+   that exists only because the app was on the phone. Anybody running Tally
+   has the computer already.
+
+   So this page does the two heavy jobs where the file already is. It is ONE
+   page with no build step and NO OUTSIDE DEPENDENCIES -- not even the
+   Supabase library. It loads the app's own files, unchanged, straight out of
+   src/lib, so there is no second copy of the reading or the writing to drift
+   away from the first.
+
+   A browser is also simply better at this than a phone: a picked file comes
+   with a reader that hands over one piece at a time, memory is measured in
+   gigabytes rather than a few hundred megabytes, and a backup can be written
+   to disk as it arrives instead of being held whole.
+  ===========================================================================
+-->
+<style>
+  :root {
+    --bg:#FAF9F5; --card:#FFFFFF; --ink:#141413; --muted:#6B6A64; --faint:#96A29E;
+    --line:#E8E6DC; --accent:#0F5132; --accentSoft:#E7F0EA; --danger:#B4301F;
+    --flagSoft:#FDF6E3; --flagLine:#EADFBE; --flagInk:#7A5A12;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#1A1A17; --card:#232320; --ink:#EDEBE3; --muted:#A8A69C; --faint:#7A786F;
+      --line:#34342F; --accent:#7FC9A0; --accentSoft:#1E2F26; --danger:#E4796A;
+      --flagSoft:#2A2418; --flagLine:#453A20; --flagInk:#D8BE7A;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#1A1A17; --card:#232320; --ink:#EDEBE3; --muted:#A8A69C; --faint:#7A786F;
+    --line:#34342F; --accent:#7FC9A0; --accentSoft:#1E2F26; --danger:#E4796A;
+    --flagSoft:#2A2418; --flagLine:#453A20; --flagInk:#D8BE7A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 16px 60px; }
+  header { background:var(--ink); color:var(--bg); padding:18px 0; margin-bottom:22px; }
+  header .wrap { display:flex; align-items:baseline; gap:12px; }
+  h1 { font-size:20px; margin:0; letter-spacing:-0.01em; }
+  header small { color:#9C9A90; font-size:12.5px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:18px; margin-bottom:16px; }
+  h2 { font-size:15px; margin:0 0 4px; letter-spacing:0.02em; text-transform:uppercase;
+       color:var(--muted); font-weight:700; }
+  p.note { color:var(--muted); font-size:13.5px; margin:6px 0 0; }
+  label { display:block; font-size:11.5px; letter-spacing:0.06em; font-weight:700;
+          color:var(--muted); text-transform:uppercase; margin:14px 0 5px; }
+  input[type=text], input[type=password], input[type=url] {
+    width:100%; padding:11px 12px; font-size:15px; border:1px solid var(--line);
+    border-radius:10px; background:var(--bg); color:var(--ink);
+  }
+  input:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  button { font:inherit; font-weight:700; border-radius:10px; padding:11px 18px;
+           border:1px solid var(--accent); background:var(--accent); color:#fff;
+           cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); }
+  button[disabled] { opacity:.45; cursor:default; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .grow { flex:1; min-width:0; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin-top:10px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-size:11px; letter-spacing:0.05em; text-transform:uppercase; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .bar { height:7px; border-radius:4px; background:var(--line); overflow:hidden; margin-top:9px; }
+  .bar > i { display:block; height:7px; background:var(--accent); width:0; transition:width .2s; }
+  .flag { background:var(--flagSoft); border:1px solid var(--flagLine); color:var(--flagInk);
+          border-radius:10px; padding:11px 13px; font-size:13.5px; margin-top:12px; }
+  .bad { background:#FDECEA; border-color:#F3C6BF; color:var(--danger); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .bad { background:#2E1B18; border-color:#5A2B22; }
+  }
+  .hide { display:none; }
+  ul.plain { margin:8px 0 0; padding-left:18px; color:var(--muted); font-size:13px; }
+  code { font-size:12.5px; background:var(--bg); padding:1px 5px; border-radius:5px; }
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>Skwik</h1><small>import and export, on a computer</small></div></header>
+<div class="wrap">
+
+  <!-- ---------------- signing in ---------------- -->
+  <section class="card" id="loginCard">
+    <h2>Your shop</h2>
+    <p class="note">The same mobile number and password you use on the phone. Nothing is
+       stored in this page — close it and it forgets.</p>
+    <label for="phone">Mobile number</label>
+    <input id="phone" type="text" inputmode="numeric" autocomplete="username">
+    <label for="pw">Password</label>
+    <input id="pw" type="password" autocomplete="current-password">
+    <div class="row" style="margin-top:16px">
+      <button id="go">Sign in</button>
+      <span class="note" id="loginMsg"></span>
+    </div>
+    <p class="note hide" id="pretend"><strong>Test mode.</strong> This page is
+       pointed at a pretend server on this machine, not at the real one.</p>
+  </section>
+
+  <!-- ---------------- once in ---------------- -->
+  <section class="card hide" id="whoCard">
+    <h2>Signed in</h2>
+    <div class="row"><strong class="grow" id="orgName"></strong>
+      <button class="ghost" id="out">Sign out</button></div>
+    <p class="note" id="orgSub"></p>
+  </section>
+
+  <section class="card hide" id="inCard">
+    <h2>Bring a Tally export in</h2>
+    <p class="note">Export the day book and the masters out of Tally as XML — a whole year
+       at once is fine here. Nothing is written until you have seen what is in the file.
+       Bringing the same period in twice writes nothing the second time.</p>
+    <div class="row" style="margin-top:14px">
+      <input id="file" type="file" accept=".xml,text/xml,application/xml" multiple>
+    </div>
+    <div id="readBox" class="hide">
+      <div class="bar"><i id="readBar"></i></div>
+      <p class="note" id="readMsg"></p>
+    </div>
+    <div id="planBox" class="hide">
+      <div id="whyBox"></div>
+      <table id="planTable"></table>
+      <div id="perFile"></div>
+      <div id="leaveOut"></div>
+      <div id="stopBox"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="write">Bring it in</button>
+        <button class="ghost" id="forget">Forget this file</button>
+      </div>
+    </div>
+    <div id="writeBox" class="hide">
+      <div class="bar"><i id="writeBar"></i></div>
+      <p class="note" id="writeMsg"></p>
+    </div>
+  </section>
+
+  <section class="card hide" id="outCard">
+    <h2>Take the whole book out</h2>
+    <p class="note">Every row, in a file Skwik can read back — not a report. It is written
+       to disk as it arrives, so the size of your book does not matter here.</p>
+    <div class="row" style="margin-top:14px">
+      <button id="save">Save my whole book</button>
+      <span class="note" id="saveMsg"></span>
+    </div>
+    <div class="bar hide" id="saveBarBox"><i id="saveBar"></i></div>
+  </section>
+
+  <section class="card hide" id="runsCard">
+    <h2>What has been brought in</h2>
+    <table id="runsTable"></table>
+    <p class="note">Anything here can be taken back out on the phone, under
+       Import &amp; export → What came in.</p>
+  </section>
+
+  <p class="note" style="margin-top:26px">
+    This page talks to your own Supabase and nothing else. The anon key is meant to be
+    public — your login and your row security are what protect the data — but anyone with
+    this page still sees a sign-in screen.
+  </p>
+</div>
+
+<script type="module">
+import { signIn, restClient } from './rest.js';
+import { project } from './project.js';
+import { vouchersFromTallyXml, checkBook } from '../src/lib/tallybook.js';
+import { loadBook, planLoad, readMasters } from '../src/lib/tallyload.js';
+import { saveBook, sayWhatWentOut } from '../src/lib/booksave.js';
+import { itemsFromTallyXml, partiesFromTallyXml } from '../src/lib/transfer.js';
+
+const $ = (id) => document.getElementById(id);
+const show = (el, on = true) => el.classList.toggle('hide', !on);
+const n = (x) => Number(x || 0).toLocaleString('en-IN');
+
+let db = null, org = null, book = null, plan = null, report = null;
+let whyNothing = null, haveNow = null, left = [];
+
+/* ----------------------------- signing in ----------------------------- */
+const here = project();
+if (here.pretend) $('pretend').classList.remove('hide');
+
+$('go').onclick = async () => {
+  const { url, key } = here;
+  $('loginMsg').textContent = 'One moment…';
+  $('go').disabled = true;
+  try {
+    const { data, error } = await signIn({ url, key, phone: $('phone').value, password: $('pw').value });
+    if (error) throw error;
+    db = restClient({ url, key, token: data.token });
+    // WHICH FIRM. Row security answers this for us: the only rows he can read
+    // are his own, so asking for orgs asks for his.
+    const { data: orgs, error: oe } = await db.from('orgs').select('*');
+    if (oe) throw oe;
+    org = (orgs || [])[0];
+    if (!org) throw new Error('That login is not linked to a firm yet.');
+    $('orgName').textContent = org.name || 'Your shop';
+    $('orgSub').textContent = [org.gstin, org.state_name].filter(Boolean).join(' · ')
+      || 'no GST number on file';
+    show($('loginCard'), false); show($('whoCard')); show($('inCard')); show($('outCard'));
+    loadRuns();
+    $('loginMsg').textContent = '';
+  } catch (e) {
+    $('loginMsg').innerHTML = '';
+    $('loginMsg').textContent = e.message || String(e);
+  } finally { $('go').disabled = false; }
+};
+
+$('out').onclick = () => location.reload();
+
+/* --------------------------- reading a file --------------------------- */
+// ONE PIECE AT A TIME, even though a laptop could swallow it whole. A file the
+// size of a year is still 400 MB, and holding 400 MB of text AND the objects
+// read out of it is how a browser tab dies too.
+async function readFile(f, onAt) {
+  const dec = new TextDecoder('utf-8');
+  const reader = f.stream().getReader();
+  let out = '', seen = 0, first = true;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    let bytes = value;
+    // Tally writes UTF-16 as often as not, and the mark at the front says so.
+    if (first) {
+      first = false;
+      if (bytes[0] === 0xFF && bytes[1] === 0xFE) return readWide(f, true, onAt);
+      if (bytes[0] === 0xFE && bytes[1] === 0xFF) return readWide(f, false, onAt);
+    }
+    out += dec.decode(bytes, { stream: true });
+    seen += bytes.length;
+    onAt(seen, f.size);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  out += dec.decode();
+  return out;
+}
+
+async function readWide(f, little, onAt) {
+  const dec = new TextDecoder(little ? 'utf-16le' : 'utf-16be');
+  const reader = f.stream().getReader();
+  let out = '', seen = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    out += dec.decode(value, { stream: true });
+    seen += value.length;
+    onAt(seen, f.size);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  out += dec.decode();
+  return out.charCodeAt(0) === 0xFEFF ? out.slice(1) : out;
+}
+
+$('file').onchange = async () => {
+  const files = [...$('file').files];
+  if (!files.length) return;
+  show($('planBox'), false); show($('writeBox'), false); show($('readBox'));
+  const texts = [];
+  for (const f of files) {
+    $('readMsg').textContent = `Reading ${f.name}…`;
+    texts.push(await readFile(f, (at, of) => {
+      $('readBar').style.width = `${Math.round((at / (of || 1)) * 100)}%`;
+      $('readMsg').textContent = `Reading ${f.name} — ${(at / 1048576).toFixed(0)} of `
+        + `${(of / 1048576).toFixed(0)} MB`;
+    }));
+  }
+  $('readMsg').textContent = 'Checking what is in it\u2026';
+  await new Promise((r) => setTimeout(r, 30));
+
+  // ---------------------------------------------------------------------
+  //  EVERY FILE READ ON ITS OWN TERMS, AND THE ANSWERS ADDED UP.
+  //
+  //  Tally exports the bills by one command and the masters by another, so
+  //  picking BOTH at once is the normal thing to do -- and it used to be
+  //  handled by shovelling the files through mergeFiles, which is the phone's
+  //  masters merger: it wants {name, text} objects and gives back rows, not
+  //  XML. Handed plain text and its answer handed to the voucher reader, it
+  //  quietly produced nought of everything -- the ninety bills in the day
+  //  book vanished without a word. A screen of noughts was the SYMPTOM; the
+  //  bills going missing was the fault.
+  //
+  //  So each file is read by itself and the books are added together. A file
+  //  that holds bills is read as bills. A file that holds none is read as
+  //  masters -- which is what a masters export is. A day book carries stock
+  //  item blocks of its own, and those are deliberately NOT read, because the
+  //  bills are the better authority on an item that was actually billed.
+  // ---------------------------------------------------------------------
+  left = [];
+  // LAST TIME'S ANSWER MUST NOT SIT UNDER THIS TIME'S FILE. A "Done, and here
+  // are the bills left out" from the previous press, still on the screen while
+  // a new file is being read, is how a bill goes missing twice.
+  $('writeMsg').innerHTML = '';
+  $('writeBar').style.width = '0%';
+  book = { vouchers: [], payments: [], transfers: [], counts: [], skipped: [] };
+  const mItems = [], mParties = [];
+  const perFile = [];
+
+  for (let i = 0; i < texts.length; i++) {
+    const one = vouchersFromTallyXml(texts[i]);
+    const billed = one.vouchers.length + one.payments.length + (one.transfers || []).length;
+    if (billed) {
+      book.vouchers.push(...one.vouchers);
+      book.payments.push(...one.payments);
+      book.transfers.push(...(one.transfers || []));
+      book.counts.push(...(one.counts || []));
+      book.skipped.push(...(one.skipped || []));
+      perFile.push({ name: files[i].name, as: 'bills', bills: one.vouchers.length,
+                     payments: one.payments.length });
+    } else {
+      const it = itemsFromTallyXml(texts[i]);
+      const pa = partiesFromTallyXml(texts[i]);
+      mItems.push(...(it.rows || []));
+      mParties.push(...(pa.rows || []));
+      perFile.push({ name: files[i].name, as: 'masters',
+                     items: (it.rows || []).length, parties: (pa.rows || []).length,
+                     xml: texts[i] });
+    }
+  }
+  if (mItems.length || mParties.length) book.masters = { items: mItems, parties: mParties };
+
+  // the one file that gave nothing at all, for the explanation below
+  const duds = perFile.filter((f) => f.as === 'masters' && !f.items && !f.parties);
+  whyNothing = duds.length ? { xml: duds[0].xml, name: duds[0].name } : null;
+
+  const have = await readMasters(db);
+  haveNow = have;
+  report = checkBook(book, have);
+  plan = planLoad(book, have);
+
+  const anyBills = book.vouchers.length || book.payments.length
+    || (book.transfers || []).length;
+  const rows = [];
+  if (anyBills) {
+    rows.push(['Bills', n(book.vouchers.length)]);
+    rows.push(['Money in and out', n(book.payments.length)]);
+    rows.push(['Transfers between stores', n(book.transfers?.length || 0)]);
+  }
+  if (book.masters) {
+    rows.push(['Stock items in the masters', n((book.masters.items || []).length)]);
+    rows.push(['Names in the masters', n((book.masters.parties || []).length)]);
+  }
+  rows.push(['Items that are new', n(plan.newItems.length)]);
+  rows.push(['Names that are new', n(plan.newParties.length)]);
+  if (anyBills) {
+    rows.push(['Stores that are new', n(plan.newGodowns.length)]);
+    rows.push(['Passed over', n(book.skipped?.length || 0)]);
+  }
+
+  // AND WHICH FILE WAS READ WHICH WAY, because picking two files and being
+  // told one number is how a missing day book goes unnoticed.
+  $('perFile').innerHTML = perFile.length < 2 ? '' :
+    '<p class="note" style="margin:10px 0 0">' + perFile.map((f) => f.as === 'bills'
+      ? `<strong>${f.name}</strong> — read as bills: ${n(f.bills)} bill(s), ${n(f.payments)} money entry(s)`
+      : `<strong>${f.name}</strong> — read as masters: ${n(f.items)} item(s), ${n(f.parties)} name(s)`
+    ).join('<br>') + '</p>';
+  $('planTable').innerHTML = '<tr><th>What the file holds</th><th class="n">How many</th></tr>'
+    + rows.map(([k, v]) => `<tr><td>${k}</td><td class="n">${v}</td></tr>`).join('');
+
+  const stop = report.stop || [], warn = report.warn || [];
+  $('stopBox').innerHTML =
+    (stop.length ? `<div class="flag bad"><strong>${stop.length} thing(s) to put right first</strong>
+        <ul class="plain">${stop.slice(0, 8).map((w) => `<li>${w}</li>`).join('')}</ul></div>` : '')
+    + (warn.length ? `<div class="flag"><strong>${warn.length} worth knowing</strong>
+        <ul class="plain">${warn.slice(0, 6).map((w) => `<li>${w}</li>`).join('')}</ul></div>` : '');
+  // -------------------------------------------------------------------
+  //  A SCREEN OF NOUGHTS MUST SAY WHY.
+  //
+  //  Nought bills and nought of everything else looks like a broken page, and
+  //  the shopkeeper has no way to tell a wrong export from a real fault. So
+  //  when nothing came out of the file, the file is asked what it DOES hold
+  //  and the answer is put in words that name the next move in Tally.
+  // -------------------------------------------------------------------
+  const nowt = !anyBills && !book.masters;
+  let saidWhy = '';
+  if (nowt && whyNothing) {
+    const x = whyNothing.xml || '';
+    const has = (t) => (x.match(new RegExp('<' + t + '[ >]', 'gi')) || []).length;
+    const vouchers = has('VOUCHER'), stock = has('STOCKITEM'), ledgers = has('LEDGER');
+    const looksXml = /<ENVELOPE|<TALLYMESSAGE|<\?xml/i.test(x.slice(0, 4000));
+    if (!looksXml) {
+      saidWhy = 'This is not a Tally XML export. In Tally the export format has to be '
+        + 'XML — if the file came out as Excel or text, Tally was set to a different '
+        + 'format when it was exported.';
+    } else if (!vouchers && !stock && !ledgers) {
+      saidWhy = 'This is a Tally XML file, but it holds no vouchers, no stock items and '
+        + 'no ledgers — so it is an export of a report rather than of the books. '
+        + 'Export the Day Book itself: Gateway of Tally → Display → Day Book, set the '
+        + 'period, then Export, with format XML.';
+    } else if (ledgers && !vouchers && !stock) {
+      saidWhy = `This file holds ${n(ledgers)} ledger(s), but none of them is a customer `
+        + 'or a supplier — they are the sales, tax and bank accounts. Export the party '
+        + 'ledgers: Gateway of Tally → Chart of Accounts → Ledgers → Export.';
+    } else if (vouchers) {
+      saidWhy = `This file holds ${n(vouchers)} voucher(s), but Skwik could not read a `
+        + 'single one — which is a fault worth reporting rather than something you did '
+        + 'wrong. Keep the file and send it on.';
+    }
+  }
+  $('whyBox').innerHTML = saidWhy
+    ? `<div class="flag bad"><strong>Nothing to bring in from this file</strong>
+         <p class="note" style="margin:6px 0 0">${saidWhy}</p></div>` : '';
+
+  // -------------------------------------------------------------------
+  //  ONE ODD BILL MUST NOT HOLD A YEAR HOSTAGE.
+  //
+  //  A bill that does not add up to itself is right to stop the import -- it
+  //  would put a wrong figure in his books. But "put it right first" is no
+  //  answer when the bill is a shape Skwik has not met yet: five bills out of
+  //  nine hundred used to block the lot. So they can be left out by name, and
+  //  everything else goes in.
+  // -------------------------------------------------------------------
+  const bad = report.wontAddUp || [];
+  const onlyBad = stop.length > 0 && stop.length === bad.length;
+  $('leaveOut').innerHTML = onlyBad
+    ? `<button class="ghost" id="skipBad">Bring in the rest, leave these ${bad.length} out</button>
+       <p class="note" style="margin:8px 0 0">Everything but ${bad.map((v) =>
+         `<strong>${v.no}</strong>`).join(', ')} goes in. Those you enter by hand —
+         write them down before you press it.</p>` : '';
+  if (onlyBad) $('skipBad').onclick = () => {
+    const out = new Set(bad.map((v) => `${v.no}|${v.vdate}`));
+    left = bad.slice();
+    book.vouchers = book.vouchers.filter((v) => !out.has(`${v.no}|${v.vdate}`));
+    plan = planLoad(book, haveNow);
+    report = { ...report, stop: [], wontAddUp: [] };
+    $('leaveOut').innerHTML = '';
+    $('stopBox').innerHTML = `<div class="flag"><strong>${bad.length} bill(s) left out</strong>
+      <ul class="plain">${bad.map((v) => `<li>${v.tally_type} ${v.no} of ${v.vdate} —
+        Tally says ${v.tally_total.toFixed(2)}, the pieces come to ${v.total.toFixed(2)}</li>`).join('')}</ul></div>`;
+    $('write').disabled = false;
+    $('write').textContent = `Bring in the other ${n(book.vouchers.length)} bill(s)`;
+  };
+
+  $('write').disabled = stop.length > 0 || nowt;
+  $('write').textContent = stop.length ? 'Put the problems right first'
+    : nowt ? 'Nothing to bring in' : 'Bring it in';
+  show($('readBox'), false); show($('planBox'));
+  // PICKING THE SAME FILE AGAIN HAS TO DO SOMETHING.
+  //
+  // A file input only tells the page when its value CHANGES, so choosing the
+  // very same file a second time was silently ignored -- and a second time is
+  // exactly what he does when something went wrong or he wants to be sure the
+  // import really ran. Clearing it here means the next pick always counts,
+  // and the import itself is what refuses to write anything twice.
+  $('file').value = '';
+};
+
+$('forget').onclick = () => {
+  book = null; plan = null; report = null; left = []; $('file').value = '';
+  show($('planBox'), false);
+};
+
+/* --------------------------- writing it in --------------------------- */
+$('write').onclick = async () => {
+  if (!book || !plan) return;
+  show($('writeBox')); $('write').disabled = true;
+  try {
+    const have = await readMasters(db);
+    const out = await loadBook({
+      supabase: db, org, book, have,
+      note: `From a computer · ${new Date().toLocaleDateString('en-IN')}`,
+      onStep: ({ done, total, what }) => {
+        $('writeBar').style.width = `${Math.round((done / (total || 1)) * 100)}%`;
+        $('writeMsg').textContent = `${n(done)} of ${n(total)} — ${what || ''}`;
+      },
+    });
+    $('writeMsg').innerHTML = `<strong>Done.</strong> ${n(out.bills)} bills, `
+      + `${n(out.payments)} money entries, ${n(out.items)} items and ${n(out.parties)} names`
+      + (out.already ? `, and ${n(out.already)} that were already in your books` : '')
+      + (out.mended ? `. ${n(out.mended)} name(s) filled in from the file` : '') + '.'
+      // A BILL LEFT OUT ON PURPOSE MUST STILL BE IN FRONT OF HIM AFTERWARDS,
+      // or it is a bill quietly missing from his books.
+      + (left.length ? `<br><strong>Left out, enter these by hand:</strong> `
+          + left.map((v) => `${v.tally_type} ${v.no} of ${v.vdate} (${v.tally_total.toFixed(2)})`)
+                .join('; ') : '');
+    show($('planBox'), false);
+    loadRuns();
+  } catch (e) {
+    $('writeMsg').innerHTML = `<span style="color:var(--danger)">${e.message || e}</span>`;
+    $('write').disabled = false;
+  }
+};
+
+/* ---------------------------- taking it out ---------------------------- */
+$('save').onclick = async () => {
+  $('save').disabled = true; show($('saveBarBox'));
+  const name = `skwik-backup-${(org?.name || 'shop').replace(/[^A-Za-z0-9]+/g, '-')}`
+             + `-${new Date().toISOString().slice(0, 10)}.skwik.json`;
+  try {
+    // STRAIGHT TO DISK WHERE THE BROWSER ALLOWS IT. Then the book never has to
+    // fit in memory at all, however big it is. Firefox and Safari have no such
+    // door yet, so there it is gathered and handed over as an ordinary
+    // download -- which is what the phone does too.
+    let put, finish;
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({ suggestedName: name });
+      const w = await handle.createWritable();
+      const enc = new TextEncoder();
+      put = async (text) => w.write(enc.encode(text));
+      finish = async () => w.close();
+    } else {
+      const parts = [];
+      put = (text) => { parts.push(text); };
+      finish = async () => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob(parts, { type: 'application/json' }));
+        a.download = name; a.click(); URL.revokeObjectURL(a.href);
+      };
+    }
+    const { wrote } = await saveBook({
+      supabase: db, put,
+      onStep: ({ table, done, total }) => {
+        $('saveBar').style.width = `${Math.round((done / (total || 1)) * 100)}%`;
+        $('saveMsg').textContent = `${n(done)} of ${n(total)} rows — ${table}`;
+      },
+    });
+    await finish();
+    $('saveMsg').textContent = sayWhatWentOut(wrote);
+  } catch (e) {
+    if (e && e.name === 'AbortError') $('saveMsg').textContent = '';
+    else $('saveMsg').innerHTML = `<span style="color:var(--danger)">${e.message || e}</span>`;
+  } finally { $('save').disabled = false; }
+};
+
+/* ------------------------- what came in before ------------------------- */
+async function loadRuns() {
+  const { data } = await db.from('import_runs').select('*').limit(12);
+  const runs = (data || []).sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
+  if (!runs.length) return show($('runsCard'), false);
+  const shape = (c = {}) => [
+    (c.bills ?? c.vouchers) ? `${n(c.bills ?? c.vouchers)} bills` : null,
+    (c.money ?? c.payments) ? `${n(c.money ?? c.payments)} money` : null,
+    c.items ? `${n(c.items)} items` : null,
+    (c.names ?? c.parties) ? `${n(c.names ?? c.parties)} names` : null,
+  ].filter(Boolean).join(' · ') || '—';
+  $('runsTable').innerHTML =
+    '<tr><th>When</th><th>What</th><th>Brought in</th></tr>'
+    + runs.map((r) => `<tr><td>${String(r.started_at).slice(0, 10)}</td>`
+      + `<td>${r.note || r.kind}${r.undone_at ? ' — taken back out' : ''}</td>`
+      + `<td>${shape(r.counts)}</td></tr>`).join('');
+  show($('runsCard'));
+}
+</script>
+</body>
+</html>

@@ -29,8 +29,8 @@
 import {
   fmt, fmt0, qty, pct, amountInWords, hsnSummary, n2, num, hsnApplies,
   extraAsLine, lineGross, itemsGross, supplyOf, supplyShort, isTaxableLine,
-} from './money';
-import { uqcShort } from './uqc';
+} from './money.js';
+import { uqcShort } from './uqc.js';
 
 // ALL FIVE, NOT THREE.
 //

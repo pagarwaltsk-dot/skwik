@@ -22,7 +22,7 @@
 // the types are flipped before matching. And a credit note counts backwards,
 // so it is signed -1 everywhere it is added up.
 
-import { n2, num } from './money';
+import { n2, num } from './money.js';
 
 /* ---------------- the small tools ---------------- */
 

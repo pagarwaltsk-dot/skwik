@@ -17,7 +17,7 @@
 // offline at the same time would both reach for the same number.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supportLine } from './contact';
+import { supportLine } from './contact.js';
 
 const SUPPORT = supportLine();
 

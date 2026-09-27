@@ -30,8 +30,8 @@
 // went in. It stops, says what failed and how far it got, and everything
 // already written stays valid because each piece was written whole.
 
-import { guessUqc } from './uqc';
-import { STATES, codeForState } from './states';
+import { guessUqc } from './uqc.js';
+import { STATES, codeForState } from './states.js';
 
 /* ============== WHERE A NAME IS, AND WHETHER HE IS REGISTERED ==============
  *
@@ -233,6 +233,57 @@ export function planLoad(book, have = {}) {
     }
   }
 
+  // ---------------------------------------------------------------------
+  //  A FILE WITH NO BILLS IN IT, WHICH IS STILL A FILE WORTH BRINGING IN.
+  //
+  //  Tally exports masters and vouchers by separate commands, so a shopkeeper
+  //  told to "export the day book and the masters" ends up with a file that
+  //  holds five hundred stock items and not one voucher. Everything above
+  //  counts what the BILLS mention, so such a file came out as nought of
+  //  everything -- and a screen of noughts tells him he did something wrong
+  //  when he did not.
+  //
+  //  So when the reader found nothing at all, the masters the file DOES hold
+  //  are folded in here, in the shape the writer below already knows. Only
+  //  then: a day book that also carries masters keeps working exactly as it
+  //  was tested, because the bills are the better authority on an item that
+  //  was actually billed.
+  // ---------------------------------------------------------------------
+  //  The caller decides what counts as masters -- and only ever hands over
+  //  masters out of a file that held no bills, so a day book's own stock item
+  //  blocks never get a say over the bills beside them. Everything the bills
+  //  mentioned is already in the two maps above, and neither loop below
+  //  overwrites a name that is in them: THE BILLS WIN, always.
+  const nothingBilled = !book.vouchers.length && !book.payments.length
+    && !(book.transfers || []).length;
+  if (book.masters) {
+    for (const r of (book.masters.items || [])) {
+      const k = norm(r.name);
+      if (!k || items.has(k) || newItems.has(k)) continue;
+      newItems.set(k, {
+        name: r.name,
+        unit: guessUqc(r.unit) || 'PCS',
+        hsn: r.hsn || '',
+        gst_rate: Number(r.gst_rate) || 0,
+        // what he sells at if the file says so, otherwise what he bought at,
+        // which is a better first guess than nothing
+        sale_price: Number(r.sale_price) || Number(r.purchase_price) || 0,
+      });
+    }
+    for (const r of (book.masters.parties || [])) {
+      const k = norm(r.name);
+      if (!k) continue;
+      noteParty(r.name, { party_gstin: r.gstin, party_state: r.state_name });
+      if (parties.has(k) || newParties.has(k)) continue;
+      newParties.set(k, {
+        name: r.name,
+        kind: r.kind === 'supplier' ? 'supplier' : 'customer',
+        gstin: r.gstin || '',
+        state_name: r.state_name || '',
+      });
+    }
+  }
+
   return {
     newItems: [...newItems.values()],
     newParties: [...newParties.values()],
@@ -242,6 +293,10 @@ export function planLoad(book, have = {}) {
     bills: book.vouchers.length,
     payments: book.payments.length,
     transfers: book.transfers.length,
+    // true when there were no bills at all and everything above came out of
+    // the masters instead
+    fromMasters: nothingBilled && !!book.masters
+      && !!(newItems.size || newParties.size),
   };
 }
 

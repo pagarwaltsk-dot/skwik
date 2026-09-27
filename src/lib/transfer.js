@@ -6,9 +6,9 @@
 // touches the database — these are plain functions over text, so they can be
 // read and checked on their own.
 
-import { n2 } from './money';
-import { STATES, codeForState } from './states';
-import { guessUqc, isUqc } from './uqc';
+import { n2 } from './money.js';
+import { STATES, codeForState } from './states.js';
+import { guessUqc, isUqc } from './uqc.js';
 
 // "Bottles", "Pieces", "Meters" — what Tally and spreadsheets actually hold.
 // Stored as they come, they print as nonsense and the GST portal refuses the

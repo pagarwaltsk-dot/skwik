@@ -26,8 +26,8 @@
 import {
   amountInWords, fmt, fmt0, hsnApplies, num, pct, qty,
   lineGross, itemsGross, isTaxableLine, supplyShort,
-} from './money';
-import { uqcShort } from './uqc';
+} from './money.js';
+import { uqcShort } from './uqc.js';
 
 // see the note in invoice.js: all five, not three
 const esc = (s) => String(s ?? '')

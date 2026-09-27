@@ -5,8 +5,8 @@
 
 import { File } from 'expo-file-system';
 import * as LegacyFS from 'expo-file-system/legacy';
-import { looksMangled, base64ToBytes, decodeBytes } from './transfer';
-import { readWholeFileStreaming, tooBigMessage } from './bigfile';
+import { looksMangled, base64ToBytes, decodeBytes } from './transfer.js';
+import { readWholeFileStreaming, tooBigMessage } from './bigfile.js';
 
 // Android hands a picked file over as a content:// address rather than a real
 // path, and the two ways of reading one do not work in the same places. Inside
