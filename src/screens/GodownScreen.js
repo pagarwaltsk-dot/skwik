@@ -25,16 +25,39 @@ export default function GodownScreen({ navigation }) {
   // Android has no Alert.prompt, so the rename box is drawn in the row itself
   const [renaming, setRenaming] = useState(null);
   const [busy, setBusy]   = useState(false);
-
+  // AN EMPTY LIST AND A FAILED READ ARE NOT THE SAME THING, and this screen
+  // used to draw them identically.
+  const [readFail, setReadFail] = useState('');
+  const [read, setRead] = useState(false);
 
   const load = useCallback(async () => {
     // the stock rows are one per item PER STORE per batch, so a few hundred
     // items is already past the 1,000 the server hands back without a word
-    const [{ data: gs }, st] = await Promise.all([
+    const [gr, st] = await Promise.all([
       supabase.from('godowns').select('*').order('name'),
       allRows(() => supabase.from('stock_in_hand_detail').select('*').order('item_id')),
     ]);
-    setList(gs || []);
+    // A FAILED READ USED TO LOOK LIKE A SHOP WITH NO STORES.
+    //
+    // "i just turned off the godown in my firm, and when i re turned it on, my
+    // godowns were gone." Nothing in Skwik deletes a godown -- switching the
+    // feature off only hides it. But this screen threw the error away, kept
+    // only `data`, and an error hands back null. So one bad read -- a dropped
+    // line, a token being refreshed, a moment without signal -- emptied the
+    // list on screen and printed "Add your main store first" underneath it.
+    //
+    // Worse than the fright: pressing ADD then saw an empty list, decided this
+    // was his FIRST store, and pointed the whole firm's default at it. His five
+    // real stores were still sitting in the database with all their stock, now
+    // behind a sixth that had been made main. A read that fails must say so and
+    // change nothing.
+    if (gr.error) {
+      setReadFail(sayPlainly(gr.error));
+      return;                       // keep whatever was on screen
+    }
+    setReadFail('');
+    setRead(true);
+    setList(gr.data || []);
     setStock(st || []);
   }, []);
 
@@ -44,7 +67,20 @@ export default function GodownScreen({ navigation }) {
     const n = name.trim();
     if (!n) return Alert.alert('Name', 'What is this godown called?');
     setBusy(true);
-    const first = list.length === 0;
+    // "IS THIS HIS FIRST STORE" IS A QUESTION FOR THE SERVER, NOT FOR THE SCREEN.
+    //
+    // It used to be answered from `list`, which is empty both when the shop
+    // really has no stores and when the read failed. Answered wrongly it makes
+    // a second main store and repoints the firm at it. So ask the database, and
+    // if the database will not say, do not guess.
+    const { count, error: ce } = await supabase.from('godowns')
+      .select('id', { count: 'exact', head: true });
+    if (ce) {
+      setBusy(false);
+      return Alert.alert('Could not check your stores first',
+        `${sayPlainly(ce)}\n\nNothing has been added. Try again in a moment.`);
+    }
+    const first = Number(count || 0) === 0;
     const { data, error } = await supabase.from('godowns')
       .insert({ org_id: org.id, name: n, is_main: first }).select().single();
     if (!error && first) {
@@ -149,6 +185,26 @@ export default function GodownScreen({ navigation }) {
                   contentContainerStyle={{ padding: 14, paddingBottom: 40 }}>
 
         <Text style={S.eyebrow}>Your stores</Text>
+
+        {/* SO THAT A BAD LINE IS NEVER READ AS LOST STORES. */}
+        {!!readFail && (
+          <View style={{ borderWidth: 1, borderColor: C.danger, borderLeftWidth: 3,
+                         borderLeftColor: C.danger, borderRadius: 10, padding: 12,
+                         marginBottom: 10 }}>
+            <Text style={{ fontSize: 13, fontWeight: '800', color: C.danger }}>
+              Could not read your stores
+            </Text>
+            <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>
+              {readFail}{'\n\n'}Nothing has been removed — your stores and their stock are
+              still in your books. Leave this screen and come back to try again.
+            </Text>
+            <TouchableOpacity style={[S.btnGhost, { marginTop: 10, alignSelf: 'flex-start',
+              paddingHorizontal: 16, paddingVertical: 9 }]} onPress={load}>
+              <Text style={S.ghostText}>TRY AGAIN</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {list.map((g) => {
           const held = inGodown.filter((r) => (r.godown_id || null) === g.id);
           return (
@@ -202,7 +258,7 @@ export default function GodownScreen({ navigation }) {
             <Text style={S.ghostText}>ADD</Text>
           </TouchableOpacity>
         </View>
-        {list.length === 0 && (
+        {list.length === 0 && read && !readFail && (
           <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 8, lineHeight: 18 }}>
             Add your main store first. Everything already in your books counts as
             being there, and a second store can be added after it.

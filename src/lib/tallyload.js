@@ -249,6 +249,27 @@ export function planLoad(book, have = {}) {
     newAccounts.set(k, { name: b.name, opening: Number(b.opening) || 0 });
   }
 
+  // AN ACCOUNT THAT IS ALREADY THERE, SITTING AT NOUGHT.
+  //
+  // The opening figure used to be written only on an account the import MADE.
+  // But "empty my books" keeps the accounts and zeroes their openings, so after
+  // one of those every account exists, every opening is nought, and no import
+  // could ever put them back -- his six accounts all read 0.00 with no date
+  // while the file had the real figures all along.
+  //
+  // Same rule as the opening cash: only ever FILLED IN, never written over. A
+  // figure he has typed himself is his, and an account already dated is left
+  // alone.
+  const openAccounts = [];
+  for (const b of (book.money?.banks || [])) {
+    const had = accounts.get(norm(b.name));
+    if (!had) continue;                              // being made: born with it
+    if (Number(had.opening || 0) !== 0) continue;     // his own figure stands
+    if (had.opening_on) continue;                    // already dated
+    if (!Number(b.opening)) continue;                // nothing to fill in
+    openAccounts.push({ id: had.id, name: b.name, opening: Number(b.opening) });
+  }
+
   // and any account a deposit went into that the ledgers did not name
   for (const v of (book.cashMoves || [])) {
     for (const m of (v.moves || [v])) {
@@ -405,6 +426,8 @@ export function planLoad(book, have = {}) {
     // every name the file mentions, new or not, with what the file knows
     knownParties: [...knownParties.values()],
     newAccounts: [...newAccounts.values()],
+    // accounts already in the books whose opening figure is still nought
+    openAccounts,
     // what the file knows about the shelf before the first bill
     openings: [...openAt.values()],
     // and WHERE it was, which the flat figure above cannot say
@@ -451,8 +474,10 @@ export async function readMasters(supabase) {
     page('items', 'id, name, opening_stock, purchase_price', (q) => q.eq('is_active', true)),
     page('parties', 'id, name'),
     page('godowns', 'id, name'),
-    // the bank accounts too, so a deposit can find the one it went into
-    page('bank_accounts', 'id, name'),
+    // the bank accounts too, so a deposit can find the one it went into --
+    // AND WHAT EACH ONE OPENS AT, so an account that is sitting at nought can
+    // be given the figure from the file instead of only ever being set at birth
+    page('bank_accounts', 'id, name, opening, opening_on'),
   ]);
   return { items, parties, godowns, accounts };
 }
@@ -508,7 +533,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
   const plan = planLoad(book, have);
   const total = plan.newGodowns.length + plan.newParties.length + plan.newItems.length
-              + plan.newAccounts.length
+              + plan.newAccounts.length + (plan.openAccounts || []).length
               + plan.bills + plan.payments + plan.transfers + plan.cashMoves
               + (plan.mendItems || []).length;
   let done = 0;
@@ -543,7 +568,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   }
 
   const made = { godowns: 0, parties: 0, items: 0, bills: 0, already: 0, payments: 0,
-                 transfers: 0, accounts: 0, banked: 0, opened: 0, run };
+                 transfers: 0, accounts: 0, banked: 0, opened: 0, openedAccounts: 0, run };
   const fail = (what, e) => {
     const err = new Error(`${what}: ${e?.message || e}`);
     err.made = made; err.done = done; err.total = total;
@@ -659,6 +684,41 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
   const idOf = (map, name) => (map.get(norm(name)) || {}).id || null;
 
+  /* ---- the accounts, before anything that has to name one ---- */
+  //
+  // These used to be made at the very end, after the receipts and payments had
+  // already been written -- so a receipt that came in through the bank had no
+  // account to point at even in principle. Nothing can be filed against an
+  // account that does not exist yet.
+  for (const a of plan.newAccounts) {
+    const { data, error } = await supabase.from('bank_accounts')
+      // WHAT IT OPENED AT, not nought. A cash credit account opens OWING the
+      // bank, so its figure is negative, and a bank book that starts at nil is
+      // wrong by the whole overdraft on every line after it.
+      .insert({ org_id: org.id, name: a.name, opening: Number(a.opening) || 0,
+                opening_on: fyStart(book) || null,
+                is_active: true, is_default: accounts.size === 0 })
+      .select().single();
+    if (error) fail(`could not add the bank account ${a.name}`, error);
+    accounts.set(norm(a.name), data);
+    made.accounts += 1; step(`account ${a.name}`);
+  }
+
+  // AND THE ACCOUNTS ALREADY THERE, STILL OPENING AT NOUGHT.
+  //
+  // `.eq('opening', 0)` is not belt and braces: the plan was worked out before
+  // a single row was written, and if he typed a figure in between then his is
+  // the one that counts.
+  for (const a of (plan.openAccounts || [])) {
+    const { error } = await supabase.from('bank_accounts')
+      .update({ opening: a.opening, opening_on: fyStart(book) || null })
+      .eq('id', a.id).eq('opening', 0);
+    if (error) fail(`could not set what ${a.name} opened at`, error);
+    made.openedAccounts = (made.openedAccounts || 0) + 1;
+    step(`opening balance of ${a.name}`);
+  }
+
+
   /* ---- the bills ---- */
   for (const v of book.vouchers) {
     const lines = v.lines.map((l) => {
@@ -761,6 +821,13 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       party_id: idOf(parties, p.party),
       pdate: p.vdate,
       mode: p.mode === 'cash' ? 'cash' : 'bank',
+      // WHICH BANK, NOT JUST "A BANK".
+      //
+      // The account's name was written into the note and nowhere else, so
+      // every imported bank receipt and payment had no account against it. The
+      // firm's total was right and every individual account showed its opening
+      // balance with nothing underneath -- which is what a bank book is FOR.
+      account_id: p.mode === 'cash' ? null : idOf(accounts, p.account),
       amount: p.amount,
       note: p.narration || (p.account ? `From Tally · ${p.account}` : 'From Tally'),
       import_run: run,
@@ -770,6 +837,19 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     const { error } = await supabase.from('payments')
       .upsert(block, { onConflict: 'id', ignoreDuplicates: true });
     if (error) fail('could not write the receipts and payments', error);
+
+    // AND THE ONES ALREADY IN THE BOOKS, WITH NO ACCOUNT AGAINST THEM.
+    //
+    // The upsert above leaves a row it has seen before exactly as it is, which
+    // is what makes a second import a no-op -- but it also means the three and
+    // a half thousand receipts already imported would keep their blank account
+    // for ever. Only a BLANK is filled; an account he has set himself stands.
+    const mend = block.filter((x) => x.account_id && x.mode === 'bank');
+    for (const x of mend) {
+      const { error: e2 } = await supabase.from('payments')
+        .update({ account_id: x.account_id }).eq('id', x.id).is('account_id', null);
+      if (e2) fail('could not say which bank a receipt went through', e2);
+    }
     made.payments += block.length;
     block.forEach((p) => step(`${p.ptype} of ${p.pdate}`));
   }
@@ -851,20 +931,6 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   // account and direction twice. That is what makes pressing the import again
   // safe: the bills are already skipped by their own ids, and a deposit is
   // skipped by being the same deposit.
-  for (const a of plan.newAccounts) {
-    const { data, error } = await supabase.from('bank_accounts')
-      // WHAT IT OPENED AT, not nought. A cash credit account opens OWING the
-      // bank, so its figure is negative, and a bank book that starts at nil is
-      // wrong by the whole overdraft on every line after it.
-      .insert({ org_id: org.id, name: a.name, opening: Number(a.opening) || 0,
-                opening_on: fyStart(book) || null,
-                is_active: true, is_default: accounts.size === 0 })
-      .select().single();
-    if (error) fail(`could not add the bank account ${a.name}`, error);
-    accounts.set(norm(a.name), data);
-    made.accounts += 1; step(`account ${a.name}`);
-  }
-
   for (const v of (book.cashMoves || [])) {
    for (const m of (v.moves || [v])) {
     const acc = idOf(accounts, m.account);

@@ -437,6 +437,10 @@ $('file').onchange = async () => {
   if ((plan.newAccounts || []).length) {
     rows.push(['Bank accounts to be made', n(plan.newAccounts.length)]);
   }
+  if ((plan.openAccounts || []).length) {
+    rows.push([`Bank accounts already here whose opening balance is still nil`,
+               n(plan.openAccounts.length)]);
+  }
   if (plan.openingCash) {
     rows.push(['Cash in the till when the year opened', n(plan.openingCash)]);
   }
