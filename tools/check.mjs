@@ -559,6 +559,38 @@ rule('the version on the phone can tell one build from the next', (() => {
   return bad;
 })());
 
+rule('the browser page carries over everything the reader found', (() => {
+  // WHY THIS EXISTS.
+  //
+  // The page reads each picked file on its own and joins the books together.
+  // It carried five of the reader's six lists and quietly dropped the sixth,
+  // so every Contra in every import went in the bin -- eighteen deposits a
+  // year, never written, never even counted as passed over, with nothing on
+  // any screen saying a word. The test that was meant to catch it asked for
+  // "a digit" and nought is a digit.
+  // READ FROM DISK, NOT FROM THE src MAP -- that map holds src/*.js only, so
+  // asking it for the web page gave nothing and this check quietly passed on
+  // an empty string. Which is the same shape of fault it was written to catch.
+  const pageFile = path.join(ROOT, 'web', 'skwik-io.html');
+  const readerFile = path.join(ROOT, 'src', 'lib', 'tallybook.js');
+  if (!fs.existsSync(pageFile) || !fs.existsSync(readerFile)) return [];
+  const page = fs.readFileSync(pageFile, 'utf8');
+  const reader = fs.readFileSync(readerFile, 'utf8');
+  if (!page || !reader) return ['the page or the reader is empty'];
+  // what the reader hands back
+  const m = reader.match(/const book = \{([\s\S]*?)\};/);
+  if (!m) return ['vouchersFromTallyXml does not build its book in one place any more'];
+  const lists = [...m[1].matchAll(/([a-zA-Z]+)\s*:\s*\[\]/g)].map((x) => x[1]);
+  if (lists.length < 4) return ['this check can no longer read the lists the reader builds'];
+  const bad = [];
+  for (const k of lists) {
+    if (!new RegExp(`book\\.${k}\\.push`).test(page)) {
+      bad.push(`the page never carries over book.${k} from each file`);
+    }
+  }
+  return bad;
+})());
+
 // -------------------------------------------------------------------------
 console.log('');
 if (!fails.length) {

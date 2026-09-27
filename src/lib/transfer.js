@@ -872,6 +872,70 @@ function sideOf(groups, parent, depth = 0) {
   return sideOf(groups, g.parent, depth + 1);
 }
 
+// WHERE THE OPENING STOCK ACTUALLY IS.
+//
+// Tally does not hold one opening figure per item -- it holds one per item PER
+// GODOWN, and his are spread across four:
+//
+//   Steel Utensils (A)   18,049.15 Kg in all
+//      Chamber Road  3,652.06    TRANSPORT  7,393.29
+//      Na-Paukhry    6,890.70    R(3rd)       113.10
+//
+// Read as a single number, all of it lands nowhere in particular: the total is
+// right and the godown-wise view is empty, which for a shop that moves goods
+// between two stores every day is the view that matters.
+//
+// Only OPENING figures are read, never closing ones -- the same rule the item
+// opening follows, and for the same reason: a closing balance written in as an
+// opening would count the whole year's movements twice.
+export function openingByGodownFromTallyXml(xml) {
+  xml = cleanText(xml);
+  const rows = [];
+  let sawClosing = false, sawOpening = false, noGodown = 0;
+
+  for (const b of blocksOf(xml, 'STOCKITEM')) {
+    const name = nameAttr(b) || tagTop(b, 'NAME');
+    if (!name) continue;
+
+    // the item's own total, which is what a file with no godowns gives
+    const whole = balanceOf(b, true);
+    if (whole.basis === 'closing') { sawClosing = true; continue; }
+    sawOpening = true;
+
+    // and the split, if Tally wrote one
+    const parts = [];
+    for (const ba of blocksOf(b, 'BATCHALLOCATIONS.LIST')) {
+      // READ STRAIGHT OFF THE BLOCK, NOT THROUGH stripLists.
+      //
+      // stripLists throws away every *.LIST inside a chunk so a parent's own
+      // tags can be read without a child's getting in the way -- and a batch
+      // allocation IS a .LIST, so passing it through stripLists deleted the
+      // whole thing and every godown came back empty.
+      const g = tagOf(ba, 'GODOWNNAME');
+      if (!g) continue;
+      const q = qtyOf(tagOf(ba, 'OPENINGBALANCE'));
+      const v = numOf(tagOf(ba, 'OPENINGVALUE'));
+      if (!q) continue;
+      parts.push({ godown: g, qty: q,
+                   // the rate it opened at, worked back from the value Tally
+                   // wrote against that godown's own quantity
+                   cost: q ? Math.round((Math.abs(v) / q) * 100) / 100 : 0 });
+    }
+
+    if (parts.length) {
+      for (const pt of parts) rows.push({ name, ...pt });
+    } else if (whole.value) {
+      // no split in the file: it is still stock, it just has no store named
+      // against it. The writer puts it in the main one.
+      noGodown += 1;
+      rows.push({ name, godown: '', qty: whole.value, cost: 0 });
+    }
+  }
+
+  return { rows, noGodown,
+           basis: sawClosing && !sawOpening ? 'closing' : sawClosing ? 'mixed' : 'opening' };
+}
+
 // THE TILL AND THE BANK ACCOUNTS, OUT OF THE SAME FILE AS EVERYTHING ELSE.
 //
 // partiesFromTallyXml keeps only the people who owe money or are owed it, so

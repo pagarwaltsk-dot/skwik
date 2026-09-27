@@ -536,20 +536,37 @@ function readCashMove(block, v, leds) {
   // A CONTRA BETWEEN TWO BANKS IS NOT A DEPOSIT, and guessing would move money
   // out of a till that was never involved. Named, not guessed at.
   if (!till) {
-    return { ...v, kind: 'skip', why: 'moves money between two bank accounts' };
+    return { ...v, kind: 'skip',
+             why: 'moves money between two bank accounts, and Skwik keeps no entry for that' };
   }
-  if (legs.length > 2) {
-    return { ...v, kind: 'skip', why: 'moves money between more than two places at once' };
-  }
+
+  // MORE THAN TWO LEGS IS STILL BANKING.
+  //
+  // This used to be refused outright -- "moves money between more than two
+  // places at once" -- which threw away a whole year of his banking without a
+  // word on any screen. But a contra that takes 5,00,000 out of the till and
+  // puts 3,00,000 into one account and 2,00,000 into another is not a puzzle:
+  // it is two deposits, and it should be written as two.
+  //
+  // So every leg that is not the till becomes its own movement, at its own
+  // amount. The till's leg says which way the money went; each bank leg says
+  // how much went there. One leg and no bank at all is still a movement -- it
+  // just has no account named against it, which the sheet already allows for.
+  const others = legs.filter((l) => l !== till);
+  const way = till.raw > 0 ? 'deposit' : 'withdrawal';
+  const moves = others.length
+    ? others.map((b) => ({ direction: way, amount: round2(Math.abs(b.raw)), account: b.name }))
+    : [{ direction: way, amount: round2(Math.abs(till.raw)), account: '' }];
 
   return {
     ...v,
     kind: 'cashmove',
-    // On the till's leg, a credit (written positive, the way a party's leg is
-    // on a purchase) is money going OUT of the drawer.
-    direction: till.raw > 0 ? 'deposit' : 'withdrawal',
-    amount: round2(Math.abs(till.raw)),
-    account: bank ? bank.name : '',
+    moves,
+    // the first one, kept flat as well, because that is the shape everything
+    // downstream was written against
+    direction: moves[0].direction,
+    amount: moves[0].amount,
+    account: moves[0].account,
   };
 }
 

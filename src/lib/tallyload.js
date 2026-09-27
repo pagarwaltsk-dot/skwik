@@ -227,6 +227,14 @@ export function planLoad(book, have = {}) {
   // with nowhere to land would sit on the sheet as money that left the till
   // and arrived nowhere, so the account is made if the file names one Skwik
   // has never heard of.
+  // THE STORES THE OPENING STOCK NAMES.
+  //
+  // wantGodown only ever saw the stores on bill lines and transfers, so a
+  // store that holds opening stock and nothing else -- his TRANSPORT and
+  // R(3rd) -- was never made, and the stock that opened there had nowhere to
+  // go.
+  for (const r of (book.openingAt || [])) wantGodown(r.godown);
+
   const newAccounts = new Map();
 
   // THE BANK ACCOUNTS AS LEDGERS, WITH WHAT THEY OPENED AT.
@@ -242,10 +250,12 @@ export function planLoad(book, have = {}) {
   }
 
   // and any account a deposit went into that the ledgers did not name
-  for (const m of (book.cashMoves || [])) {
-    const k = norm(m.account);
-    if (!k || accounts.has(k) || newAccounts.has(k)) continue;
-    newAccounts.set(k, { name: m.account, opening: 0 });
+  for (const v of (book.cashMoves || [])) {
+    for (const m of (v.moves || [v])) {
+      const k = norm(m.account);
+      if (!k || accounts.has(k) || newAccounts.has(k)) continue;
+      newAccounts.set(k, { name: m.account, opening: 0 });
+    }
   }
 
   // Whatever the file said about each name, carried onto the ones being made
@@ -350,11 +360,24 @@ export function planLoad(book, have = {}) {
   // pass -- which is the very fault this whole change is about, reintroduced
   // one step further along. Order matters: nothing knows an item's opening
   // stock until it is known which items there are.
+  // ONE OPENING, NOT TWO.
+  //
+  // There are two ways the opening can arrive: a flat figure on the item, and
+  // a movement per store. The second is the true one -- it says WHERE the
+  // stock is -- and it puts the flat figure back to nought when it writes, or
+  // every view would count the stock twice.
+  //
+  // So when the file carries the per-store split, the flat figure is not set
+  // at all. Left in, the two fought each other: every import reported six
+  // hundred items still "to be filled in", filled them in, and the per-store
+  // pass then had to undo it.
+  const perStore = (book.openingAt || []).length > 0;
+
   // onto the items being created
   for (const [k, it] of newItems) {
     const o = openAt.get(k);
     if (!o) continue;
-    if (!it.opening_stock)  it.opening_stock  = o.qty;
+    if (!perStore && !it.opening_stock) it.opening_stock = o.qty;
     if (!it.purchase_price) it.purchase_price = o.cost;
   }
 
@@ -369,7 +392,8 @@ export function planLoad(book, have = {}) {
     const o = openAt.get(norm(r.name));
     if (!o) continue;
     const patch = {};
-    if (o.qty  && !Number(r.opening_stock))  patch.opening_stock  = o.qty;
+    // the quantity only when nothing is going to place it by store
+    if (!perStore && o.qty && !Number(r.opening_stock)) patch.opening_stock = o.qty;
     if (o.cost && !Number(r.purchase_price)) patch.purchase_price = o.cost;
     if (Object.keys(patch).length) mendItems.push({ id: r.id, name: r.name, ...patch });
   }
@@ -383,13 +407,17 @@ export function planLoad(book, have = {}) {
     newAccounts: [...newAccounts.values()],
     // what the file knows about the shelf before the first bill
     openings: [...openAt.values()],
+    // and WHERE it was, which the flat figure above cannot say
+    openingAt: book.openingAt || [],
     mendItems,
     // and what was in the till on the day the year opened
     openingCash: book.money?.cash ? Number(book.money.cash.opening) || 0 : null,
     bills: book.vouchers.length,
     payments: book.payments.length,
     transfers: book.transfers.length,
-    cashMoves: (book.cashMoves || []).length,
+    // one contra can be two deposits, so this counts the MOVEMENTS and not
+    // the vouchers they came out of
+    cashMoves: (book.cashMoves || []).reduce((t, v) => t + ((v.moves || [v]).length), 0),
     // true when there were no bills at all and everything above came out of
     // the masters instead
     fromMasters: nothingBilled && !!book.masters
@@ -434,6 +462,17 @@ export async function readMasters(supabase) {
 // Taken from the earliest entry in the file rather than from today: a book
 // imported in September is still a book that opened in April, and dating the
 // opening figure today would put it after the bills it comes before.
+// WHERE STOCK GOES WHEN THE FILE DOES NOT SAY.
+//
+// A file with no godowns in it still has opening stock, and it has to land
+// somewhere or it is not stock at all. The main store is the honest answer --
+// it is the one he keeps everything in -- and it is what he expected anyway.
+export function mainGodown(godowns) {
+  const all = [...godowns.values()];
+  const main = all.find((g) => g && g.is_main);
+  return (main || all[0] || {}).id || null;
+}
+
 export function fyStart(book) {
   const days = [
     ...(book?.vouchers || []).map((v) => v.vdate),
@@ -755,6 +794,40 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     step(`transfer of ${t.vdate}`);
   }
 
+  /* ---- the opening stock, into the store it is actually in ---- */
+  //
+  // This goes through a function rather than a plain insert because stock
+  // movements are written by the server or not at all -- a movement made by
+  // hand skips everything that makes a movement true. The function also puts
+  // items.opening_stock back to nought for each item it writes, or the stock
+  // would be counted twice: every view reads the flat figure PLUS the
+  // movements.
+  if ((plan.openingAt || []).length) {
+    const on = fyStart(book) || null;
+    const rows = [];
+    for (const r of plan.openingAt) {
+      const item = idOf(items, r.name);
+      if (!item) continue;
+      const god = r.godown ? idOf(godowns, r.godown)
+                           : (mainGodown(godowns) || null);
+      rows.push({ item, godown: god, qty: Number(r.qty) || 0, cost: Number(r.cost) || 0 });
+    }
+    for (let i = 0; i < rows.length; i += 200) {
+      const { error } = await supabase.rpc('set_opening_stock',
+        { p: { mdate: on, rows: rows.slice(i, i + 200) } });
+      // AN APP AHEAD OF ITS DATABASE SAYS SO IN WORDS HE CAN ACT ON.
+      if (error) {
+        const missing = /does not exist|schema cache|42883|PGRST202/i.test(
+          `${error.message || ''} ${error.code || ''}`);
+        fail(missing
+          ? 'the opening stock needs the newest SQL: run 1.10.7-opening-by-godown.sql'
+          : 'could not set the opening stock', error);
+      }
+    }
+    made.openedAt = rows.length;
+    step(`${rows.length} opening quantit(y/ies) placed in their stores`);
+  }
+
   /* ---- what was in the till when the year opened ---- */
   //
   // Only ever filled in, never written over: a figure he has typed himself is
@@ -792,15 +865,16 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     made.accounts += 1; step(`account ${a.name}`);
   }
 
-  for (const m of (book.cashMoves || [])) {
+  for (const v of (book.cashMoves || [])) {
+   for (const m of (v.moves || [v])) {
     const acc = idOf(accounts, m.account);
     const { error } = await supabase.from('cash_moves').insert({
       org_id: org.id,
       direction: m.direction,
-      mdate: m.vdate,
+      mdate: v.vdate,
       amount: m.amount,
       account_id: acc,
-      note: m.narration || (m.direction === 'deposit' ? 'paid into bank' : 'taken from bank'),
+      note: v.narration || (m.direction === 'deposit' ? 'paid into bank' : 'taken from bank'),
       import_run: run,
     });
     // THE SAME DEPOSIT TWICE IS NOT AN ERROR, it is the second press of a
@@ -812,6 +886,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     }
     if (!error) made.banked += 1;
     step(`banked ${m.amount}`);
+   }
   }
 
   // THE RUN IS CLOSED, with what it actually brought in written on it. That

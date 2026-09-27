@@ -181,8 +181,8 @@ import { project } from './project.js';
 import { vouchersFromTallyXml, checkBook } from '../src/lib/tallybook.js';
 import { loadBook, planLoad, readMasters } from '../src/lib/tallyload.js';
 import { saveBook, sayWhatWentOut } from '../src/lib/booksave.js';
-import { itemsFromTallyXml, partiesFromTallyXml, moneyLedgersFromTallyXml }
-  from '../src/lib/transfer.js';
+import { itemsFromTallyXml, partiesFromTallyXml, moneyLedgersFromTallyXml,
+         openingByGodownFromTallyXml } from '../src/lib/transfer.js';
 
 const $ = (id) => document.getElementById(id);
 const show = (el, on = true) => el.classList.toggle('hide', !on);
@@ -306,9 +306,11 @@ $('file').onchange = async () => {
   // a new file is being read, is how a bill goes missing twice.
   $('writeMsg').innerHTML = '';
   $('writeBar').style.width = '0%';
-  book = { vouchers: [], payments: [], transfers: [], counts: [], skipped: [] };
+  book = { vouchers: [], payments: [], transfers: [], counts: [],
+           cashMoves: [], skipped: [] };
   const mItems = [], mParties = [];
   const openings = [];
+  const openingAt = [];
   const banks = [];
   let till = null;
   let closingSeen = null;
@@ -316,7 +318,8 @@ $('file').onchange = async () => {
 
   for (let i = 0; i < texts.length; i++) {
     const one = vouchersFromTallyXml(texts[i]);
-    const billed = one.vouchers.length + one.payments.length + (one.transfers || []).length;
+    const billed = one.vouchers.length + one.payments.length
+                 + (one.transfers || []).length + (one.cashMoves || []).length;
 
     // ---------------------------------------------------------------
     //  WHAT WAS ON THE SHELF BEFORE THE FIRST BILL, out of any file.
@@ -343,6 +346,11 @@ $('file').onchange = async () => {
       if (!till && money.cash) till = money.cash;
     }
 
+    // WHERE the opening stock is, not only how much of it there is. Tally
+    // holds one figure per item per store and his are spread across five.
+    const where = openingByGodownFromTallyXml(texts[i]);
+    if (where.basis !== 'closing') openingAt.push(...(where.rows || []));
+
     const stock = itemsFromTallyXml(texts[i]);
     if ((stock.rows || []).length) {
       if (stock.basis && stock.basis !== 'opening') {
@@ -356,6 +364,14 @@ $('file').onchange = async () => {
       book.payments.push(...one.payments);
       book.transfers.push(...(one.transfers || []));
       book.counts.push(...(one.counts || []));
+      // THE ONE THAT WAS LEFT OUT.
+      //
+      // Five lists were carried over from each file and the sixth was not, so
+      // every Contra the reader found was dropped here -- eighteen deposits a
+      // year, thrown away by the merge that was meant to join the files up.
+      // They did not even land in the passed-over list, so nothing on any
+      // screen said a word about them.
+      book.cashMoves.push(...(one.cashMoves || []));
       book.skipped.push(...(one.skipped || []));
       perFile.push({ name: files[i].name, as: 'bills', bills: one.vouchers.length,
                      payments: one.payments.length });
@@ -371,6 +387,7 @@ $('file').onchange = async () => {
   }
   if (mItems.length || mParties.length) book.masters = { items: mItems, parties: mParties };
   book.openings = openings;
+  book.openingAt = openingAt;
   book.money = { banks, cash: till };
 
   // the one file that gave nothing at all, for the explanation below
@@ -411,6 +428,11 @@ $('file').onchange = async () => {
   if ((plan.mendItems || []).length) {
     rows.push(['Items already here to be given their opening stock',
                n(plan.mendItems.length)]);
+  }
+  if ((plan.openingAt || []).length) {
+    const stores = new Set(plan.openingAt.map((r) => r.godown || 'the main store'));
+    rows.push([`Opening stock to place, across ${n(stores.size)} store(s)`,
+               n(plan.openingAt.length)]);
   }
   if ((plan.newAccounts || []).length) {
     rows.push(['Bank accounts to be made', n(plan.newAccounts.length)]);
