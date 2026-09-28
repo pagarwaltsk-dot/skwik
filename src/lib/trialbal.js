@@ -211,3 +211,99 @@ export function unseenInSkwik(tb, known = []) {
     .filter((r) => (r.closing || 0) !== 0 && skwikKeeps(r.name) && !have.has(key(r.name)))
     .sort((a, b) => Math.abs(b.closing) - Math.abs(a.closing));
 }
+
+/* ===================== the people, name by name ===================== */
+
+// WHY THIS IS NOT THE SAME JOB AS THE MONEY.
+//
+// Cash and banks are a handful of accounts with names Skwik chose. Parties are
+// six hundred names typed by two different people into two different programs,
+// and they will not all match. "M/s Krishna Enterprise" against "Krishna
+// Enterprises", a full stop, a double space. So a name that does not match is
+// never silently dropped -- it is listed, because an unmatched name is exactly
+// where a missing balance hides.
+export function compareParties(tb, rows, mine = {}, alreadyDone = []) {
+  // CASH AND THE BANKS ARE NOT NAMES HE HAS NEVER HEARD OF.
+  //
+  // They are compared in the money table above, correctly, and then turned up
+  // AGAIN underneath as "in your Tally, no such name in Skwik" -- because no
+  // party is called Cash. Two lines saying a bank is missing, on a page whose
+  // whole job is to be believed.
+  const done = new Set((alreadyDone || []).map(key));
+  const byKey = new Map();
+  (rows || []).forEach((r) => byKey.set(key(r.name), r));
+
+  const lines = [];
+  const seen = new Set();
+
+  (tb.rows || []).forEach((t) => {
+    if (!skwikKeeps(t.name) || done.has(key(t.name))) return;
+    const k = key(t.name);
+    const r = byKey.get(k);
+    if (!r) return;                       // handled by unmatched, below
+    seen.add(k);
+    const tally = t.closing || 0;
+    const skwik = Number(r.balance || 0);
+    const own = Number(mine[k] || 0);
+    if (tally === 0 && skwik === 0) return;   // nothing to say about a settled account
+    lines.push({ name: r.name, id: r.id, kind: r.kind, tally, skwik, own,
+                 gap: Math.round((skwik - own - tally) * 100) / 100 });
+  });
+
+  const out = lines.filter((l) => Math.abs(l.gap) >= 1)
+    .sort((a, b) => Math.abs(b.gap) - Math.abs(a.gap));
+
+  // in his Tally with a balance, and Skwik has no such name
+  const onlyTally = (tb.rows || [])
+    .filter((t) => (t.closing || 0) !== 0 && skwikKeeps(t.name)
+      && !byKey.has(key(t.name)) && !done.has(key(t.name)))
+    .sort((a, b) => Math.abs(b.closing) - Math.abs(a.closing));
+
+  // in Skwik with a balance, and his Tally has no such name
+  const tbKeys = new Set((tb.rows || []).map((t) => key(t.name)));
+  const onlySkwik = (rows || [])
+    .filter((r) => Math.abs(Number(r.balance || 0)) >= 1 && !tbKeys.has(key(r.name)))
+    .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
+
+  return {
+    checked: lines.length,
+    agree: out.length === 0,
+    out,
+    onlyTally,
+    onlySkwik,
+    worst: out[0] || null,
+    total: Math.round(out.reduce((t, l) => t + l.gap, 0) * 100) / 100,
+  };
+}
+
+/* ===================== the openings, from the file ===================== */
+
+// WHAT THE TRIAL BALANCE CAN FILL IN, AND WHAT IT CANNOT.
+//
+// Only a figure that is still sitting at nought. An account he has set himself
+// is his. And a bank Skwik has no account for is left alone rather than
+// invented -- a second "Bank Of Baroda" beside his own would be worse than the
+// missing figure.
+export function openingsToFill(tb, have = {}) {
+  const byKey = new Map();
+  (tb.rows || []).forEach((r) => byKey.set(key(r.name), r));
+  const pick = (name) => {
+    const r = byKey.get(key(name));
+    return r && r.opening ? r.opening : 0;
+  };
+
+  const banks = (have.banks || [])
+    .filter((b) => !Number(b.opening || 0) && !b.opening_on && pick(b.name))
+    .map((b) => ({ name: b.name, opening: pick(b.name) }));
+
+  const parties = (have.parties || [])
+    .filter((p) => !Number(p.opening_balance || 0) && !p.opening_date && pick(p.name))
+    .map((p) => ({ name: p.name, opening: pick(p.name) }));
+
+  const cashRow = byKey.get('cash');
+  const cash = (!Number(have.opening_cash || 0) && !have.opening_cash_on
+                && cashRow && cashRow.opening) ? cashRow.opening : null;
+
+  return { cash, banks, parties,
+           count: (cash ? 1 : 0) + banks.length + parties.length };
+}
