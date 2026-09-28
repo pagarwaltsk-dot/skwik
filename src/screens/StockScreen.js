@@ -71,6 +71,24 @@ export default function StockScreen({ navigation }) {
   const detailed = showGodowns(org) || showBatch(org) || showExpiry(org);
   const bySize = showVariants(org);
 
+  // A SHOP KEEPING BATCHES NEEDS THE BATCH LINES. NOBODY ELSE DOES.
+  //
+  // Which is the whole reason this screen can be small. A shop with two stores
+  // and no batches is SHOWN one line per item, so one line per item is what it
+  // is SENT — added up in the database, where the rows already are. A chemist
+  // is shown a line per batch, so the detailed view stays exactly as it was:
+  // those rows are on the screen, and there is no saving to be had in not
+  // sending them.
+  const keepsBatches = showBatch(org) || showExpiry(org);
+
+  // WHAT THE FETCH DEPENDS ON, WHICH IS NOT ALWAYS THE STORE HE IS LOOKING AT.
+  //
+  // The folded read asks for one store at a time, so picking a store asks
+  // again — 73 kB on that shop. The detailed read fetches every store at once
+  // and sifts them here, as it always has, so picking a store must NOT send it
+  // back for 788 kB it already has.
+  const scope = keepsBatches ? 'all' : where;
+
   useFocusEffect(useCallback(() => {
     let on = true;
     (async () => {
@@ -104,11 +122,64 @@ export default function StockScreen({ navigation }) {
         if (on) { setRows(data || []); setKin(ks || []); }
         return;
       }
+      const godownAsk = showGodowns(org)
+        ? supabase.from('godowns').select('*').order('name')
+        : Promise.resolve({ data: [] });
+
+      const detailedAsk = () => allRows(() => supabase.from('stock_in_hand_detail')
+        .select('*').order('item_name').order('item_id'));
+
+      if (!keepsBatches) {
+        // ONE LINE PER ITEM, ADDED UP WHERE THE ROWS ALREADY ARE.
+        //
+        // On a shop his size — 503 items over 5 stores — 2,515 rows and 788 kB
+        // became 503 rows and 99 kB, and the phone stopped folding the one into
+        // the other on every visit to the screen.
+        const [sum, { data: gs }, ks] = await Promise.all([
+          supabase.rpc('stock_summary', { p_godown: scope === 'all' ? null : scope }),
+          godownAsk,
+          kinAsk,
+        ]);
+        if (!on) return;
+        setGodowns(gs || []);
+        setKin(ks || []);
+
+        // AND IF THE DATABASE HAS NOT BEEN UPDATED YET, ASK THE OLD WAY.
+        //
+        // The app arrives on his phone from the Play Store; the database is
+        // updated by hand in Supabase. For however long one is ahead of the
+        // other, stock_summary is simply not there — and the difference
+        // between asking the old way and giving up is the difference between
+        // a slow stock list and one showing every item at nought, which is
+        // what "my stock is gone" looks like. That mistake has been made on
+        // this app once already, on the godown screen, and it will not be
+        // made again.
+        if (sum.error) {
+          const st = await detailedAsk();
+          if (on) setRows(st || []);
+          return;
+        }
+
+        // The shape the folding gives back is short on purpose — id, name,
+        // unit, quantity, and the stores it is spread across when there is
+        // more than one. Laid back out here into the rows the rest of this
+        // screen has always read, so nothing below this line had to change.
+        setRows((sum.data || []).map((r) => ({
+          item_id: r.id,
+          item_name: r.n,
+          unit: r.u,
+          qty: r.q,
+          // One store picked means every row came from it; "Everywhere" means
+          // the row is the whole shop's and the filter below leaves it alone.
+          godown_id: scope === 'all' ? null : scope,
+          godown_names: r.s || null,
+        })));
+        return;
+      }
+
       const [st, { data: gs }, ks] = await Promise.all([
-        allRows(() => supabase.from('stock_in_hand_detail')
-          .select('*').order('item_name').order('item_id')),
-        showGodowns(org) ? supabase.from('godowns').select('*').order('name')
-                         : Promise.resolve({ data: [] }),
+        detailedAsk(),
+        godownAsk,
         kinAsk,
       ]);
       if (!on) return;
@@ -117,7 +188,9 @@ export default function StockScreen({ navigation }) {
       setKin(ks || []);
     })();
     return () => { on = false; };
-  }, [detailed, bySize, org?.godowns_enabled, org?.variants_enabled]));
+  }, [detailed, bySize, keepsBatches, scope,
+      org?.godowns_enabled, org?.variants_enabled,
+      org?.batch_enabled, org?.expiry_enabled]));
 
   const kinBy = useMemo(() => {
     const m = new Map();
@@ -131,7 +204,7 @@ export default function StockScreen({ navigation }) {
   // or the godown changes — never on a tap, and never while the list scrolls.
   const tree = useMemo(() => {
     const text = q.trim().toLowerCase();
-    const byBatch = detailed && (showBatch(org) || showExpiry(org));
+    const byBatch = detailed && keepsBatches;
     // ITEMS ARE HIS TO HIDE; BATCHES ARE NOT.
     //
     // An item with nothing left is still one of his items and belongs on the
@@ -187,6 +260,10 @@ export default function StockScreen({ navigation }) {
       }
       it.own += n(r.qty);
       if (r.godown_name) it.places.add(r.godown_name);
+      // A FOLDED ROW NAMES ITS STORES ITSELF. One line per item cannot carry
+      // one store name, so it carries the list — and only when there is more
+      // than one, which is the only time the screen prints it.
+      if (r.godown_names) r.godown_names.forEach((x) => { if (x) it.places.add(x); });
       if (byBatch) {
         const bk = `${r.batch || ''}|${r.expiry || ''}`;
         let b = it.batches.get(bk);
@@ -321,7 +398,7 @@ export default function StockScreen({ navigation }) {
     });
 
     return { lines, today, shut: bySize && byBatch };
-  }, [rows, kin, kinBy, q, where, detailed, bySize, hideNil, org]);
+  }, [rows, kin, kinBy, q, where, detailed, bySize, keepsBatches, hideNil, org]);
 
   // The flattening is separate from the adding up so that opening one item's
   // batches does not re-total the whole shop.
