@@ -702,7 +702,21 @@ async function checkAgainstTally() {
   // 45,874.86 short into 45,68,258.96. A wrong explanation is worse than none,
   // so the figures stand on their own until that count is done in the database
   // where it can be trusted.
-  const c = compareMoney(tb, sheet, {});
+  // WHAT HE TYPED HERE HIMSELF, counted in the database over the rows
+  // themselves rather than over the wire. A bill he raised in Skwik this
+  // afternoon is never in a trial balance exported this morning: it explains a
+  // gap, it is not one.
+  let mine = { cash: 0, banks: [], parties: [] };
+  try {
+    const { data: m, error: me } = await db.rpc('entries_of_mine', { p_on: lastDay() });
+    if (!me && m) mine = m;
+  } catch (err) { /* older database: it compares, it just cannot explain */ }
+
+  const byName = {};
+  (mine.banks || []).forEach((b) => { byName[String(b.name).toLowerCase().trim()] = b.amount; });
+  byName['cash in hand'] = mine.cash || 0;
+
+  const c = compareMoney(tb, sheet, byName);
 
   $('tbTable').innerHTML =
     '<tr><th>Account</th><th class="r">Your Tally</th><th class="r">Skwik</th><th>&nbsp;</th></tr>'
@@ -730,9 +744,13 @@ async function checkAgainstTally() {
     + 'customers and suppliers…</p>';
   let pc = null;
   try {
-    const { data: rows, error: pe } = await db.rpc('party_balances_on', { p_on: lastDay(tb) });
+    const { data: rows, error: pe } = await db.rpc('party_balances_on', { p_on: lastDay() });
     if (pe) throw pe;
-    pc = compareParties(tb, rows || []);
+    const mineBy = {};
+    (mine.parties || []).forEach((x) => {
+      mineBy[String(x.name).toLowerCase().replace(/\s+/g, ' ').trim()] = x.amount;
+    });
+    pc = compareParties(tb, rows || [], mineBy, c.lines.map((l) => l.label).concat(['Cash']));
   } catch (err) {
     $('tbParties').innerHTML = '<p class="note" style="margin-top:18px">Could not check the '
       + 'customers and suppliers. ' + (err.message || err) + ' — run '
@@ -745,9 +763,10 @@ async function checkAgainstTally() {
       : '<b>' + pc.out.length + ' of ' + pc.checked + ' do not match</b>, '
         + rupee(pc.total) + ' between them. The biggest is ' + pc.worst.name + '.';
     const rows = pc.out.slice(0, 15).map((l) =>
-      '<tr><td>' + l.name + '</td><td class="r">' + rupee(l.tally) + '</td><td class="r">'
-      + rupee(l.skwik) + '</td><td><b style="color:var(--danger)">out by ' + rupee(l.gap)
-      + '</b></td></tr>').join('');
+      '<tr><td>' + l.name + (l.own ? '<br><span class="note">including ' + rupee(l.own)
+        + ' you entered here</span>' : '') + '</td><td class="r">' + rupee(l.tally)
+      + '</td><td class="r">' + rupee(l.skwik) + '</td><td><b style="color:var(--danger)">out by '
+      + rupee(l.gap) + '</b></td></tr>').join('');
     $('tbParties').innerHTML = '<p class="note" style="margin-top:18px">' + head + '</p>'
       + (rows ? '<table><tr><th>Name</th><th class="r">Your Tally</th><th class="r">Skwik</th>'
           + '<th>&nbsp;</th></tr>' + rows + '</table>' : '')
