@@ -159,6 +159,10 @@ export function compareMoney(tb, sheet, mine = {}) {
   const add = (label, skwik, tallyName) => {
     const t = byName.get(key(tallyName || label));
     const tally = t ? (t.closing || 0) : null;
+    // WHAT HE TYPED HERE HIMSELF, when it can be counted honestly. It reached
+    // his screen counting rows the importer HAD written and turned a plain
+    // 45,874.86 short into 45,68,258.96, which is worse than saying nothing.
+    // Nothing is taken off a figure until that count can be trusted.
     const own = Number(mine[key(label)] || 0);
     lines.push({
       label,
@@ -174,7 +178,17 @@ export function compareMoney(tb, sheet, mine = {}) {
 
   add('Cash in hand', sheet?.cash, 'Cash');
   (sheet?.banks || []).forEach((b) => add(b.name, b.amount));
-  add('Stock in hand', sheet?.stock, 'Opening Stock');
+
+  // STOCK IS NOT IN A TRIAL BALANCE, AND THE LINE THAT LOOKS LIKE IT IS NOT IT.
+  //
+  // Tally's "Opening Stock" ledger holds the value of the shelf on the day the
+  // year opened -- 1,37,85,016.84 on his. Skwik's stock figure is the value of
+  // the shelf TODAY. Holding one against the other reported him 10,77,873.52
+  // adrift when nothing was wrong: the year's buying and selling is the whole
+  // of the difference.
+  //
+  // Closing stock is not a ledger at all, so no trial balance can answer this.
+  // It takes a Stock Summary export, which is its own piece of work.
 
   const worst = lines.filter((l) => l.gap !== null && Math.abs(l.gap) >= 1)
     .sort((a, b) => Math.abs(b.gap) - Math.abs(a.gap));
