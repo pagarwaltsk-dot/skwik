@@ -161,6 +161,8 @@
     <div id="tbBox" class="hide">
       <p class="note" id="tbMsg"></p>
       <table id="tbTable"></table>
+      <div id="tbFix"></div>
+      <div id="tbParties"></div>
       <div id="tbUnseen"></div>
     </div>
   </section>
@@ -196,7 +198,8 @@ import { project } from './project.js';
 import { vouchersFromTallyXml, checkBook } from '../src/lib/tallybook.js';
 import { loadBook, planLoad, readMasters } from '../src/lib/tallyload.js';
 import { saveBook, sayWhatWentOut } from '../src/lib/booksave.js';
-import { trialBalanceFromXml, compareMoney, unseenInSkwik } from '../src/lib/trialbal.js';
+import { trialBalanceFromXml, compareMoney, compareParties, openingsToFill }
+  from '../src/lib/trialbal.js';
 import { itemsFromTallyXml, partiesFromTallyXml, moneyLedgersFromTallyXml,
          openingByGodownFromTallyXml } from '../src/lib/transfer.js';
 
@@ -722,16 +725,118 @@ async function checkAgainstTally() {
     + 'balance — the Opening Stock line in it is the value of your shelf on 1 April, not '
     + 'today. Customers and suppliers come next.</span>';
 
-  const known = c.lines.map((l) => l.label).concat(['Cash', 'Opening Stock']);
-  $('tbUnseen').innerHTML = '';
-  const unseen = unseenInSkwik(tb, known).slice(0, 12);
-  if (unseen.length) {
-    $('tbUnseen').innerHTML = '<p class="note" style="margin-top:16px"><b>In your Tally, not '
-      + 'in Skwik.</b> Customers and suppliers are matched in the next version of this page; '
-      + 'the rest are ledgers Skwik does not keep.</p><table>'
-      + unseen.map((r) => '<tr><td>' + r.name + '</td><td class="r">' + rupee(r.closing)
-        + '</td></tr>').join('') + '</table>';
+  /* ---- the people, name by name ---- */
+  $('tbParties').innerHTML = '<p class="note" style="margin-top:18px">Checking your '
+    + 'customers and suppliers…</p>';
+  let pc = null;
+  try {
+    const { data: rows, error: pe } = await db.rpc('party_balances_on', { p_on: lastDay(tb) });
+    if (pe) throw pe;
+    pc = compareParties(tb, rows || []);
+  } catch (err) {
+    $('tbParties').innerHTML = '<p class="note" style="margin-top:18px">Could not check the '
+      + 'customers and suppliers. ' + (err.message || err) + ' — run '
+      + '1.10.11-check-against-tally.sql in Supabase and try again.</p>';
   }
+
+  if (pc) {
+    const head = pc.agree
+      ? '<b>Every customer and supplier agrees.</b> ' + pc.checked + ' checked.'
+      : '<b>' + pc.out.length + ' of ' + pc.checked + ' do not match</b>, '
+        + rupee(pc.total) + ' between them. The biggest is ' + pc.worst.name + '.';
+    const rows = pc.out.slice(0, 15).map((l) =>
+      '<tr><td>' + l.name + '</td><td class="r">' + rupee(l.tally) + '</td><td class="r">'
+      + rupee(l.skwik) + '</td><td><b style="color:var(--danger)">out by ' + rupee(l.gap)
+      + '</b></td></tr>').join('');
+    $('tbParties').innerHTML = '<p class="note" style="margin-top:18px">' + head + '</p>'
+      + (rows ? '<table><tr><th>Name</th><th class="r">Your Tally</th><th class="r">Skwik</th>'
+          + '<th>&nbsp;</th></tr>' + rows + '</table>' : '')
+      + oneSided('With a balance in your Tally, and no such name in Skwik',
+          pc.onlyTally.map((r) => [r.name, r.closing]))
+      + oneSided('With a balance in Skwik, and no such name in your Tally',
+          pc.onlySkwik.map((r) => [r.name, r.balance]));
+  }
+
+  /* ---- and the openings this file can fill in ---- */
+  await offerOpenings(tb);
+}
+
+// The last day anything moved in the file, which is the day its figures are
+// a position on. Tally does not write the date into a trial balance, so the
+// only honest answer is today -- and the page says which day it compared at.
+function lastDay() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+       + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function oneSided(title, pairs) {
+  if (!pairs.length) return '';
+  return '<p class="note" style="margin-top:16px"><b>' + title + '.</b> A name spelt two ways '
+    + 'in two programs looks exactly like a missing balance, so these are listed rather than '
+    + 'passed over.</p><table>'
+    + pairs.slice(0, 12).map((x) => '<tr><td>' + x[0] + '</td><td class="r">'
+        + rupee(x[1]) + '</td></tr>').join('') + '</table>';
+}
+
+// WHAT THE FILE CAN PUT RIGHT, OFFERED BEFORE IT IS DONE.
+//
+// This is the only thing on this card that writes, so it says exactly what it
+// will write and he presses it himself. Only a figure still sitting at nought
+// is touched -- one he set himself is his.
+async function offerOpenings(tb) {
+  $('tbFix').innerHTML = '';
+  let have = {};
+  try {
+    const [{ data: org }, { data: banks }, { data: parties }] = await Promise.all([
+      db.from('orgs').select('opening_cash, opening_cash_on').single(),
+      db.from('bank_accounts').select('name, opening, opening_on'),
+      db.from('parties').select('name, opening_balance, opening_date'),
+    ]);
+    have = { opening_cash: org?.opening_cash, opening_cash_on: org?.opening_cash_on,
+             banks: banks || [], parties: parties || [] };
+  } catch (err) { return; }
+
+  const fill = openingsToFill(tb, have);
+  if (!fill.count) return;
+
+  const bits = [];
+  if (fill.cash) bits.push('cash in hand ' + rupee(fill.cash));
+  fill.banks.forEach((b) => bits.push(b.name + ' ' + rupee(b.opening)));
+  if (fill.parties.length) bits.push(fill.parties.length + ' customer/supplier opening(s)');
+
+  $('tbFix').innerHTML =
+    '<p class="note" style="margin-top:16px"><b>This file can fill in ' + fill.count
+    + ' opening figure(s) that are still nil.</b><br>' + bits.slice(0, 6).join(' · ')
+    + (bits.length > 6 ? ' · and ' + (bits.length - 6) + ' more' : '')
+    + '<br>Nothing already set is touched.</p>'
+    + '<div class="row"><button id="fixOpen">Fill these in</button>'
+    + '<span class="note" id="fixMsg"></span></div>';
+
+  $('fixOpen').onclick = async () => {
+    $('fixOpen').disabled = true;
+    $('fixMsg').textContent = 'Writing…';
+    const { data, error } = await db.rpc('set_openings', {
+      p: { on: openingDay(), cash: fill.cash, banks: fill.banks, parties: fill.parties },
+    });
+    if (error) {
+      $('fixOpen').disabled = false;
+      $('fixMsg').textContent = 'Could not write them. ' + error.message;
+      return;
+    }
+    const left = (data.left || []).length;
+    $('fixMsg').textContent = 'Done — cash ' + (data.cash ? 'set' : 'left as it was')
+      + ', ' + data.banks + ' bank(s), ' + data.parties + ' name(s)'
+      + (left ? ', ' + left + ' left alone because they were already set' : '')
+      + '. Drop the file in again to see it.';
+  };
+}
+
+// The day an opening belongs to: 1 April of the financial year we are in.
+function openingDay() {
+  const d = new Date();
+  const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
+  return y + '-04-01';
 };
 
 $('save').onclick = async () => {
