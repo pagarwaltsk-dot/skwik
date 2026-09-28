@@ -690,23 +690,16 @@ async function checkAgainstTally() {
   const { data: sheet, error } = await db.rpc('balance_sheet', { p_on: on });
   if (error) { $('tbMsg').textContent = 'Could not read your own figures. ' + error.message; return; }
 
-  // WHAT HE TYPED INTO SKWIK HIMSELF IS NOT A DIFFERENCE.
+  // WHAT HE TYPED INTO SKWIK HIMSELF IS NOT A DIFFERENCE -- BUT ONLY IF THE
+  // COUNT IS RIGHT.
   //
-  // Every row the importer writes carries its import run. A row without one was
-  // entered here, so it is in Skwik and will never be in Tally -- it is the
-  // explanation for a gap rather than a fault.
-  const mine = {};
-  try {
-    const { data: own } = await db.from('payments')
-      .select('mode, ptype, amount').is('import_run', null);
-    (own || []).forEach((p) => {
-      if (p.mode !== 'cash') return;
-      const sign = p.ptype === 'receipt' ? 1 : -1;
-      mine['cash in hand'] = (mine['cash in hand'] || 0) + sign * Number(p.amount || 0);
-    });
-  } catch (err) { /* an older database: it still compares, it just cannot explain */ }
-
-  const c = compareMoney(tb, sheet, mine);
+  // Every row the importer writes carries its import run, so a row without one
+  // was entered here. Counting them over the wire came back with 45,22,384.10
+  // of his own cash entries on a shop that had almost none, and turned a plain
+  // 45,874.86 short into 45,68,258.96. A wrong explanation is worse than none,
+  // so the figures stand on their own until that count is done in the database
+  // where it can be trusted.
+  const c = compareMoney(tb, sheet, {});
 
   $('tbTable').innerHTML =
     '<tr><th>Account</th><th class="r">Your Tally</th><th class="r">Skwik</th><th>&nbsp;</th></tr>'
@@ -720,13 +713,17 @@ async function checkAgainstTally() {
         + '<td class="r">' + rupee(l.skwik) + '</td><td>' + state + '</td></tr>';
     }).join('');
 
-  $('tbMsg').innerHTML = c.agree
-    ? '<b>Your books agree with Tally.</b> ' + tb.rows.length + ' ledgers read, '
+  $('tbMsg').innerHTML = (c.agree
+    ? '<b>Your cash and banks agree with Tally.</b> ' + tb.rows.length + ' ledgers read, '
       + c.lines.length + ' compared, every one matching.'
     : '<b>' + c.worst.length + ' figure(s) do not match.</b> The biggest is '
-      + c.worst[0].label + ', out by ' + rupee(c.worst[0].gap) + '.';
+      + c.worst[0].label + ', out by ' + rupee(c.worst[0].gap) + '.')
+    + '<br><span class="note">Cash and banks only. Stock cannot be checked against a trial '
+    + 'balance — the Opening Stock line in it is the value of your shelf on 1 April, not '
+    + 'today. Customers and suppliers come next.</span>';
 
   const known = c.lines.map((l) => l.label).concat(['Cash', 'Opening Stock']);
+  $('tbUnseen').innerHTML = '';
   const unseen = unseenInSkwik(tb, known).slice(0, 12);
   if (unseen.length) {
     $('tbUnseen').innerHTML = '<p class="note" style="margin-top:16px"><b>In your Tally, not '
