@@ -222,7 +222,14 @@ export function unseenInSkwik(tb, known = []) {
 // Enterprises", a full stop, a double space. So a name that does not match is
 // never silently dropped -- it is listed, because an unmatched name is exactly
 // where a missing balance hides.
-export function compareParties(tb, rows, mine = {}) {
+export function compareParties(tb, rows, mine = {}, alreadyDone = []) {
+  // CASH AND THE BANKS ARE NOT NAMES HE HAS NEVER HEARD OF.
+  //
+  // They are compared in the money table above, correctly, and then turned up
+  // AGAIN underneath as "in your Tally, no such name in Skwik" -- because no
+  // party is called Cash. Two lines saying a bank is missing, on a page whose
+  // whole job is to be believed.
+  const done = new Set((alreadyDone || []).map(key));
   const byKey = new Map();
   (rows || []).forEach((r) => byKey.set(key(r.name), r));
 
@@ -230,7 +237,7 @@ export function compareParties(tb, rows, mine = {}) {
   const seen = new Set();
 
   (tb.rows || []).forEach((t) => {
-    if (!skwikKeeps(t.name)) return;
+    if (!skwikKeeps(t.name) || done.has(key(t.name))) return;
     const k = key(t.name);
     const r = byKey.get(k);
     if (!r) return;                       // handled by unmatched, below
@@ -248,7 +255,8 @@ export function compareParties(tb, rows, mine = {}) {
 
   // in his Tally with a balance, and Skwik has no such name
   const onlyTally = (tb.rows || [])
-    .filter((t) => (t.closing || 0) !== 0 && skwikKeeps(t.name) && !byKey.has(key(t.name)))
+    .filter((t) => (t.closing || 0) !== 0 && skwikKeeps(t.name)
+      && !byKey.has(key(t.name)) && !done.has(key(t.name)))
     .sort((a, b) => Math.abs(b.closing) - Math.abs(a.closing));
 
   // in Skwik with a balance, and his Tally has no such name
