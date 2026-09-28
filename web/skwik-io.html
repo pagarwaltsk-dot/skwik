@@ -150,6 +150,21 @@
     </div>
   </section>
 
+  <section class="card hide" id="checkCard">
+    <h2>Does Skwik agree with Tally?</h2>
+    <p class="note">Export a <b>Trial Balance</b> out of Tally — Display → Trial Balance →
+       Export → XML — and drop it here. Nothing is written. It puts your figures side by
+       side and says where they differ, biggest first.</p>
+    <div class="row" style="margin-top:14px">
+      <input id="tbFile" type="file" accept=".xml,text/xml,application/xml">
+    </div>
+    <div id="tbBox" class="hide">
+      <p class="note" id="tbMsg"></p>
+      <table id="tbTable"></table>
+      <div id="tbUnseen"></div>
+    </div>
+  </section>
+
   <section class="card hide" id="outCard">
     <h2>Take the whole book out</h2>
     <p class="note">Every row, in a file Skwik can read back — not a report. It is written
@@ -181,6 +196,7 @@ import { project } from './project.js';
 import { vouchersFromTallyXml, checkBook } from '../src/lib/tallybook.js';
 import { loadBook, planLoad, readMasters } from '../src/lib/tallyload.js';
 import { saveBook, sayWhatWentOut } from '../src/lib/booksave.js';
+import { trialBalanceFromXml, compareMoney, unseenInSkwik } from '../src/lib/trialbal.js';
 import { itemsFromTallyXml, partiesFromTallyXml, moneyLedgersFromTallyXml,
          openingByGodownFromTallyXml } from '../src/lib/transfer.js';
 
@@ -212,7 +228,8 @@ $('go').onclick = async () => {
     $('orgName').textContent = org.name || 'Your shop';
     $('orgSub').textContent = [org.gstin, org.state_name].filter(Boolean).join(' · ')
       || 'no GST number on file';
-    show($('loginCard'), false); show($('whoCard')); show($('inCard')); show($('outCard'));
+    show($('loginCard'), false); show($('whoCard')); show($('inCard'));
+    show($('checkCard')); show($('outCard'));
     loadRuns();
     $('loginMsg').textContent = '';
   } catch (e) {
@@ -629,6 +646,94 @@ $('write').onclick = async () => {
 };
 
 /* ---------------------------- taking it out ---------------------------- */
+
+/* ===================== does Skwik agree with Tally? ===================== */
+//
+// The one screen that makes the rest of this trustworthy for somebody who
+// cannot check the arithmetic himself. He exports the book he already trusts,
+// and Skwik says whether it matches -- and where it does not. Every fault of
+// the last month was found by him looking at a figure and knowing it was
+// wrong. His customer will not do that.
+
+const rupee = (v) => (v == null ? '—'
+  : (v < 0 ? '-' : '') + '₹' + Math.abs(v).toLocaleString('en-IN', { minimumFractionDigits: 2 }));
+
+$('tbFile').onchange = async () => {
+  try { await checkAgainstTally(); }
+  catch (err) {
+    // A CHECK THAT DIES QUIETLY IS WORSE THAN NO CHECK.
+    // It would sit on "Reading..." for ever and he would take that for a slow
+    // file rather than a fault.
+    $('tbMsg').textContent = 'Could not finish the check. ' + (err && err.message ? err.message : err);
+  }
+};
+
+async function checkAgainstTally() {
+  const f = $('tbFile').files && $('tbFile').files[0];
+  if (!f) return;
+  show($('tbBox'));
+  $('tbTable').innerHTML = '';
+  $('tbUnseen').innerHTML = '';
+  $('tbMsg').textContent = 'Reading ' + f.name + '…';
+
+  let text;
+  try { text = await readFile(f, () => {}); }
+  catch (err) { $('tbMsg').textContent = 'Could not read that file. ' + (err.message || err); return; }
+
+  const tb = trialBalanceFromXml(text);
+  if (!tb.rows.length || !tb.balances) { $('tbMsg').textContent = tb.why; return; }
+
+  const d = new Date();
+  const on = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+           + '-' + String(d.getDate()).padStart(2, '0');
+
+  const { data: sheet, error } = await db.rpc('balance_sheet', { p_on: on });
+  if (error) { $('tbMsg').textContent = 'Could not read your own figures. ' + error.message; return; }
+
+  // WHAT HE TYPED INTO SKWIK HIMSELF IS NOT A DIFFERENCE -- BUT ONLY IF THE
+  // COUNT IS RIGHT.
+  //
+  // Every row the importer writes carries its import run, so a row without one
+  // was entered here. Counting them over the wire came back with 45,22,384.10
+  // of his own cash entries on a shop that had almost none, and turned a plain
+  // 45,874.86 short into 45,68,258.96. A wrong explanation is worse than none,
+  // so the figures stand on their own until that count is done in the database
+  // where it can be trusted.
+  const c = compareMoney(tb, sheet, {});
+
+  $('tbTable').innerHTML =
+    '<tr><th>Account</th><th class="r">Your Tally</th><th class="r">Skwik</th><th>&nbsp;</th></tr>'
+    + c.lines.map((l) => {
+      const state = l.tally === null ? '<em>not in the file</em>'
+        : l.gap === 0 ? 'agrees'
+        : '<b style="color:var(--danger)">out by ' + rupee(l.gap) + '</b>';
+      const own = l.own ? '<br><span class="note">including ' + rupee(l.own)
+        + ' you entered here</span>' : '';
+      return '<tr><td>' + l.label + own + '</td><td class="r">' + rupee(l.tally) + '</td>'
+        + '<td class="r">' + rupee(l.skwik) + '</td><td>' + state + '</td></tr>';
+    }).join('');
+
+  $('tbMsg').innerHTML = (c.agree
+    ? '<b>Your cash and banks agree with Tally.</b> ' + tb.rows.length + ' ledgers read, '
+      + c.lines.length + ' compared, every one matching.'
+    : '<b>' + c.worst.length + ' figure(s) do not match.</b> The biggest is '
+      + c.worst[0].label + ', out by ' + rupee(c.worst[0].gap) + '.')
+    + '<br><span class="note">Cash and banks only. Stock cannot be checked against a trial '
+    + 'balance — the Opening Stock line in it is the value of your shelf on 1 April, not '
+    + 'today. Customers and suppliers come next.</span>';
+
+  const known = c.lines.map((l) => l.label).concat(['Cash', 'Opening Stock']);
+  $('tbUnseen').innerHTML = '';
+  const unseen = unseenInSkwik(tb, known).slice(0, 12);
+  if (unseen.length) {
+    $('tbUnseen').innerHTML = '<p class="note" style="margin-top:16px"><b>In your Tally, not '
+      + 'in Skwik.</b> Customers and suppliers are matched in the next version of this page; '
+      + 'the rest are ledgers Skwik does not keep.</p><table>'
+      + unseen.map((r) => '<tr><td>' + r.name + '</td><td class="r">' + rupee(r.closing)
+        + '</td></tr>').join('') + '</table>';
+  }
+};
+
 $('save').onclick = async () => {
   $('save').disabled = true; show($('saveBarBox'));
   const name = `skwik-backup-${(org?.name || 'shop').replace(/[^A-Za-z0-9]+/g, '-')}`
