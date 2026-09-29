@@ -22,7 +22,7 @@
 // the types are flipped before matching. And a credit note counts backwards,
 // so it is signed -1 everywhere it is added up.
 
-import { n2, num } from './money.js';
+import { n2, num, today } from './money.js';
 
 /* ---------------- the small tools ---------------- */
 
@@ -82,6 +82,32 @@ const monthIx = (p) => (!p || p.length < 7 ? null : (+p.slice(0, 4)) * 12 + (+p.
 // round differently and nobody should ring anybody over that.
 export const TOL = { tax: 2, value: 5, fuzzy: 0.82 };
 
+// WHICH READER MADE A STORED MONTH. Bumped whenever the reading of a file
+// changes, so a month put away by an older reader is read again from the file
+// itself instead of being served back stale. 1 was the reader that knew only
+// the 2A names; 2 knows both, and stamps the return period onto every row.
+export const READER = 2;
+
+// HOW LONG HE HAS LEFT TO CLAIM IT.
+//
+// Input credit on a bill dies on the 30th of November after the financial
+// year it belongs to. A shopkeeper does not carry that date in his head, and
+// "not filed" reads very differently at 400 days than at 20. April to March,
+// so a bill dated 25 August 2026 is FY 2026-27 and must be claimed by
+// 30 November 2027.
+export function claimBy(docDate) {
+  const d = isoDate(docDate);
+  if (!d) return '';
+  const y = +d.slice(0, 4), m = +d.slice(5, 7);
+  return `${(m >= 4 ? y : y - 1) + 1}-11-30`;
+}
+export function daysLeft(docDate, from) {
+  const by = claimBy(docDate);
+  if (!by) return null;
+  const now = isoDate(from) || today();
+  return Math.round((new Date(by) - new Date(now)) / 86400000);
+}
+
 /* ---------------- one document, from either side ---------------- */
 
 function mkDoc(o) {
@@ -100,6 +126,7 @@ function mkDoc(o) {
     section: o.section || 'B2B',                  // B2B | ISD | IMPORT
     amend: o.amend ? 1 : 0, origNo: s(o.origNo),
     filed: s(o.filed),
+    ret: s(o.ret).slice(0, 7),                    // the return month it came in
     id: o.id || null,
   };
   d.tax = n2(d.igst + d.cgst + d.sgst + d.cess);
@@ -173,6 +200,7 @@ const invOf = (ctin, trdnm, inv, docType, section, extra = {}) => {
     rsn: inv.rsn,
     rcm: s(inv.rev || inv.rchrg).toUpperCase() === 'Y',
     filed: extra.filedOn || inv.fldtr1 || inv.fldt,
+    ret: extra.ret || '',
     ...extra,
   });
 };
@@ -188,6 +216,14 @@ export function parse2b(text) {
   const d = j.data || j;
   const dd = d.docdata || d;
   const out = [];
+  // WHICH RETURN THIS ROW CAME OUT OF, on the row itself. The file says it
+  // once, at the top, and it was thrown away -- so nothing downstream could
+  // tell "he has not filed that month at all" from "he filed, and left this
+  // bill out", which are a reminder and a complaint and not the same call.
+  const ret = (() => {
+    const p = s(d.rtnprd || j.rtnprd);
+    return /^\d{6}$/.test(p) ? `${p.slice(2)}-${p.slice(0, 2)}` : p.slice(0, 7);
+  })();
 
   const eatInv = (list, section, amend) => {
     for (const sup of list || []) {
@@ -196,7 +232,7 @@ export function parse2b(text) {
         // (supfildt), not on every invoice, so reading only the invoice left it
         // blank on every row of a real file.
         out.push(invOf(sup.ctin, sup.trdnm, inv, 'INV', section,
-          { amend, origNo: inv.oinum || inv.oinvnum, filedOn: sup.supfildt }));
+          { amend, origNo: inv.oinum || inv.oinvnum, filedOn: sup.supfildt, ret }));
       }
     }
   };
@@ -206,7 +242,7 @@ export function parse2b(text) {
         const t = s(nt.ntty).toUpperCase() === 'D' ? 'DN' : 'CN';
         out.push(invOf(sup.ctin, sup.trdnm, nt, t, 'B2B',
           // the amended note's original number, either spelling
-          { amend, origNo: nt.ontnum || nt.ont_num, filedOn: sup.supfildt }));
+          { amend, origNo: nt.ontnum || nt.ont_num, filedOn: sup.supfildt, ret }));
       }
     }
   };
@@ -254,7 +290,8 @@ export const fromBooks = (v) => mkDoc({
 
 /* ---------------- the matching ---------------- */
 
-export function reconcile({ purchases = [], portal = [], periods = [] }) {
+export function reconcile({ purchases = [], portal = [], periods = [],
+                            booksFrom = '', asOf = '' }) {
   // the months the uploaded files cover, as YYYY-MM. parse2b hands back the
   // portal's own MMYYYY, which is turned round here.
   const months = new Set((periods || []).map((p) => {
@@ -426,9 +463,51 @@ export function reconcile({ purchases = [], portal = [], periods = [] }) {
   const unmatched    = L.filter((b) => !b._m);
   const booksOnly    = unmatched.filter(inScope);
   const booksUnseen  = unmatched.filter((b) => !inScope(b));
-  const twoLeft      = R.filter((t) => !t._m);
-  const twoBlocked   = twoLeft.filter((t) => t.itc === 'N');
-  const twoOnly      = twoLeft.filter((t) => t.itc !== 'N');
+
+  // WHY IT IS NOT IN THE GOVERNMENT'S RECORD, WHICH DECIDES WHO HE RINGS.
+  //
+  // "Not filed" was one word for three different situations, and two of them
+  // are not the supplier's fault at all:
+  //
+  //   the GSTIN is nowhere in any file he has .... it is HIS ledger that is
+  //                                                wrong, not the supplier
+  //   the supplier filed other months, not this .. a reminder
+  //   he filed that month and left this bill out . a complaint
+  //
+  // On his own five months the biggest single sum at risk, 5,528 against
+  // Dhariwal Metal, was the first kind: a firm that appears in no return at
+  // all, which is what a mistyped GST number looks like. Calling that "your
+  // supplier has not filed" sends him to argue with a man who filed on time.
+  const filedAt = new Map();
+  R.forEach((x) => {
+    if (!x.gstin) return;
+    if (!filedAt.has(x.gstin)) filedAt.set(x.gstin, new Set());
+    const seen = filedAt.get(x.gstin);
+    if (x.ret) seen.add(x.ret);
+    const m = String(x.docDate || '').slice(0, 7);
+    if (m) seen.add(m);
+  });
+  booksOnly.forEach((b) => {
+    const seen = b.gstin ? filedAt.get(b.gstin) : null;
+    const m = String(b.docDate || '').slice(0, 7);
+    b.why = !seen ? 'GSTIN' : (m && !seen.has(m) ? 'MONTH' : 'OMITTED');
+    b.daysLeft = daysLeft(b.docDate, asOf);
+  });
+
+  const twoLeft      = R.filter((x) => !x._m);
+  const twoBlocked   = twoLeft.filter((x) => x.itc === 'N');
+  const twoOpen      = twoLeft.filter((x) => x.itc !== 'N');
+
+  // AND THE SAME COURTESY FOR THE PORTAL'S SIDE.
+  //
+  // His own books start somewhere. Every portal row older than that has
+  // nothing on this side of the ledger to meet, and was being listed as a
+  // bill he had forgotten to enter -- 84 of them, 6,35,721 of tax, an entire
+  // year he had simply not loaded. A list that long is not a worklist, it is
+  // a reason to stop using the screen.
+  const early = (x) => !!booksFrom && !!x.docDate && x.docDate < booksFrom;
+  const twoUnseen    = twoOpen.filter(early);
+  const twoOnly      = twoOpen.filter((x) => !early(x));
 
   // the same bill entered twice, on either side
   const dupes = [];
@@ -447,8 +526,10 @@ export function reconcile({ purchases = [], portal = [], periods = [] }) {
   const matched = pairs.filter((p) => p.cls === 'EXACT');
   const queried = pairs.filter((p) => p.cls !== 'EXACT');
 
+  const suppliersOf = (arr) => new Set(arr.map((d) => d.gstin || d.party || '?')).size;
+
   return {
-    pairs, matched, queried, booksOnly, booksUnseen, twoOnly, twoBlocked,
+    pairs, matched, queried, booksOnly, booksUnseen, twoOnly, twoBlocked, twoUnseen,
     months: [...months].sort(),
     blockedPairs: pairs.filter((x) => x.blocked),
     noGstin, other, rcm, dupes,
@@ -463,6 +544,24 @@ export function reconcile({ purchases = [], portal = [], periods = [] }) {
       unseenTax: n2(booksUnseen.reduce((a, d) => a + d.sign * num(d.tax), 0)),
       onlyPortal: twoOnly.length,
       timing: pairs.filter((p) => p.timing).length,
+
+      // THE TWO SENTENCES AT THE TOP OF THE SCREEN.
+      //
+      // One thing he stands to lose and one thing he stands to gain, in
+      // rupees, before any table. Four equal tiles made him work out which of
+      // the four mattered, and the largest number on the page was the one that
+      // mattered least.
+      stuck:          sum(booksOnly),
+      stuckBills:     booksOnly.length,
+      stuckSuppliers: suppliersOf(booksOnly),
+      waiting:        sum(twoOnly),
+      waitingBills:   twoOnly.length,
+      // and the quiet line underneath: what was read and wants nothing
+      needNothing: matched.length + rcm.length + other.length,
+      // portal rows older than his books go back -- named, not blamed on him
+      earlyPortal:    twoUnseen.length,
+      earlyPortalTax: sum(twoUnseen),
+      booksFrom,
 
       safe:    sum(pairs.filter((p) => p.cls === 'EXACT' && p.t.itc !== 'N').map((p) => p.t)),
       atRisk:  sum(booksOnly),
@@ -499,4 +598,78 @@ export function bySupplier(result) {
   result.twoOnly.forEach((t) => put(t.gstin, t.party, 'onlyPortal', t));
   return Object.values(map).sort((a, b) => b.atRisk - a.atRisk
     || (b.onlyBooks + b.different) - (a.onlyBooks + a.different));
+}
+
+/* ---------------- the four jobs, in the order he does them ---------------- */
+
+// WHY THIS IS NOT FOUR TILES ANY MORE.
+//
+// His own tool, written before Skwik and on the same five months, says:
+//
+//     Ring these suppliers ....... 4 bills
+//     Look in an earlier return .. 2 bills
+//     Enter these in Tally ....... 37 bills
+//     Small corrections .......... 10 bills
+//     550 more bills were checked and need nothing from you.
+//
+// Every heading is a job. Skwik said "At risk", "Not in your books", "Needs a
+// look" -- which are STATES, and a shopkeeper has to translate each one into
+// an action before he can move. These four do the translating for him.
+
+export const WHY_STUCK = {
+  GSTIN:   'Never seen in any return — check the GSTIN in your ledger',
+  MONTH:   'He has not filed that month at all — a reminder, not a complaint',
+  OMITTED: 'He filed that month and left this bill out',
+};
+
+// Who to ring, worst first, with the reason on each bill.
+export function chaseList(result) {
+  const map = new Map();
+  (result.booksOnly || []).forEach((b) => {
+    const k = b.gstin || b.party || '—';
+    if (!map.has(k)) {
+      map.set(k, { key: k, gstin: b.gstin, name: b.party || b.gstin || '—',
+                   tax: 0, bills: [], why: b.why });
+    }
+    const g = map.get(k);
+    g.tax = n2(g.tax + b.sign * num(b.tax));
+    g.bills.push(b);
+    // one firm, one headline reason: a wrong GST number outranks a late month
+    if (b.why === 'GSTIN' || (b.why === 'MONTH' && g.why === 'OMITTED')) g.why = b.why;
+  });
+  return [...map.values()].sort((a, b) => b.tax - a.tax);
+}
+
+// The same three lists as rows, for the file he takes away and works down.
+export function worklist(result) {
+  const r = [];
+  const money = (x) => n2(num(x));
+  r.push(['RING THESE SUPPLIERS']);
+  r.push(['supplier', 'gstin', 'bill no', 'bill date', 'tax stuck', 'why', 'claim by', 'days left']);
+  chaseList(result).forEach((g) => g.bills.forEach((b) => {
+    r.push([g.name, b.gstin, b.docNo, b.docDate, money(b.tax),
+            WHY_STUCK[b.why] || '', claimBy(b.docDate), b.daysLeft == null ? '' : b.daysLeft]);
+  }));
+
+  r.push([]);
+  r.push(['ENTER THESE IN YOUR BOOKS']);
+  r.push(['supplier', 'gstin', 'bill no', 'bill date', 'goods value', 'tax']);
+  [...(result.twoOnly || [])].sort((a, b) => b.tax - a.tax).forEach((x) => {
+    r.push([x.party, x.gstin, x.docNo, x.docDate, money(x.taxable), money(x.tax)]);
+  });
+
+  r.push([]);
+  r.push(['LOOK IN AN EARLIER RETURN']);
+  r.push(['supplier', 'bill no', 'bill date', 'tax', 'probably in']);
+  (result.booksUnseen || []).forEach((b) => {
+    r.push([b.party, b.docNo, b.docDate, money(b.tax), String(b.docDate || '').slice(0, 7)]);
+  });
+
+  r.push([]);
+  r.push(['SMALL CORRECTIONS']);
+  r.push(['supplier', 'in your books', 'with the government', 'your tax', 'their tax', 'what to fix']);
+  (result.queried || []).forEach((p) => {
+    r.push([p.b.party, p.b.docNo, p.t.docNo, money(p.b.tax), money(p.t.tax), p.cls]);
+  });
+  return r;
 }
