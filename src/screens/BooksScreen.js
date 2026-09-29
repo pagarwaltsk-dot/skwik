@@ -141,9 +141,20 @@ export default function BooksScreen({ navigation, route }) {
   }, [tab, range, account, from, to]));
 
   // running balance, so every line carries the figure that stood after it
-  const { rows, opening, inTotal, outTotal, closing } = useMemo(() => {
+  // OPENING MEANS OPENING.
+  //
+  // The database hands back two figures, because they are two different things
+  // and printing one under the other's name is what made him think his books
+  // were wrong. `opening` is the balance on the day the period began -- his
+  // figure. `brought` is that plus whatever was folded away to keep a year of
+  // movements off a mobile line, and it is where the first visible line starts
+  // from. On his cash book for the year those were 2,00,000 and 35,20,075.
+  const { rows, opening, brought, folded, inTotal, outTotal, closing } = useMemo(() => {
     const raw = book?.rows || [];
-    let bal = num(book?.opening);
+    // an older database hands back only `opening`, and it meant `brought`
+    const bf = book?.brought != null ? num(book.brought) : num(book?.opening);
+    const op = book?.opening != null ? num(book.opening) : bf;
+    let bal = bf;
     let gi = 0, go = 0;
     const out = raw.map((r) => {
       const i = num(r.in), o = num(r.out);
@@ -152,9 +163,27 @@ export default function BooksScreen({ navigation, route }) {
     });
     // worked out oldest-first because a balance can be worked out no other
     // way, then turned over so today's entries are at the top
-    return { rows: newest ? out.reverse() : out, opening: num(book?.opening),
+    return { rows: newest ? out.reverse() : out,
+             opening: op, brought: bf, folded: Number(book?.folded || 0),
              inTotal: n2(gi), outTotal: n2(go), closing: bal };
   }, [book, newest]);
+
+  // BROUGHT FORWARD, THE WAY A LEDGER PAGE HAS ALWAYS DONE IT.
+  //
+  // The visible lines start part way through the period, so the balance the
+  // first one starts from is not the opening -- it is the opening plus every
+  // entry folded away. Printing that under the word OPENING is what made him
+  // think his books were wrong, and it only came right when he narrowed the
+  // window enough that nothing had to be folded.
+  const bfLine = folded > 0 ? (
+    <Rule>
+      <Figure width={38} size={11} weight="400" tone={C.muted}> </Figure>
+      <Words name={`${fmt0(folded)} earlier entr${folded === 1 ? 'y' : 'ies'} not shown`}
+             sub={`brought forward ₹${rupee(brought)}`} />
+      <Figure width={62} size={13} tone={C.faint}>—</Figure>
+      <Figure width={62} size={13} tone={C.faint}>—</Figure>
+    </Rule>
+  ) : null;
 
   const Tab = ({ v, label }) => {
     const on = tab === v;
@@ -386,6 +415,8 @@ export default function BooksScreen({ navigation, route }) {
                           { label: 'IN', width: 62 },
                           { label: 'OUT', width: 62 }]} />
 
+          {!newest && bfLine}
+
           {rows.map((r, i) => (
             <Rule key={r.id} last={i === rows.length - 1}>
               <Figure width={38} size={11} weight="400" tone={C.muted}>{dmy(r.d)}</Figure>
@@ -403,10 +434,11 @@ export default function BooksScreen({ navigation, route }) {
             <Text style={{ fontSize: 12.5, color: C.muted, textAlign: 'center',
                            marginTop: 16, paddingHorizontal: 24, lineHeight: 19 }}>
               Showing the last {book.shown} of {book.total} movements in this period.
-              The opening figure above already includes the {book.total - book.shown} before
-              them, so the running balance is right. Choose a shorter period to see them all.
+              Choose a shorter period to see them all.
             </Text>
           )}
+
+          {newest && bfLine}
 
           {!rows.length && (
             <Text style={{ fontSize: 13.5, color: C.muted, textAlign: 'center',

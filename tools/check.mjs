@@ -591,6 +591,69 @@ rule('the browser page carries over everything the reader found', (() => {
   return bad;
 })());
 
+rule('every way the page asks the database a question is one its own client has', (() => {
+  // WHY THIS EXISTS.
+  //
+  // The phone talks to Supabase through the real library. The browser page
+  // cannot -- it has no bundler -- so web/rest.js is a hand-written stand-in
+  // that speaks the same shape over plain fetch. It only ever knew the ones
+  // the page happened to use.
+  //
+  // Then a library reached for `.is('account_id', null)` -- perfectly normal,
+  // the phone has had it for months -- and the page died at runtime on
+  // "is is not a function". Nothing before this rule could have said so: the
+  // libraries parse, they lint, the phone is happy. Only the page breaks, and
+  // only once a shopkeeper presses the button.
+  //
+  // So: whatever the libraries the page loads call on a query, rest.js must
+  // have. If a library starts using a new one, this fails here rather than in
+  // his hands.
+  const restFile = path.join(ROOT, 'web', 'rest.js');
+  const pageFile = path.join(ROOT, 'web', 'skwik-io.html');
+  if (!fs.existsSync(restFile) || !fs.existsSync(pageFile)) return [];
+  const rest = fs.readFileSync(restFile, 'utf8');
+  const page = fs.readFileSync(pageFile, 'utf8');
+
+  // which libraries the page actually loads
+  const loaded = [...page.matchAll(/['"]\.\.\/src\/lib\/([a-zA-Z0-9_]+)\.js['"]/g)]
+    .map((m) => m[1]);
+  if (!loaded.length) return ['the page loads none of the libraries any more'];
+
+  // what rest.js can do: the methods on its query object, plus the two on the
+  // client itself
+  const have = new Set(['from', 'rpc', 'then', 'catch', 'finally']);
+  for (const m of rest.matchAll(/^\s{8}(?:async\s+)?([a-zA-Z0-9_]+)\s*\(/gm)) have.add(m[1]);
+
+  // every method chained onto supabase.from(...) in those libraries
+  const bad = [];
+  for (const name of loaded) {
+    const f = path.join(ROOT, 'src', 'lib', `${name}.js`);
+    if (!fs.existsSync(f)) continue;
+    const text = fs.readFileSync(f, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    // start at each `.from(` and follow the chain of .word( that comes after
+    for (const hit of text.matchAll(/\.from\(/g)) {
+      const tail = text.slice(hit.index + 6, hit.index + 6 + 600);
+      // stop the chain at the first thing that is plainly not part of it
+      const chain = tail.match(/^[\s\S]*?(?=;|\)\s*[,)]|\n\s*\n)/);
+      const run = chain ? chain[0] : tail;
+      for (const c of run.matchAll(/\.([a-zA-Z0-9_]+)\s*\(/g)) {
+        const meth = c[1];
+        if (have.has(meth)) continue;
+        // things that are plainly not query methods
+        if (['map', 'filter', 'push', 'join', 'slice', 'toString', 'forEach',
+             'reduce', 'replace', 'split', 'find', 'some', 'every', 'trim',
+             'padStart', 'padEnd', 'concat', 'includes', 'startsWith',
+             'endsWith', 'toFixed', 'sort', 'keys', 'values', 'entries',
+             'from', 'rpc'].includes(meth)) continue;
+        bad.push(`src/lib/${name}.js asks the database with .${meth}(), `
+          + `which web/rest.js has no answer for`);
+      }
+    }
+  }
+  return [...new Set(bad)];
+})());
+
 // -------------------------------------------------------------------------
 console.log('');
 if (!fails.length) {

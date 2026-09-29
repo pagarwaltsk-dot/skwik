@@ -609,27 +609,57 @@ function balanceOf(block, isQty = false) {
   return { value: read(tagOf(top, 'OPENINGBALANCE')), basis: 'opening' };
 }
 
-// Every price level named anywhere in the file. A shop that keeps a wholesale
-// list and a retail list has two; most have none.
+// THE PRICE LISTS THAT ACTUALLY PRICE SOMETHING.
+//
+// A PRICE LEVEL IS A NAME. A RATE IS A RATE. THEY ARE NOT THE SAME THING.
+//
+// This used to return every <PRICELEVEL> named anywhere in the export, and
+// Tally writes those names twice over: once as masters of their own — the ten
+// lists this shop has made since 2019, "July 2019", "2020APRIL", "ABC" — and
+// again beside a rate whenever an item is actually priced on one.
+//
+// His own file, counted: 503 items, 489 of them priced, and NOT ONE of those
+// rates on a named list. His prices are plain item rates with a date on them.
+// So the sheet offered him ten lists to choose from, he chose the one that
+// read like this year — "1 APRIL 2026" — and every rate came back empty,
+// because there is no rate on that list for anything. Nothing was updated.
+// The items kept the price Skwik had guessed off an old bill months before,
+// and that is the price that came out on his bill: 106, where Tally itself
+// was billing 110.
+//
+// So a list is only offered if a rate is standing on it. His file now offers
+// none, the sheet stops asking a question with no right answer, and every
+// item takes its own newest rate — which is what Tally bills on.
+//
+// CLEANING THE WHOLE FILE, ONCE — NOT ONCE PER PRICE LEVEL.
+//
+// cleanText(xml) sat inside the loop condition, so every time a price level
+// was found the entire export was copied and scanned again from the start.
+// A shop with three thousand items on six price lists has eighteen thousand
+// of them, so the file was copied eighteen thousand times: seven megabytes,
+// eighteen thousand times, on a phone. That is the import that "takes
+// toooo long" — and it is why doubling the items quadrupled the wait
+// instead of doubling it.
+//
+// Measured on a 7 MB export of 3,000 items: 4,299 ms before, 31 ms after.
 export function priceLevelsInTally(xml) {
-  // CLEANING THE WHOLE FILE, ONCE — NOT ONCE PER PRICE LEVEL.
-  //
-  // cleanText(xml) sat inside the loop condition, so every time a price level
-  // was found the entire export was copied and scanned again from the start.
-  // A shop with three thousand items on six price lists has eighteen thousand
-  // of them, so the file was copied eighteen thousand times: seven megabytes,
-  // eighteen thousand times, on a phone. That is the import that "takes
-  // toooo long" — and it is why doubling the items quadrupled the wait
-  // instead of doubling it.
-  //
-  // Measured on a 7 MB export of 3,000 items: 4,299 ms before, 31 ms after.
   const text = cleanText(xml);
   const out = [];
-  const re = /<PRICELEVEL>([\s\S]*?)<\/PRICELEVEL>/gi;
+  const re = /<FULLPRICELIST\.LIST>([\s\S]*?)<\/FULLPRICELIST\.LIST>/gi;
   let m;
   while ((m = re.exec(text))) {
-    const name = unesc(m[1].trim());
-    if (name && !out.includes(name)) out.push(name);
+    const block = m[1];
+    // a list named with no rate under it prices nothing, and a list he can
+    // pick that prices nothing is a list that empties his rates
+    const rows = blocksOf(block, 'PRICELEVELLIST.LIST');
+    const priced = rows.length
+      ? rows.some((r) => numOf(tagOf(r, 'RATE')))
+      : !!numOf(tagOf(block, 'RATE'));
+    if (!priced) continue;
+    for (const name of [tagOf(block, 'PRICELEVEL')]
+           .concat(rows.map((r) => tagOf(r, 'PRICELEVEL')))) {
+      if (name && !out.includes(name)) out.push(name);
+    }
   }
   return out;
 }
@@ -642,15 +672,37 @@ function ratesOf(block) {
   const out = [];
   for (const pl of blocksOf(block, 'FULLPRICELIST.LIST')) {
     const date = tagOf(pl, 'DATE') || '';
+    // WHICH LIST THIS RATE IS ON, AND IT IS WRITTEN OUTSIDE THE RATE.
+    //
+    // Tally's own shape, from his export:
+    //
+    //   <FULLPRICELIST.LIST>
+    //     <DATE>20260420</DATE>
+    //     <PRICELEVEL>1 APRIL 2026</PRICELEVEL>      <- out here
+    //     <PRICELEVELLIST.LIST>
+    //       <RATE>110.00/Kg</RATE>                   <- and the rate in here
+    //     </PRICELEVELLIST.LIST>
+    //   </FULLPRICELIST.LIST>
+    //
+    // The name of the list is a SIBLING of the block holding the rate, not a
+    // tag inside it. This read it from inside, found nothing, and filed every
+    // rate in his book as belonging to no list at all. Ten price lists went in
+    // as one heap: choosing "1 APRIL 2026" then matched nothing and left every
+    // item at whatever price it already had, which on his shop was a rate
+    // guessed off a bill from months before — 106, where Tally was billing 110.
+    //
+    // Some exports do put the name inside the row, one row per list under one
+    // date, so the row's own name still wins when it is there.
+    const onBlock = tagOf(pl, 'PRICELEVEL');
     const rows = blocksOf(pl, 'PRICELEVELLIST.LIST');
     if (rows.length) {
       for (const r of rows) {
         const rate = numOf(tagOf(r, 'RATE'));
-        if (rate) out.push({ date, level: tagOf(r, 'PRICELEVEL'), rate });
+        if (rate) out.push({ date, level: tagOf(r, 'PRICELEVEL') || onBlock, rate });
       }
     } else {
       const rate = numOf(tagOf(pl, 'RATE'));
-      if (rate) out.push({ date, level: '', rate });
+      if (rate) out.push({ date, level: onBlock, rate });
     }
   }
   return out;
@@ -680,24 +732,32 @@ function rateAt(rates, level) {
     if (mine.length) return newest(mine).rate;
     return 0;
   }
-  // NO LIST NAMED, AND SEVERAL TO CHOOSE FROM: DO NOT CHOOSE.
+  // NO LIST NAMED: THE RATE THAT IS IN FORCE, WHICH IS THE ONE WITH THE
+  // NEWEST DATE ON IT.
   //
-  // This took the newest rate of any level — and Tally writes every level of
-  // an item under one date, so "newest" meant whichever happened to be last
-  // in the file. A shop with six price lists got a silently arbitrary one,
-  // and nothing on the screen said which. He would only find out from a bill.
+  // Tally dates every price change and bills on the latest one — his TAWA WIRE
+  // HANDLE is 106 from 1 April 2025 on "OffSeason" and 110 from 20 April 2026
+  // on "1 APRIL 2026", and Tally's own bill said 110. So the newest date is
+  // not a guess; it is the answer.
   //
-  // One list, or a file that names none, is not a choice and is used. More
-  // than one and the rate stays empty until he says which — the sheet counts
-  // them and says so before anything is saved.
-  const named = [];
-  for (const r of rates) {
+  // The old rule refused to answer at all as soon as a file held two list
+  // names, because the levels were being read as a heap with no dates that
+  // meant anything (see ratesOf). With the dates read properly there is only
+  // one case left with no honest answer: two DIFFERENT lists both dated that
+  // same newest day. Then, and only then, the rate stays empty until he says
+  // which list he bills on — and the sheet shows him the choice.
+  if (!rates.length) return 0;
+  let top = '';
+  for (const r of rates) if ((r.date || '') > top) top = r.date || '';
+  const onTop = rates.filter((r) => (r.date || '') === top);
+  const lists = [];
+  for (const r of onTop) {
     const lv = String(r.level || '').trim().toLowerCase();
-    if (lv && named.indexOf(lv) < 0) named.push(lv);
+    if (lists.indexOf(lv) < 0) lists.push(lv);
   }
-  if (named.length > 1) return 0;
-  const any = newest(rates);
-  return any ? any.rate : 0;
+  if (lists.length > 1) return 0;
+  // the same list twice on one day: the last one Tally wrote is the later one
+  return onTop[onTop.length - 1].rate;
 }
 
 // The same rows, priced off different lists. Nothing is read again.

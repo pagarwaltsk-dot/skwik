@@ -64,6 +64,15 @@ export default function ItemsScreen({ route, navigation }) {
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState('');
   const [edit, setEdit] = useState(null);
+  // WHERE AN OPENING STOCK ACTUALLY LIVES NOW.
+  //
+  // It used to be a plain number on the item. Since the opening can sit in more
+  // than one store it is a dated movement instead, and items.opening_stock is
+  // emptied when one is written. This screen went on reading the empty field
+  // and so told him his opening stock was nought while 767 placements sat
+  // underneath it -- and if he had typed the real figure back into that box, it
+  // would have been counted twice: once flat, once as a movement.
+  const [opened, setOpened] = useState(null);   // { qty, where[] } | null
 
   // the way through the form: name → selling rate, and then, once the rest is
   // opened, also called → barcode → search words → GST → the other two prices
@@ -246,6 +255,7 @@ export default function ItemsScreen({ route, navigation }) {
     if (!row) return;                        // the list has not landed yet
     came.current = ps;
     setEdit(fill(row));
+    openingOf(row.id);
   }, [ps, rows]);
 
   // THE PHONE'S OWN BACK BUTTON, WHILE AN ITEM IS OPEN.
@@ -261,7 +271,7 @@ export default function ItemsScreen({ route, navigation }) {
   const backRef = useRef(null);
   backRef.current = () => {
     if (scanOpen) { setScanOpen(false); return true; }
-    if (edit)     { setEdit(null);      return true; }
+    if (edit)     { setEdit(null); setOpened(null); return true; }
     return false;
   };
   useFocusEffect(useCallback(() => {
@@ -336,7 +346,9 @@ export default function ItemsScreen({ route, navigation }) {
         price2: num(edit.price2),
         purchase_price: num(edit.purchase_price),
         gst_rate: num(edit.gst_rate),
-        opening_stock: num(edit.opening_stock),
+        // never write the flat field when the opening is already a movement:
+        // the two would add up instead of replacing each other
+        opening_stock: opened ? undefined : num(edit.opening_stock),
         // his own 1-10, or 0 for "you decide"
         priority: Math.max(0, Math.min(10, Math.round(num(edit.priority)))),
       };
@@ -439,6 +451,28 @@ export default function ItemsScreen({ route, navigation }) {
 
   const set = (k) => (v) => setEdit((e) => ({ ...e, [k]: v }));
 
+  // Asked once when the sheet opens, not on every keystroke.
+  const openingOf = useCallback(async (id) => {
+    setOpened(null);
+    if (!id) return;
+    const { data, error } = await supabase
+      .from('stock_moves')
+      .select('qty_in, qty_out, godown_id, mdate')
+      .eq('item_id', id)
+      .eq('reason', 'opening stock');
+    if (error || !data || !data.length) return;
+    const qty = data.reduce((t, m) => t + num(m.qty_in) - num(m.qty_out), 0);
+    if (!qty) return;
+    // the store names, asked for only when there is something to name
+    const names = {};
+    if (data.some((m) => m.godown_id)) {
+      const { data: gs } = await supabase.from('godowns').select('id, name');
+      (gs || []).forEach((g) => { names[g.id] = g.name; });
+    }
+    const where = [...new Set(data.map((m) => names[m.godown_id] || 'your main store'))];
+    setOpened({ qty, where, on: data[0]?.mdate || '' });
+  }, []);
+
   // A TYPO IN OPENING STOCK USED TO BE FOR EVER.
   //
   // This field disappeared the moment the item was saved, so 500 bags typed
@@ -462,7 +496,7 @@ export default function ItemsScreen({ route, navigation }) {
               style={{ paddingHorizontal: 10 }}>
               <Text style={{ fontSize: 15, fontWeight: '800', color: C.accent }}>RATES</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setEdit({ ...empty })}
+            <TouchableOpacity onPress={() => { setOpened(null); setEdit({ ...empty }); }}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
               <Text style={{ fontSize: 15, fontWeight: '800', color: C.green }}>+ NEW</Text>
             </TouchableOpacity>
@@ -536,7 +570,7 @@ export default function ItemsScreen({ route, navigation }) {
           // same name a second time. The row he is already looking at opens the
           // item with the name filled in.
           (!bulk && !showGone && !!q.trim()) ? (
-            <TouchableOpacity onPress={() => setEdit({ ...empty, name: q.trim() })}
+            <TouchableOpacity onPress={() => { setOpened(null); setEdit({ ...empty, name: q.trim() }); }}
               style={{ marginTop: 16, paddingVertical: 14, paddingHorizontal: 12,
                        backgroundColor: C.soft, borderRadius: 10 }}>
               <Text style={{ fontSize: 15, fontWeight: '700', color: C.accent }}>
@@ -544,10 +578,31 @@ export default function ItemsScreen({ route, navigation }) {
               </Text>
             </TouchableOpacity>
           ) : (
-            <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 30 }}>
-              No items yet. You can add them here, or just start billing — a new
-              name on a bill can be saved as an item there and then.
-            </Text>
+            // AN EMPTY SHOP IS THE ONE PLACE THE FAST WAY BELONGS.
+            //
+            // This form is twenty boxes, which is right for ONE item and wrong
+            // for the first eight hundred. A shop with nothing in it gets the
+            // bar instead: he picks the three or four things he wants to type
+            // and then types only those, item after item.
+            <View style={{ marginTop: 26, alignItems: 'center' }}>
+              <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center',
+                             lineHeight: 20 }}>
+                No items yet. You can add them here one at a time, or just start
+                billing — a new name on a bill can be saved as an item there and
+                then.
+              </Text>
+              <TouchableOpacity onPress={() => navigation.navigate('QuickAdd', { tab: 'items' })}
+                style={{ marginTop: 16, paddingVertical: 13, paddingHorizontal: 18,
+                         borderRadius: 10, backgroundColor: C.accent }}>
+                <Text style={{ fontSize: 15, fontWeight: '700', color: '#fff' }}>
+                  Add many, quickly
+                </Text>
+              </TouchableOpacity>
+              <Text style={{ fontSize: 12.5, color: C.faint, marginTop: 9, textAlign: 'center',
+                             lineHeight: 18 }}>
+                Name and rate, one line each — nothing else unless you ask for it.
+              </Text>
+            </View>
           )}
         renderItem={({ item }) => (bulk ? (
           <View style={[S.row, { paddingVertical: 10, borderBottomWidth: 1,
@@ -571,7 +626,7 @@ export default function ItemsScreen({ route, navigation }) {
           </View>
         ) : (
           <TouchableOpacity
-            onPress={() => setEdit(fill(item))}
+            onPress={() => { setEdit(fill(item)); openingOf(item.id); }}
             style={[S.row, { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.line }]}>
             <View style={{ flex: 1 }}>
               <Text style={{ fontSize: 16, fontWeight: '700', color: C.ink }}>{item.name}</Text>
@@ -935,7 +990,33 @@ export default function ItemsScreen({ route, navigation }) {
                   value={edit.purchase_price} onChangeText={set('purchase_price')} />
               )}
 
-              {showOpening && (
+              {showOpening && opened && (
+                /* IT IS ALREADY WRITTEN, AND IN A PLACE THIS BOX CANNOT REACH.
+                   Showing an empty box here invites him to type the figure in
+                   again, and it would then be counted twice -- once flat, once
+                   as the movement it already is. */
+                <>
+                  <Text style={[S.label, { marginTop: 14 }]}>OPENING STOCK</Text>
+                  <View style={[S.line, { marginTop: 6 }]}>
+                    <Text style={[S.lineNm, S.num]}>
+                      {num(opened.qty).toLocaleString('en-IN')}
+                      {edit.unit ? ` ${edit.unit}` : ''}
+                    </Text>
+                    <Text style={S.hint}>
+                      {opened.where.length > 1
+                        ? `Across ${opened.where.length} stores: ${opened.where.join(', ')}.`
+                        : `In ${opened.where[0]}.`}
+                      {opened.on ? ` As at ${String(opened.on).slice(8, 10)}/${String(opened.on).slice(5, 7)}/${String(opened.on).slice(0, 4)}.` : ''}
+                      {'\n'}This came in with your books and is kept as a dated movement, so it
+                      can sit in the store it is actually in. To correct it, use
+                      Stock → Move &amp; correct rather than typing it here — a figure
+                      typed here would be counted on top of it, not instead of it.
+                    </Text>
+                  </View>
+                </>
+              )}
+
+              {showOpening && !opened && (
                 <>
                   <Text style={[S.label, { marginTop: 14 }]}>OPENING STOCK</Text>
                   <Box ref={fOpen} onSubmit={save} style={{ marginTop: 6 }} keyboardType="numeric"
