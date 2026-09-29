@@ -800,9 +800,14 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
         || (v.vtype === 'purchase' ? String(org.state_code || '')
             : stateOf(cleanGstin(v.party_gstin, v.own_gstin, org), v.party_state, org)) || null,
       notes: v.narration || null,
-      // A purchase keeps the supplier's own bill number where it belongs.
-      supplier_invoice_no: v.vtype === 'purchase' ? (v.no || null) : null,
-      supplier_invoice_date: v.vtype === 'purchase' ? v.vdate : null,
+      // A purchase keeps the supplier's own bill number and HIS date, not the
+      // day it was entered. See the note in tallybook.js: falling back to the
+      // entry date moved every late-entered bill into the wrong month and the
+      // 2B comparison then blamed suppliers who had filed on time. The
+      // fallback stays for a file that carries neither, because a bill with no
+      // date at all matches nothing.
+      supplier_invoice_no: v.vtype === 'purchase' ? (v.sup_no || v.no || null) : null,
+      supplier_invoice_date: v.vtype === 'purchase' ? (v.sup_date || v.vdate) : null,
       lines,
     };
 
