@@ -95,6 +95,22 @@ const cleanGstin = (g, ownGstin, org) => {
 // from the same Tally id can never collide.
 const HEX = /^[0-9a-f]+$/i;
 
+// A TALLY GUID IS THE SAME GUID IN EVERY FIRM, and the row's id was made
+// from it alone. So the second firm to be given the same Tally file tried to
+// write a row whose id another firm already held -- a PRIMARY KEY clash, not
+// a numbering one. save_voucher catches any unique violation and reports the
+// only one it expects, so the message read:
+//
+//     could not write Sales 1380 of 2026-09-01:
+//     Bill number 1380 is already used in your books.
+//
+// -- on a firm with nothing whatever in it. An hour went on the bill number.
+// Reproduced since as a test: an empty second firm, the same voucher, the
+// same words.
+//
+// The firm is part of the identity now. The same file in one firm is still
+// the same rows, brought in twice and written once; the same file in another
+// firm is that firm's own copy.
 export function idFor(ref, salt = '') {
   const t = String(ref || '').trim().toLowerCase();
   const m = t.match(/^([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})(?:-([0-9a-f]+))?$/);
@@ -568,7 +584,11 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   }
 
   const made = { godowns: 0, parties: 0, items: 0, bills: 0, already: 0, payments: 0,
-                 transfers: 0, accounts: 0, banked: 0, opened: 0, openedAccounts: 0, run };
+                 transfers: 0, accounts: 0, banked: 0, opened: 0, openedAccounts: 0,
+                 dates: 0, run };
+  // purchases already in his books whose supplier bill number and date this
+  // file can put right -- see the note where they are collected
+  const putRight = [];
   const fail = (what, e) => {
     const err = new Error(`${what}: ${e?.message || e}`);
     err.made = made; err.done = done; err.total = total;
@@ -764,7 +784,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     });
 
     const payload = {
-      id: idFor(v.ref || `${v.vtype}|${v.no}|${v.vdate}|${v.party}`, 'voucher'),
+      id: idFor(v.ref || `${v.vtype}|${v.no}|${v.vdate}|${v.party}`, `voucher|${org.id}`),
       vtype: v.vtype,
       vdate: v.vdate,
       voucher_no: v.no || null,
@@ -813,14 +833,46 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
     const { data, error } = await supabase.rpc('save_voucher', { p: { ...payload, import_run: run } });
     if (error) fail(`could not write ${v.tally_type} ${v.no} of ${v.vdate}`, error);
-    if (data && data.already) made.already += 1; else made.bills += 1;
+    if (data && data.already) {
+      made.already += 1;
+      // THE ONE THING WORTH CHANGING ON A BILL ALREADY WRITTEN.
+      //
+      // save_voucher recognises Tally's GUID and writes a voucher once, which
+      // is what stops a file imported twice from doubling his books. But
+      // every purchase imported before 1.10.26 carries the day it was ENTERED
+      // as the supplier's bill date, because the reader never looked at
+      // REFERENCEDATE -- and the whole GSTR-2B comparison turns on that date.
+      //
+      // The alternative was to undo the import and run it again: hundreds of
+      // bills, receipts and payments taken out and put back, to correct two
+      // columns that no figure in his books depends on. So they are corrected
+      // where they stand instead, on the way past. Collected here and sent in
+      // one go below, because one round trip per bill is a long wait on a
+      // shop's phone.
+      if (v.vtype === 'purchase' && data.id && (v.sup_no || v.sup_date)) {
+        putRight.push({ id: data.id, no: v.sup_no || null, date: v.sup_date || null });
+      }
+    } else made.bills += 1;
     step(`bill ${v.no}`);
+  }
+
+  // and in blocks, so a year of purchases is a handful of calls
+  for (let i = 0; i < putRight.length; i += 200) {
+    const { data: n, error } = await supabase.rpc('patch_supplier_ref',
+      { p: putRight.slice(i, i + 200) });
+    // AN OLDER DATABASE SIMPLY HAS NOTHING TO PUT RIGHT, and the import it
+    // has just finished is sound either way -- this corrects bills written
+    // before, it does not write any.
+    if (error && !/does not exist/i.test(error.message || '')) {
+      fail('could not put the supplier bill dates right', error);
+    }
+    made.dates += Number(n || 0);
   }
 
   /* ---- the money ---- */
   for (let i = 0; i < book.payments.length; i += 50) {
     const block = book.payments.slice(i, i + 50).map((p) => ({
-      id: idFor(p.ref || `${p.ptype}|${p.no}|${p.vdate}|${p.party}|${p.amount}`, 'payment'),
+      id: idFor(p.ref || `${p.ptype}|${p.no}|${p.vdate}|${p.party}|${p.amount}`, `payment|${org.id}`),
       org_id: org.id,
       ptype: p.ptype,
       party_id: idOf(parties, p.party),
@@ -871,7 +923,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     if (!lines.length) { step('transfer'); continue; }
     const { error } = await supabase.rpc('transfer_stock', {
       p: { from_godown: from, to_godown: to, mdate: t.vdate, lines,
-           ref: idFor(t.ref || `${t.vdate}|${t.from}|${t.to}`, 'transfer'),
+           ref: idFor(t.ref || `${t.vdate}|${t.from}|${t.to}`, `transfer|${org.id}`),
            import_run: run },
     });
     if (error) fail(`could not move the goods of ${t.vdate}`, error);
