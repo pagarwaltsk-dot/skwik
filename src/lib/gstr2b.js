@@ -222,7 +222,14 @@ export const fromBooks = (v) => mkDoc({
 
 /* ---------------- the matching ---------------- */
 
-export function reconcile({ purchases = [], portal = [] }) {
+export function reconcile({ purchases = [], portal = [], periods = [] }) {
+  // the months the uploaded files cover, as YYYY-MM. parse2b hands back the
+  // portal's own MMYYYY, which is turned round here.
+  const months = new Set((periods || []).map((p) => {
+    const t = String(p || '').trim();
+    if (/^\d{6}$/.test(t)) return `${t.slice(2)}-${t.slice(0, 2)}`;   // MMYYYY
+    return t.slice(0, 7);                                            // YYYY-MM
+  }).filter(Boolean));
   const books = purchases
     .filter((v) => v.vtype === 'purchase' || v.vtype === 'purchase_return')
     .map(fromBooks);
@@ -361,7 +368,32 @@ export function reconcile({ purchases = [], portal = [] }) {
     p.blockedReason = p.blocked ? (p.t.rsn || '') : '';
   });
 
-  const booksOnly    = L.filter((b) => !b._m);
+  // A BILL IS ONLY JUDGED AGAINST A MONTH THAT WAS ACTUALLY UPLOADED.
+  //
+  // The books are read wider than one 2B on purpose: a supplier who files late
+  // turns up in a later month's file, and that catching works. But what is
+  // left over afterwards was ALL being called "your supplier has not filed
+  // it" -- including July and August bills, filed perfectly on time, in July's
+  // and August's own 2B, which this run never had in front of it.
+  //
+  // Measured on three months of a small shop: five bills reported unfiled and
+  // 39,600 at risk, where the truth was one bill and 7,200. The figure was
+  // five and a half times over, and the reminder button offered to send four
+  // suppliers a list of bills they had filed on time.
+  //
+  // So: `periods` is the months whose 2B files are actually in hand. An
+  // unmatched bill dated in one of them was genuinely not filed. An unmatched
+  // bill from any other month is not evidence of anything -- it is a month
+  // that was not looked at -- and it comes back separately so the screen can
+  // ask for that file instead of blaming the supplier.
+  //
+  // Given no periods at all, every bill is judged, which is how this behaved
+  // before and is right when the caller has said nothing.
+  const inScope = (d) => !months.size || months.has(String(d.period || '').slice(0, 7))
+                      || months.has(String(d.docDate || '').slice(0, 7));
+  const unmatched    = L.filter((b) => !b._m);
+  const booksOnly    = unmatched.filter(inScope);
+  const booksUnseen  = unmatched.filter((b) => !inScope(b));
   const twoLeft      = R.filter((t) => !t._m);
   const twoBlocked   = twoLeft.filter((t) => t.itc === 'N');
   const twoOnly      = twoLeft.filter((t) => t.itc !== 'N');
@@ -384,7 +416,8 @@ export function reconcile({ purchases = [], portal = [] }) {
   const queried = pairs.filter((p) => p.cls !== 'EXACT');
 
   return {
-    pairs, matched, queried, booksOnly, twoOnly, twoBlocked,
+    pairs, matched, queried, booksOnly, booksUnseen, twoOnly, twoBlocked,
+    months: [...months].sort(),
     blockedPairs: pairs.filter((x) => x.blocked),
     noGstin, other, rcm, dupes,
     summary: {
@@ -393,6 +426,9 @@ export function reconcile({ purchases = [], portal = [] }) {
       matched: matched.length,
       different: queried.length,
       onlyBooks: booksOnly.length,
+      // bills from a month whose 2B is not in hand: not at risk, not checked
+      unseen: booksUnseen.length,
+      unseenTax: n2(booksUnseen.reduce((a, d) => a + d.sign * num(d.tax), 0)),
       onlyPortal: twoOnly.length,
       timing: pairs.filter((p) => p.timing).length,
 
