@@ -218,13 +218,19 @@ export function AppProvider({ children }) {
       if (pe1) throw pe1;
 
       const hasGst = !!d.gstin;
-      // Assam is the default for a shop that gives no GST number, because
-      // that is where most of these shops are — the same answer OnboardScreen
-      // gives, so the two ways into Skwik agree. It is still a default rather
-      // than a decision: this screen does not yet OFFER the State the way the
-      // set-up screen now does, so a shop elsewhere has to correct it under
-      // Settings, where the picker asks for it by name.
-      const code   = hasGst ? String(d.gstin).slice(0, 2) : '18';
+      // WHICH STATE THE SHOP IS IN, AND IT IS NOT ASSAM UNLESS HE SAID SO.
+      //
+      // A GST number carries the state in its first two digits, so for a
+      // registered shop there is nothing to ask. A shop with no GST number was
+      // given '18' outright -- Assam, where the first shop on this app happens
+      // to be -- even though the sign-up screen had just asked him which state
+      // he is in and sent the answer here. A shop in Bihar was saved as Assam,
+      // and state_code is what decides CGST-and-SGST against IGST on every bill
+      // it writes afterwards, and which table of GSTR-1 they land in.
+      //
+      // His answer now wins. Assam is only what is used when nobody said.
+      const code   = hasGst ? String(d.gstin).slice(0, 2)
+                            : (String(d.state_code || '').trim() || '18');
       const trial  = new Date();
       trial.setDate(trial.getDate() + 7);
 

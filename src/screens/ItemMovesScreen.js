@@ -153,7 +153,7 @@ export default function ItemMovesScreen({ route, navigation }) {
 
   // Running balance, worked out once, so every line carries the figure that
   // stood after it.
-  const { rows, opening, inTotal, outTotal, closing } = useMemo(() => {
+  const { rows, opening, inTotal, outTotal, closing, openingAt } = useMemo(() => {
     let raw = data?.rows || [];
 
     // MOVING YOUR OWN GOODS FROM ONE OF YOUR SHELVES TO ANOTHER IS NOT A
@@ -184,7 +184,11 @@ export default function ItemMovesScreen({ route, navigation }) {
     // in the order things happened — upside down, each figure appears to be
     // the balance BEFORE its own line.
     return { rows: out, opening: num(data?.opening), inTotal: n2(gotIn),
-             outTotal: n2(gotOut), closing: bal };
+             outTotal: n2(gotOut), closing: bal,
+             // only worth naming when it is spread over more than one shelf;
+             // one store and the figure above already says everything
+             openingAt: (Array.isArray(data?.opening_at) && data.opening_at.length > 1)
+               ? data.opening_at : [] };
   }, [data, where, onWholeFirm]);
 
   // ONLY THE NEWEST FEW, AND THE TWO DIRECTIONS COUNTED APART.
@@ -318,6 +322,21 @@ export default function ItemMovesScreen({ route, navigation }) {
                   <Cell label="IN" value={inTotal} tone={C.ok} />
                   <Cell label="OUT" value={outTotal} tone={C.danger} />
                 </View>
+
+                {/* WHERE THE OPENING SITS.
+                    It used to be four lines in the register — "opening stock ·
+                    Chamber Road +3,652.06" — which is how eighteen thousand
+                    kilos came to be counted as goods arriving, with OPENING
+                    reading nought above them. The figure is the opening now, so
+                    the four stores are said here instead of being lost with the
+                    lines. A database that has not been brought forward yet
+                    sends nothing, and this simply does not appear. */}
+                {openingAt.length > 0 && (
+                  <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 8, lineHeight: 16 }}>
+                    Opening stock:{' '}
+                    {openingAt.map((a) => `${qtyText(a.qty)} in ${a.godown}`).join(' · ')}
+                  </Text>
+                )}
                 <View style={{ height: 1, backgroundColor: C.line, marginVertical: 12 }} />
                 <View style={[S.row, { justifyContent: 'space-between', alignItems: 'flex-end' }]}>
                   <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.muted }}>

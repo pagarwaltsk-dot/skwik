@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Keyboard, Modal, Platform,
   UIManager, useWindowDimensions, PanResponder } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useApp } from '../AppContext';
 import { groupOf } from '../lib/sections';
 import { C, S } from '../theme';
 
@@ -179,12 +180,44 @@ export function BackButton({ navigation, onPress, light = true }) {
 // left, the name of the screen, whatever that screen needs, and the way out on
 // the right. It leaves room for the notch at the top, which the old headers
 // did by guessing 50 and getting it wrong on tall phones.
+// WHOSE BOOKS ARE THESE? THE SCREEN HAS TO SAY, ON EVERY SCREEN.
+//
+// Thirteen firms were sitting in one project -- every registration makes
+// another -- and the shop's name appeared on the day book and NOWHERE ELSE.
+// So he opened the stock list, saw nothing in hand and no rates, and reported
+// it as two faults in the app. Both figures were perfectly correct: he was
+// looking at a different firm. His real books, 503 items and 2,257 bills, were
+// four taps away behind another phone number.
+//
+// I did the same thing to him an hour later from the other end, writing a
+// diagnostic that read "the oldest firm" and reporting its two items back to
+// him as though they were his shop.
+//
+// That is not his mistake and it will not be his customers' either. A shop
+// that registers twice -- a wrong digit in the number, a second try after a
+// failed sign-up -- lands in an empty book and concludes the app has lost
+// everything. So the name of the firm now sits under the title of every screen
+// in the app, in small letters, always. It costs one line and it makes being
+// in the wrong books impossible to miss.
 export function Head({ navigation, title, onBack, children }) {
   const insets = useSafeAreaInsets();
+  // Head is drawn by screens that sit outside the app shell too -- sign-up,
+  // the password reset -- where there is no firm yet and no provider above
+  // them, so this must never be the thing that stops a screen rendering.
+  let firm = '';
+  try { firm = useApp()?.org?.name || ''; } catch (e) { firm = ''; }
   return (
     <View style={[S.header, { paddingTop: Math.max(insets.top, 12) + 10 }]}>
       <BackButton navigation={navigation} onPress={onBack} light={false} />
-      <Text numberOfLines={1} style={S.h1}>{title}</Text>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text numberOfLines={1} style={[S.h1, { flex: 0 }]}>{title}</Text>
+        {!!firm && (
+          <Text numberOfLines={1}
+            style={{ fontSize: 11.5, fontWeight: '600', color: C.muted, marginTop: 1 }}>
+            {firm}
+          </Text>
+        )}
+      </View>
       {children}
     </View>
   );
@@ -568,4 +601,39 @@ export function useChainSwipe(tabs, current, set, section) {
     onRight: () => { if (i > 0) set(tabs[i - 1]);
                      else section?.onRight?.(); },
   };
+}
+
+// ONE DOOR TO THE QUICK BAR, AND IT DOES NOT GO AWAY.
+//
+// He said it plainly: "quick add button should stay even after we have added
+// 2-3 items, but once there is stock item or customer, it disappears, also you
+// said, it will be placed under khata, items but it was under items only."
+//
+// Both faults were mine, and they were the same fault twice. I put the door in
+// the EMPTY state of a screen, so the moment a shop had one item or one name it
+// vanished — and adding eight hundred items is exactly the job you come back to
+// on the second day and the third. And I put the Khata one on Parties, which
+// sits BEHIND Ledgers: Khata opens on Ledgers, so he never met it.
+//
+// So it is one control, here, used unchanged by Ledgers, Parties, Items and
+// Items & stock. It is always on the screen. It is a plain line most of the
+// time, and a filled key while the list is still empty — which is the one
+// moment it is the main thing on the page rather than a way out of it.
+export function AddMany({ navigation, tab, empty, what }) {
+  const big = !!empty;
+  return (
+    <TouchableOpacity
+      onPress={() => navigation.navigate('QuickAdd', tab ? { tab } : undefined)}
+      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      style={big
+        ? { marginTop: 16, paddingVertical: 13, paddingHorizontal: 18, borderRadius: 10,
+            backgroundColor: C.accent, alignSelf: 'center' }
+        : { paddingVertical: 2 }}>
+      <Text style={big
+        ? { fontSize: 15, fontWeight: '700', color: '#FFFFFF' }
+        : { fontSize: 13, fontWeight: '700', color: C.accent }}>
+        {big ? 'Add many, quickly' : `Add many ${what} in one go ›`}
+      </Text>
+    </TouchableOpacity>
+  );
 }
