@@ -231,6 +231,8 @@ $('go').onclick = async () => {
     $('orgName').textContent = org.name || 'Your shop';
     $('orgSub').textContent = [org.gstin, org.state_name].filter(Boolean).join(' · ')
       || 'no GST number on file';
+    // and on the backup button too, for the same reason
+    $('save').textContent = `Save the whole book of ${org.name || 'this firm'}`;
     show($('loginCard'), false); show($('whoCard')); show($('inCard'));
     show($('checkCard')); show($('outCard'));
     loadRuns();
@@ -595,12 +597,25 @@ $('file').onchange = async () => {
       <ul class="plain">${bad.map((v) => `<li>${v.tally_type} ${v.no} of ${v.vdate} —
         Tally says ${v.tally_total.toFixed(2)}, the pieces come to ${v.total.toFixed(2)}</li>`).join('')}</ul></div>`;
     $('write').disabled = false;
-    $('write').textContent = `Bring in the other ${n(book.vouchers.length)} bill(s)`;
+    $('write').textContent = `Bring in the other ${n(book.vouchers.length)} bill(s)`
+      + (org && org.name ? ` to ${org.name}` : '');
   };
 
   $('write').disabled = stop.length > 0 || nowt;
+  // THE FIRM'S NAME ON THE BUTTON HE PRESSES.
+  //
+  // He made a new firm, opened this page, checked the name at the top, and
+  // imported his whole Tally file into the OLD one -- because the page was
+  // still holding the session it signed in with this morning, and a firm's
+  // name in grey text above the fold is not where a man looks in the second
+  // before he presses a button. Nothing was lost, but only because the old
+  // firm already held the bills and refused them.
+  //
+  // So the firm is named on the button itself. There is no moment at which
+  // he can press this without having read where it goes.
   $('write').textContent = stop.length ? 'Put the problems right first'
-    : nowt ? 'Nothing to bring in' : 'Bring it in';
+    : nowt ? 'Nothing to bring in'
+    : `Bring it in to ${org && org.name ? org.name : 'this firm'}`;
   show($('readBox'), false); show($('planBox'));
   // PICKING THE SAME FILE AGAIN HAS TO DO SOMETHING.
   //
