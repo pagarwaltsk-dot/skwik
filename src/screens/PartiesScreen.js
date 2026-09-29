@@ -279,12 +279,31 @@ export default function PartiesScreen({ route, navigation }) {
               </Text>
             </TouchableOpacity>
           ) : (
-            <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 30,
-                           lineHeight: 20 }}>
-              No {side === 'supplier' ? 'suppliers' : side === 'all' ? 'names' : 'customers'} yet.
-              Names save themselves when you make a bill, or add one here with the
-              details filled in.
-            </Text>
+            // NOTHING IN THE BOOK YET, so the fast way is offered beside the
+            // form: the name and what he is owed, one line each, instead of
+            // this whole sheet once per customer.
+            <View style={{ marginTop: 26, alignItems: 'center' }}>
+              <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center',
+                             lineHeight: 20 }}>
+                No {side === 'supplier' ? 'suppliers' : side === 'all' ? 'names' : 'customers'} yet.
+                Names save themselves when you make a bill, or add one here with
+                the details filled in.
+              </Text>
+              <TouchableOpacity
+                onPress={() => navigation.navigate('QuickAdd',
+                  { tab: side === 'supplier' ? 'suppliers' : 'customers' })}
+                style={{ marginTop: 16, paddingVertical: 13, paddingHorizontal: 18,
+                         borderRadius: 10, backgroundColor: C.accent }}>
+                <Text style={{ fontSize: 15, fontWeight: '700', color: '#fff' }}>
+                  Add many, quickly
+                </Text>
+              </TouchableOpacity>
+              <Text style={{ fontSize: 12.5, color: C.faint, marginTop: 9, textAlign: 'center',
+                             lineHeight: 18 }}>
+                Name and what is owed, one line each — nothing else unless you
+                ask for it.
+              </Text>
+            </View>
           )}
         renderItem={({ item }) => (
           <View style={[S.row, { borderBottomWidth: 1, borderBottomColor: C.line }]}>
