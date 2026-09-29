@@ -303,6 +303,21 @@ function readVoucher(block, types, leds) {
     // Place of supply decides which tax a bill carries, and GSTR-1 asks for it
     // by name. Not one imported bill had it.
     place_of_supply: tagTop(block, 'PLACEOFSUPPLY'),
+    // THE SUPPLIER'S OWN BILL NUMBER AND ITS DATE.
+    //
+    // Neither was read, and the purchase was stored with the shop's voucher
+    // number as the supplier's bill number and the DAY IT WAS ENTERED as the
+    // day the supplier wrote it. Purchases are entered when the goods arrive,
+    // so a bill of 30 March entered on 30 April was stored as a bill of
+    // 30 April -- and the whole GSTR-2B comparison turns on that date. Soni
+    // Brothers' EI/25-26/3118 is a March bill; the portal has it in March;
+    // Skwik had it in April and reported the man as not having filed.
+    //
+    // Tally writes both on a purchase: REFERENCE and REFERENCEDATE. Older
+    // exports spell them SUPPLIERINVOICENO and SUPPLIERINVOICEDATE.
+    sup_no: tagTop(block, 'REFERENCE') || tagTop(block, 'SUPPLIERINVOICENO'),
+    sup_date: tallyDate(tagTop(block, 'REFERENCEDATE'))
+           || tallyDate(tagTop(block, 'SUPPLIERINVOICEDATE')),
     // Tally's own id for the voucher. Carried so the same file imported twice
     // cannot write the same bill twice.
     ref: tagTop(block, 'GUID') || tagTop(block, 'REMOTEID') || '',
