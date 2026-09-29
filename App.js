@@ -25,6 +25,7 @@ import MoneyScreen   from './src/screens/MoneyScreen';
 import PartiesScreen from './src/screens/PartiesScreen';
 import LedgerScreen  from './src/screens/LedgerScreen';
 import ItemsScreen   from './src/screens/ItemsScreen';
+import QuickAddScreen from './src/screens/QuickAddScreen';
 import StockScreen   from './src/screens/StockScreen';
 import StockMoveScreen from './src/screens/StockMoveScreen';
 import StandingScreen from './src/screens/StandingScreen';
@@ -204,6 +205,7 @@ function Routes() {
           <Stack.Screen name="Parties" component={PartiesScreen} />
           <Stack.Screen name="Ledger"  component={LedgerScreen} />
           <Stack.Screen name="Items"   component={ItemsScreen} />
+          <Stack.Screen name="QuickAdd" component={QuickAddScreen} />
           <Stack.Screen name="Stock"   component={StockScreen} />
           <Stack.Screen name="StockMove" component={StockMoveScreen} />
           <Stack.Screen name="ItemMoves" component={ItemMovesScreen} />
