@@ -411,11 +411,35 @@ export default function ReconScreen({ navigation }) {
                   </Text>
                 )}
                 {res.dupes.length > 0 && (
-                  <Text style={{ fontSize: 12.5, color: C.edit, lineHeight: 18, marginTop: 6,
-                                 fontWeight: '700' }}>
-                    {res.dupes.length} bill number{res.dupes.length === 1 ? '' : 's'} appear
-                    more than once — the same purchase may be entered twice.
-                  </Text>
+                  <View style={{ marginTop: 6 }}>
+                    <Text style={{ fontSize: 12.5, color: C.edit, lineHeight: 18,
+                                   fontWeight: '700' }}>
+                      {res.dupes.length} bill number{res.dupes.length === 1 ? '' : 's'} appear
+                      more than once — the same purchase may be entered twice.
+                    </Text>
+                    {/* AND WHICH ONES. A count sends him hunting through a
+                        year of purchases; the number and the date send him
+                        straight there. Only his own side can be opened — a
+                        repeat on the portal's side is the supplier's to fix. */}
+                    {res.dupes.map((d, i) => (
+                      <View key={i} style={{ marginTop: 8 }}>
+                        <Text style={{ fontSize: 12, color: C.muted }}>
+                          {d.docs[0]?.party || 'A supplier'} · {d.docs[0]?.docNo || '—'}
+                          {d.src === 'books' ? '' : '  (on the portal, not your books)'}
+                        </Text>
+                        {d.src === 'books' && d.docs.map((x, j) => (
+                          <TouchableOpacity key={j} disabled={!x.id}
+                            onPress={() => navigation.navigate('Bill', { voucherId: x.id })}
+                            style={[S.row, { paddingVertical: 7 }]}>
+                            <Text style={{ flex: 1, fontSize: 13, color: x.id ? C.accent : C.muted,
+                                           fontWeight: '600' }}>
+                              {x.docDate} · ₹{fmt0(x.tax)}{x.id ? '  — open it ›' : ''}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    ))}
+                  </View>
                 )}
               </View>
             )}
@@ -556,8 +580,33 @@ export default function ReconScreen({ navigation }) {
                       Enter these as purchases and the credit is yours.
                     </Text>
                     {open.rows.filter((r) => r.field === 'onlyPortal').map((r, i) => (
-                      <Row key={i} k={`${r.row.docNo || '—'} · ${r.row.docDate}`}
-                           v={`₹${fmt0(r.row.tax)}`} />
+                      // TAPPING ONE OPENS THE PURCHASE, ALREADY HEADED.
+                      //
+                      // This was a list to read and then go and act on somewhere
+                      // else, which is how a bill nobody entered stays not
+                      // entered until the audit. Supplier, number and date come
+                      // across; the goods are his to type, because the portal
+                      // never knew what was on the bill.
+                      <TouchableOpacity key={i}
+                        onPress={() => { setOpen(null); navigation.navigate('Bill', {
+                          vtype: 'purchase',
+                          from2b: { gstin: open.ctin, party: open.name,
+                                    docNo: r.row.docNo, docDate: r.row.docDate } }); }}
+                        style={[S.row, { paddingVertical: 10, borderBottomWidth: 1,
+                                         borderBottomColor: C.line }]}>
+                        <View style={{ flex: 1, paddingRight: 10 }}>
+                          <Text style={{ fontSize: 13.5, fontWeight: '600', color: C.ink }}>
+                            {r.row.docNo || '—'} · {r.row.docDate}
+                          </Text>
+                          <Text style={{ fontSize: 11.5, color: C.accent, marginTop: 2,
+                                         fontWeight: '700' }}>
+                            Enter this purchase ›
+                          </Text>
+                        </View>
+                        <Text style={[S.num, { fontSize: 14, fontWeight: '700', color: C.ink }]}>
+                          ₹{fmt0(r.row.tax)}
+                        </Text>
+                      </TouchableOpacity>
                     ))}
                   </View>
                 )}

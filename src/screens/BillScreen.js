@@ -303,6 +303,29 @@ export default function BillScreen({ route, navigation }) {
         setItems(i || []);
         setParties(p || []);
         setOffline(false);
+        // A BILL HE IS ENTERING BECAUSE THE PORTAL SAYS IT EXISTS.
+        //
+        // The 2B comparison finds bills his supplier has filed that are not in
+        // his books at all -- the ones that come to light at audit, months
+        // later, when nobody can remember them. Tapping one lands here with
+        // the supplier, the bill number and its date already in place, so all
+        // he types is the goods. The number matters most: entered by hand it
+        // comes out as SGS-7 against the portal's SGS/007 and the same bill is
+        // a stranger again next month.
+        //
+        // The portal knows nothing about what was ON the bill, so the goods
+        // are his to enter. Nothing is invented here.
+        const seed = route.params?.from2b;
+        if (seed && !editId) {
+          const mine = (p || []).find((x) => x.gstin
+            && String(x.gstin).toUpperCase() === String(seed.gstin || '').toUpperCase());
+          if (mine) setCust(mine);
+          else if (seed.party) setCust({ name: seed.party, gstin: seed.gstin || '',
+                                         kind: 'supplier' });
+          if (seed.docNo) setSupNo(String(seed.docNo));
+          if (seed.docDate) setSupDateText(showDate(seed.docDate));
+          setHeadOpen(true);
+        }
         if (showGodowns(org)) {
           const gs = await allRows(() => supabase.from('godowns')
             .select('*').order('name').order('id'));
