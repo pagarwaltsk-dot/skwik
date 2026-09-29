@@ -68,7 +68,7 @@
 <footer>If it is wrong about a column, that is the point of this page. Send the file.</footer>
 
 <script type="module">
-import { detect } from '../src/lib/detect.js';
+import { detect, extract } from '../src/lib/detect.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (x) => String(x == null ? '' : x)
@@ -101,15 +101,15 @@ async function read(f) {
   let text;
   try { text = await textOf(f); }
   catch (e) { out.innerHTML = card(`Could not read that file. ${esc(e.message)}`); return; }
-  let d;
-  try { d = detect(text); }
+  let d, x;
+  try { d = detect(text); x = d.problem ? null : extract(d); }
   catch (e) { out.innerHTML = card(`It fell over on that file. ${esc(e.message)}`); return; }
-  show(f, d, text);
+  show(f, d, text, x);
 }
 
 const card = (html) => `<div class="card">${html}</div>`;
 
-function show(f, d, text) {
+function show(f, d, text, x) {
   if (d.problem) {
     out.innerHTML = card(`<h2>${esc(f.name)}</h2><div class="warn">${esc(d.problem)}</div>`
       + `<p class="note" style="margin-top:12px">The first few lines of it:</p>`
@@ -144,6 +144,7 @@ function show(f, d, text) {
       <tr><th>Column</th><th>Skwik thinks</th><th>How sure</th><th>Why</th><th>Looks like</th></tr>
       ${rows}
     </table>`)
+    + taken(x, d)
     + card(`<h2>What proved itself</h2>
       <p class="note">These are the sums that hold across the file. They are the evidence;
          everything above is read off them.</p>
@@ -151,6 +152,61 @@ function show(f, d, text) {
         .join('') || '<div class="why">Nothing in this file proves itself by arithmetic. '
         + 'Everything above is read off the column names alone.</div>'}`);
 }
+
+// WHAT CAME OUT. The column table is the working; this is the answer.
+function taken(x, d) {
+  if (!x || x.problem) return '';
+  const pc = x.closes == null ? null : Math.round(x.closes * 100);
+  const verdict = pc == null
+    ? '<span class="warn" style="display:inline-block">The file gives no total to check against, '
+      + 'so nothing here has been proved by arithmetic.</span>'
+    : pc === 100
+      ? `<b class="certain">Every one of the ${x.checked} adds up.</b>`
+      : `<b class="${pc >= 95 ? 'likely' : 'guess'}">${x.agreed} of ${x.checked} add up`
+        + ` \u2014 ${x.checked - x.agreed} do not.</b>`;
+
+  if (x.kind === 'ledgers') {
+    const rows = x.ledgers.slice(0, 40).map((l) => `<tr>
+      <td class="name">${esc(l.party)}</td>
+      <td>${num(l.opening)}</td><td>${num(l.debit)}</td>
+      <td>${num(l.credit)}</td><td>${num(l.closing)}</td></tr>`).join('');
+    return card(`<h2>What came out \u2014 ${x.ledgers.length} ledgers</h2>
+      <p class="note">${verdict} The test is opening + debit \u2212 credit = closing.</p>
+      <table><tr><th>Party</th><th>Opening</th><th>Debit</th><th>Credit</th><th>Closing</th></tr>
+      ${rows}</table>
+      ${x.ledgers.length > 40 ? `<p class="note">\u2026 and ${x.ledgers.length - 40} more.</p>` : ''}`);
+  }
+
+  const bills = x.bills.slice(0, 15).map((b) => `
+    <tr>
+      <td class="name">${esc(b.no) || '<i>\u2014</i>'}</td>
+      <td>${esc(b.date)}</td>
+      <td>${esc(b.party)}</td>
+      <td class="why">${b.lines.length} line${b.lines.length === 1 ? '' : 's'}${
+        b.lines[0] && b.lines[0].item ? ': ' + esc(b.lines[0].item) : ''}</td>
+      <td>${num(b.taxable)}</td>
+      <td>${num((b.cgst || 0) + (b.sgst || 0) + (b.igst || 0) + (b.cess || 0))}</td>
+      <td>${num(b.total)}</td>
+      <td class="${b.doesNotAddUp != null ? 'guess' : 'certain'}">${
+        b.doesNotAddUp != null ? 'out by ' + num(b.doesNotAddUp) : 'adds up'}</td>
+    </tr>`).join('');
+
+  return card(`<h2>What came out \u2014 ${x.bills.length} bills</h2>
+    <p class="note">${verdict} The test is taxable + tax = the total the file itself states.
+      This is the answer; the table above is only the working.</p>
+    <table>
+      <tr><th>Bill</th><th>Date</th><th>Party</th><th>Lines</th>
+          <th>Taxable</th><th>Tax</th><th>Total</th><th></th></tr>
+      ${bills}
+    </table>
+    ${x.bills.length > 15 ? `<p class="note">\u2026 and ${x.bills.length - 15} more.</p>` : ''}
+    <p class="note" style="margin-top:14px">This is the shape anything can be fed from \u2014
+      not Tally's and not Skwik's:</p>
+    <pre>${esc(JSON.stringify(x.bills[0], null, 1))}</pre>`);
+}
+
+const num = (v) => (v == null ? '' : Number(v).toLocaleString('en-IN',
+  { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 
 function proofLines(d) {
   const nm = (i) => d.header[i] || `column ${i + 1}`;
