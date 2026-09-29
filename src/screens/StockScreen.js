@@ -6,7 +6,7 @@ import { useApp } from '../AppContext';
 import { fmt0, num, qty as qtyText, today as todayIst } from '../lib/money';
 import { uqcShort } from '../lib/uqc';
 import { showBatch, showExpiry, showGodowns, showVariants } from '../lib/features';
-import { Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
+import { AddMany, Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
 import { CardFigure, CardName, CardRow, EditKey } from '../components/Register';
 import { C, S } from '../theme';
 
@@ -506,6 +506,11 @@ export default function StockScreen({ navigation }) {
           </Text>
         </TouchableOpacity>
 
+        {/* AND THE FAST WAY IN, WHICH DOES NOT GO AWAY ONCE HE HAS ONE ITEM. */}
+        <View style={{ marginTop: 9 }}>
+          <AddMany navigation={navigation} tab="items" what="items" />
+        </View>
+
         <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 8 }}>
           {tree.shut
             ? 'Tap a name to see every movement in and out of it, EDIT to change the item, Batches to open its batches.'
@@ -588,8 +593,9 @@ export default function StockScreen({ navigation }) {
           ) : (
             <Text style={{ fontSize: 13.5, color: C.muted, textAlign: 'center',
                            marginTop: 24, lineHeight: 20 }}>
-              No items yet. Tap + NEW ITEM above, or just start billing — a new
-              name on a bill can be saved as an item there and then.
+              No items yet. “Add many items in one go” above takes them a line at
+              a time, or just start billing — a new name on a bill can be saved
+              as an item there and then.
             </Text>
           )} />
       </Swipe>

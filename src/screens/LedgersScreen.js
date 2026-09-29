@@ -9,7 +9,7 @@ import { useApp } from '../AppContext';
 import { sayPlainly } from '../lib/offline';
 import { fmt0, n2, num } from '../lib/money';
 import { CardFigure, CardName, CardRow, EditKey } from '../components/Register';
-import { Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
+import { AddMany, Head, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
 import { C, S } from '../theme';
 
 // EVERY ACCOUNT, ON ONE PAGE.
@@ -149,6 +149,10 @@ export default function LedgersScreen({ navigation }) {
         </View>
         <TextInput style={[S.input, { paddingVertical: 9 }]} placeholder="Search a name"
           placeholderTextColor={C.faint} value={q} onChangeText={setQ} returnKeyType="search" />
+        {/* THE FAST WAY TO PUT NAMES IN, ON THE SCREEN KHATA ACTUALLY OPENS.
+            It was on Parties, which sits behind this one, so he never met it. */}
+        <AddMany navigation={navigation} tab="customers" what="names" />
+
         {tab === 'all' && (
           <TouchableOpacity onPress={() => setHideNil((v) => !v)}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}

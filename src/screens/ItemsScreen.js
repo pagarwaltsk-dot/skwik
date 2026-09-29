@@ -8,7 +8,7 @@ import { fmt0, num, settle, hsnApplies, SUPPLY_KINDS, supplyOf } from '../lib/mo
 import { uqcShort } from '../lib/uqc';
 import { checkHsn } from '../lib/hsn';
 import { HsnField, UomField } from '../components/Pickers';
-import { Box, Foot, Head, KeyForm, Screen, Sections, Swipe, useSectionSwipe }
+import { AddMany, Box, Foot, Head, KeyForm, Screen, Sections, Swipe, useSectionSwipe }
   from '../components/Chrome';
 import { ScanSheet } from '../components/Scan';
 import { showMaking, showVariants } from '../lib/features';
@@ -517,12 +517,14 @@ export default function ItemsScreen({ route, navigation }) {
       </View>
 
       {!bulk && (
-        <TouchableOpacity onPress={() => setShowGone(!showGone)}
-          style={{ paddingHorizontal: 16, paddingBottom: 10 }}>
-          <Text style={{ fontSize: 13, fontWeight: '600', color: C.accent }}>
-            {showGone ? '‹ Back to the items you use' : 'Show items you stopped using'}
-          </Text>
-        </TouchableOpacity>
+        <View style={{ paddingHorizontal: 16, paddingBottom: 10, gap: 9 }}>
+          <AddMany navigation={navigation} tab="items" what="items" />
+          <TouchableOpacity onPress={() => setShowGone(!showGone)}>
+            <Text style={{ fontSize: 13, fontWeight: '600', color: C.accent }}>
+              {showGone ? '‹ Back to the items you use' : 'Show items you stopped using'}
+            </Text>
+          </TouchableOpacity>
+        </View>
       )}
 
       {bulk && (
@@ -577,31 +579,11 @@ export default function ItemsScreen({ route, navigation }) {
               </Text>
             </TouchableOpacity>
           ) : (
-            // AN EMPTY SHOP IS THE ONE PLACE THE FAST WAY BELONGS.
-            //
-            // This form is twenty boxes, which is right for ONE item and wrong
-            // for the first eight hundred. A shop with nothing in it gets the
-            // bar instead: he picks the three or four things he wants to type
-            // and then types only those, item after item.
-            <View style={{ marginTop: 26, alignItems: 'center' }}>
-              <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center',
-                             lineHeight: 20 }}>
-                No items yet. You can add them here one at a time, or just start
-                billing — a new name on a bill can be saved as an item there and
-                then.
-              </Text>
-              <TouchableOpacity onPress={() => navigation.navigate('QuickAdd', { tab: 'items' })}
-                style={{ marginTop: 16, paddingVertical: 13, paddingHorizontal: 18,
-                         borderRadius: 10, backgroundColor: C.accent }}>
-                <Text style={{ fontSize: 15, fontWeight: '700', color: '#fff' }}>
-                  Add many, quickly
-                </Text>
-              </TouchableOpacity>
-              <Text style={{ fontSize: 12.5, color: C.faint, marginTop: 9, textAlign: 'center',
-                             lineHeight: 18 }}>
-                Name and rate, one line each — nothing else unless you ask for it.
-              </Text>
-            </View>
+            <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 30,
+                           lineHeight: 20 }}>
+              No items yet. Add many at once with the line above, or just start
+              billing — a new name on a bill can be saved as an item there and then.
+            </Text>
           )}
         renderItem={({ item }) => (bulk ? (
           <View style={[S.row, { paddingVertical: 10, borderBottomWidth: 1,
