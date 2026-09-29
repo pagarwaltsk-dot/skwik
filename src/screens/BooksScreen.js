@@ -161,11 +161,23 @@ export default function BooksScreen({ navigation, route }) {
       bal = n2(bal + i - o); gi += i; go += o;
       return { ...r, balance: bal };
     });
+    // IN AND OUT ARE THE WHOLE PERIOD'S, NOT THE VISIBLE LINES'.
+    //
+    // Adding up the rows it was sent gave the in and out of the newest four
+    // hundred movements, sitting between an OPENING and a CLOSING that are
+    // both the whole period's — so on a year the four figures did not close,
+    // and IN read as about a tenth of what went through the till. The page
+    // cannot work them out from what it has: the earlier movements reach it
+    // as a single net figure. The database sends them now; an older one does
+    // not, and then the totals of the visible lines are the best that can
+    // honestly be shown.
+    const wholeIn  = book?.in  != null ? num(book.in)  : n2(gi);
+    const wholeOut = book?.out != null ? num(book.out) : n2(go);
     // worked out oldest-first because a balance can be worked out no other
     // way, then turned over so today's entries are at the top
     return { rows: newest ? out.reverse() : out,
              opening: op, brought: bf, folded: Number(book?.folded || 0),
-             inTotal: n2(gi), outTotal: n2(go), closing: bal };
+             inTotal: wholeIn, outTotal: wholeOut, closing: bal };
   }, [book, newest]);
 
   // BROUGHT FORWARD, THE WAY A LEDGER PAGE HAS ALWAYS DONE IT.

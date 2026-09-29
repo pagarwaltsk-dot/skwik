@@ -410,12 +410,26 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
 }
 
 // The two-sided account, as a page you can send on WhatsApp.
-export function ledgerHtml({ org, party, rows, opening, openingType, balance }) {
+export function ledgerHtml({ org, party, rows, opening, openingType, balance, from, to }) {
   const left  = rows.filter((r) => r.side === 'left');
   const right = rows.filter((r) => r.side === 'right');
   if (Number(opening) > 0) {
-    (openingType === 'you_owe' ? right : left).unshift(
-      { d: party.opening_date || '', label: 'Opening', amt: opening });
+    // WHAT THIS FIGURE IS DEPENDS ON WHERE THE PAGE STARTS.
+    //
+    // The screen hands over the account's own opening PLUS everything dated
+    // before the period — which is the right figure to open a statement with.
+    // It was printed as "Opening", dated the day the account was first opened,
+    // on a page that named no period anywhere. A customer sent a September
+    // statement read "01/04 · Opening 4,20,000" and concluded he had been
+    // carrying that since April, when on that day he owed 20,000.
+    //
+    // A statement of the whole account really does open with the opening. A
+    // statement of one month opens with what was brought into it, and says so.
+    const wholeAccount = !from || (party.opening_date && from <= party.opening_date);
+    (openingType === 'you_owe' ? right : left).unshift({
+      d: wholeAccount ? (party.opening_date || '') : dmy(from),
+      label: wholeAccount ? 'Opening' : 'Brought forward',
+      amt: opening });
   }
   const sum  = (a) => a.reduce((s, r) => s + Number(r.amt || 0), 0);
   const col  = (a) => a.map((r) => `
@@ -428,7 +442,8 @@ export function ledgerHtml({ org, party, rows, opening, openingType, balance }) 
   return `<!doctype html><html><head><meta charset="utf-8"><style>${CSS}
     @page { size: A5; margin: 10mm; }</style></head><body>
     <div style="font-size:18px;font-weight:bold">${esc(org.name)}</div>
-    <div style="font-size:12px;color:#5C5B55;margin-bottom:10px">Account statement</div>
+    <div style="font-size:12px;color:#5C5B55;margin-bottom:10px">Account statement${
+      from && to ? ` &middot; ${esc(dmy(from))} to ${esc(dmy(to))}` : ''}</div>
     <div style="font-size:20px;font-weight:bold">${esc(party.name)}</div>
     <div style="margin:10px 0;padding:10px 14px;background:${owes ? '#FBEDEA' : '#E4F2EA'};
                 color:${owes ? '#8E3527' : '#0B5C34'};font-weight:bold">

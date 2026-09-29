@@ -149,7 +149,16 @@ export default function ItemMovesScreen({ route, navigation }) {
   }, [itemId, range, where]));
 
   // He asked for one store but is being shown the firm — the old database.
-  const onWholeFirm = !!godownId && stale;
+  //
+  // WHAT CAME BACK, NOT WHAT HE OPENED THE PAGE FROM.
+  //
+  // This was `!!godownId && stale` — godownId being the store the STOCK screen
+  // happened to be showing when he tapped the item. Open the register from
+  // Everywhere, tap a store chip, and on an old database the fetch falls back
+  // to the whole firm while this said otherwise. `stale` is set by the fetch
+  // itself and already means "a store was asked for and the firm came back",
+  // so it is the whole of the answer.
+  const onWholeFirm = stale;
 
   // Running balance, worked out once, so every line carries the figure that
   // stood after it.
@@ -164,7 +173,25 @@ export default function ItemMovesScreen({ route, navigation }) {
     // totals read like trade that never happened — a carton walked across
     // the lane and the register called it a purchase and a sale. Inside ONE
     // store they are real and stay: that shelf genuinely gained or lost.
-    if (!godownId || onWholeFirm) {
+    // AND IT IS THE STORE HE IS LOOKING AT THAT DECIDES, NOT THE ONE HE CAME
+    // IN FROM.
+    //
+    // This read `godownId` — the route parameter, fixed when the page opened —
+    // while the rows above it are fetched for `where`, the chip he has since
+    // tapped. The two part company the moment he uses the chips, and both ways
+    // round are wrong:
+    //
+    //   opened on a store, then Everywhere: the rows are the whole firm, both
+    //     legs of every transfer in them, and nothing filtered — so a carton
+    //     carried across the lane and back is counted as a purchase AND a sale.
+    //
+    //   opened on Everywhere, then a store: the rows are that store's, where a
+    //     transfer in IS a real arrival — and they were being thrown away. His
+    //     small godown is refilled from the big one daily, so its register lost
+    //     nearly everything that ever arrived on the shelf: 500 kg moved in and
+    //     120 kg sold read as OPENING 0, IN 0, OUT 120, CLOSING minus 120, with
+    //     a red line underneath blaming a purchase bill he never missed.
+    if (where === 'all' || onWholeFirm) {
       raw = raw.filter((r) => r.reason !== 'transfer_in' && r.reason !== 'transfer_out');
     }
 

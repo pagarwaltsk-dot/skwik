@@ -198,7 +198,10 @@ export default function LedgerScreen({ route, navigation }) {
       const cut = periodRows(from, to);
       const html = ledgerHtml({ org, party,
         rows: cut.rows, opening: cut.opening,
-        openingType: cut.openingType, balance: cut.closing });
+        openingType: cut.openingType, balance: cut.closing,
+        // so the page can say what it covers, and call the figure it opens
+        // with by its right name
+        from, to });
       const { uri } = await Print.printToFileAsync({ html });
       if (!(await Sharing.isAvailableAsync())) {
         return Alert.alert('Nothing to share with',

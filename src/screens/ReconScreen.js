@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator, Modal, Linking,
 } from 'react-native';
@@ -9,6 +9,7 @@ import { useApp } from '../AppContext';
 import { fmt0, today } from '../lib/money';
 import { readPickedFile } from '../lib/pickfile';
 import { parse2b, reconcile, bySupplier } from '../lib/gstr2b';
+import { useFocusEffect } from '@react-navigation/native';
 import { sayPlainly } from '../lib/offline';
 import { Bar, BackButton, Screen, Sections, Swipe, useSectionSwipe } from '../components/Chrome';
 import { C, S } from '../theme';
@@ -49,6 +50,91 @@ export default function ReconScreen({ navigation }) {
   const swipe = useSectionSwipe(navigation, org, isOwner, 'recon');
   const [busy, setBusy]   = useState('');
   const [back, setBack]   = useState(3);
+  // THE MONTHS SKWIK ALREADY HOLDS, and which of them he wants compared.
+  const [kept, setKept]   = useState([]);
+  const [use, setUse]     = useState({});
+
+  const monthOf = (p) => {                       // the portal writes MMYYYY
+    const t = String(p || '').trim();
+    return /^\d{6}$/.test(t) ? `${t.slice(2)}-${t.slice(0, 2)}` : t.slice(0, 7);
+  };
+  const monthName = (m) => `${MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
+
+  // ONE ROAD, whether the months came off the shelf or out of a file he just
+  // opened. Two roads would drift apart, and one of them would be the one
+  // nobody tested.
+  const run = async (portal, months, oldest, newest) => {
+    // THE WINDOW FOLLOWS THE MONTHS, and reaches back before them.
+    //
+    // Reaching back is what catches a supplier who files late: a July bill in
+    // September's file. Reaching FORWARD past the newest month was simply
+    // wrong -- in October, every October bill was being held up against a
+    // September 2B that could not possibly contain it, and reported unfiled.
+    const from = oldest
+      ? firstOf(new Date(Number(oldest.slice(0, 4)),
+                         Number(oldest.slice(5, 7)) - 1 - (back - 1), 1))
+      : firstOf(new Date(new Date().getFullYear(),
+                         new Date().getMonth() - (back - 1), 1));
+    // The last day of the newest month, built as text. toISOString answers in
+    // UTC, which until half past five in the morning in India is still the day
+    // before -- so a window ending "30 September" would have ended on the 29th
+    // for anyone opening the app early.
+    const upto = newest
+      ? `${newest}-${String(new Date(Number(newest.slice(0, 4)),
+                                     Number(newest.slice(5, 7)), 0).getDate())
+                      .padStart(2, '0')}`
+      : today();
+    // Paged: a busy shop can easily pass 1,000 purchase bills across the
+    // months this looks at, and the ones past that were silently missing from
+    // the reconciliation -- which reads as the supplier not having filed them.
+    const data = await allRows(() => supabase.from('vouchers')
+      .select('id, vtype, vdate, voucher_no, supplier_invoice_no, supplier_invoice_date,'
+            + ' taxable, cgst, sgst, igst, total, printed_name, parties(name, gstin)')
+      .in('vtype', ['purchase', 'purchase_return'])
+      // A CANCELLED PURCHASE IS NOT A PURCHASE. These came through with the
+      // rest, found nothing to match against, and were reported under "at risk
+      // -- your supplier has not filed it".
+      .is('cancelled_at', null)
+      .gte('vdate', from).lte('vdate', upto)
+      .order('vdate').order('id'));
+
+    setPeriod(months.map(monthName).join(', '));
+    setRes(reconcile({ purchases: data || [], portal, periods: months }));
+  };
+
+  // COMPARING WITHOUT OPENING A FILE AT ALL.
+  //
+  // Everything he has ever given Skwik is already here. Next month he brings
+  // in one file; the twelve before it are ticked and waiting.
+  const compareKept = async () => {
+    const want = kept.filter((k) => use[k.period]).map((k) => k.period).sort();
+    if (!want.length) {
+      return Alert.alert('Pick a month', 'Tick at least one month to compare against.');
+    }
+    setBusy('reading');
+    try {
+      const { data, error } = await supabase.from('itc_files')
+        .select('period, rows').in('period', want).order('period');
+      if (error) throw error;
+      const portal = (data || []).flatMap((f) => f.rows || []);
+      await run(portal, want, want[0], want[want.length - 1]);
+    } catch (e) {
+      Alert.alert('Could not compare', sayPlainly(e));
+    } finally { setBusy(''); }
+  };
+
+  const loadKept = async () => {
+    const { data, error } = await supabase.rpc('my_2b_months');
+    if (error) return;                           // an older database: no shelf
+    const list = data || [];
+    setKept(list);
+    setUse((u) => {
+      const next = { ...u };
+      list.forEach((k) => { if (next[k.period] === undefined) next[k.period] = true; });
+      return next;
+    });
+  };
+  useFocusEffect(useCallback(() => { loadKept(); }, []));
   const [res, setRes]     = useState(null);
   const [period, setPeriod] = useState('');
   const [open, setOpen]   = useState(null);     // the supplier being looked at
@@ -58,38 +144,54 @@ export default function ReconScreen({ navigation }) {
   const pick = async () => {
     setBusy('reading');
     try {
-      const r = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: false, type: '*/*' });
+      // AS MANY MONTHS AS HE HAS.
+      //
+      // His own question, and it is the right one: "what if I upload the 2B of
+      // the remaining 2 months also?" He could not -- this took one file and
+      // threw the rest away -- and that single file was then compared against
+      // three months of his purchase register, so two months of perfectly
+      // filed bills came out as "your supplier has not filed it".
+      //
+      // Three files, three months, every bill judged against the month it
+      // belongs to. The reading below is one file at a time so that a bad file
+      // among good ones says which one it was.
+      const r = await DocumentPicker.getDocumentAsync(
+        { copyToCacheDirectory: false, type: '*/*', multiple: true });
       if (r.canceled) return;
-      const uri = r.assets?.[0]?.uri;
-      if (!uri) return Alert.alert('Could not open that', 'No file came back.');
+      const picked = (r.assets || []).filter((a) => a?.uri);
+      if (!picked.length) return Alert.alert('Could not open that', 'No file came back.');
 
-      const text = await readPickedFile(uri);
-      const file = parse2b(text);
-      if (file.problem) return Alert.alert('Could not read that file', file.problem);
+      // each file kept whole, because each one is one return period and it is
+      // put away under that month
+      const files = [];
+      for (const a of picked) {
+        const one = parse2b(await readPickedFile(a.uri));
+        if (one.problem) {
+          return Alert.alert(picked.length > 1 ? `Could not read ${a.name || 'one of those files'}`
+                                               : 'Could not read that file', one.problem);
+        }
+        files.push({ name: a.name || null, rows: one.rows, period: one.period || '' });
+      }
+      const rows = files.flatMap((f) => f.rows);
+      const periods = files.map((f) => f.period).filter(Boolean);
+      // AND SKWIK KEEPS THEM, so next month he brings in one file and not
+      // thirteen. A GSTR-2B is final once the portal has made it, so a month
+      // put away here is true for ever.
+      for (const one of files.filter((f) => f.period)) {
+        const { error: ke } = await supabase.rpc('keep_2b',
+          { p_period: monthOf(one.period), p_rows: one.rows, p_name: one.name });
+        // an older database has no shelf to put it on; the comparison below
+        // still runs on what he just opened
+        if (ke && !/does not exist/i.test(ke.message || '')) {
+          Alert.alert('Compared, but not kept',
+            `The comparison below is right. ${sayPlainly(ke)}`);
+          break;
+        }
+      }
+      await loadKept();
 
-      // the books, wide enough to catch late filing on either side
-      const from = firstOf(new Date(new Date().getFullYear(),
-                                    new Date().getMonth() - (back - 1), 1));
-      // Paged: a busy shop can easily pass 1,000 purchase bills across the
-      // months this looks at, and the ones past that were silently missing
-      // from the reconciliation — which reads as the supplier not having
-      // filed them.
-      const data = await allRows(() => supabase.from('vouchers')
-        .select('id, vtype, vdate, voucher_no, supplier_invoice_no, supplier_invoice_date,'
-              + ' taxable, cgst, sgst, igst, total, printed_name, parties(name, gstin)')
-        .in('vtype', ['purchase', 'purchase_return'])
-        // A CANCELLED PURCHASE IS NOT A PURCHASE.
-        // These came through with the rest, found nothing to match against,
-        // and were reported under "at risk — your supplier has not filed it",
-        // inflating the figure and putting the supplier in the chase message.
-        .is('cancelled_at', null)
-        .gte('vdate', from).lte('vdate', today())
-        .order('vdate').order('id'));
-
-      setPeriod(file.period
-        ? `${MONTHS[Number(file.period.slice(0, 2)) - 1]} ${file.period.slice(2)}`
-        : '');
-      setRes(reconcile({ purchases: data || [], portal: file.rows }));
+      const cov = periods.map(monthOf).filter(Boolean).sort();
+      await run(rows, cov, cov[0] || null, cov[cov.length - 1] || null);
     } catch (e) {
       Alert.alert('Could not read that file', sayPlainly(e));
     } finally { setBusy(''); }
@@ -109,6 +211,15 @@ export default function ReconScreen({ navigation }) {
   };
 
   const s = res?.summary;
+  // which months those un-checked bills are from, so the page can name them
+  const missingMonths = useMemo(() => {
+    const seen = [];
+    (res?.booksUnseen || []).forEach((b) => {
+      const m = String(b.docDate || '').slice(0, 7);
+      if (m && seen.indexOf(m) < 0) seen.push(m);
+    });
+    return seen.sort().map((m) => `${MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`);
+  }, [res]);
 
   const Tile = ({ label, value, note, tone }) => (
     <View style={{ flex: 1, padding: 12, borderRadius: 12, borderWidth: 1,
@@ -186,8 +297,63 @@ export default function ReconScreen({ navigation }) {
               wider than one month catches both.
             </Text>
 
-            <TouchableOpacity style={[S.btn, { marginTop: 18 }]} onPress={pick} disabled={!!busy}>
-              <Text style={S.btnText}>{busy ? 'Reading…' : 'Open the 2B file'}</Text>
+            <Text style={{ fontSize: 12.5, color: C.ink, marginTop: 14, lineHeight: 18 }}>
+              You can pick more than one month at once. A bill is only called
+              “not filed” if you have brought in the 2B for the month it belongs
+              to — so three months of bills want three months of files.
+            </Text>
+
+            {/* WHAT SKWIK ALREADY HOLDS.
+                A GSTR-2B never changes once the portal has made it, so a month
+                brought in here is true for ever and never wants opening again.
+                Next month is one file; the ones before it are already ticked. */}
+            {kept.length > 0 && (
+              <View style={{ marginTop: 18, borderWidth: 1, borderColor: C.line,
+                             borderRadius: 12, padding: 12 }}>
+                <Text style={[S.label, { marginBottom: 2 }]}>
+                  MONTHS SKWIK ALREADY HAS
+                </Text>
+                <Text style={{ fontSize: 11.5, color: C.muted, marginBottom: 8, lineHeight: 16 }}>
+                  Tick the ones to compare against. You never have to open these
+                  files again.
+                </Text>
+                {kept.map((k) => {
+                  const on = !!use[k.period];
+                  return (
+                    <TouchableOpacity key={k.period}
+                      onPress={() => setUse((u) => ({ ...u, [k.period]: !u[k.period] }))}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      style={[S.row, { gap: 10, paddingVertical: 8 }]}>
+                      <View style={{ width: 19, height: 19, borderRadius: 6, borderWidth: 1.5,
+                                     alignItems: 'center', justifyContent: 'center',
+                                     borderColor: on ? C.accent : C.greyB,
+                                     backgroundColor: on ? C.accent : 'transparent' }}>
+                        {on && <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800' }}>✓</Text>}
+                      </View>
+                      <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: C.ink }}>
+                        {monthName(k.period)}
+                      </Text>
+                      <Text style={{ fontSize: 11.5, color: C.muted }}>
+                        {fmt0(k.docs)} bills · ₹{fmt0(k.tax)}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+                <TouchableOpacity style={[S.btn, { marginTop: 10 }]}
+                  onPress={compareKept} disabled={!!busy}>
+                  <Text style={S.btnText}>
+                    {busy ? 'Comparing…'
+                      : `Compare these ${fmt0(kept.filter((k) => use[k.period]).length)} month(s)`}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <Text style={[S.label, { marginTop: 18 }]}>
+              {kept.length ? 'OR BRING IN A NEW MONTH' : 'BRING IN THE FILE'}
+            </Text>
+            <TouchableOpacity style={[S.btn, { marginTop: 8 }]} onPress={pick} disabled={!!busy}>
+              <Text style={S.btnText}>{busy ? 'Reading…' : 'Open the 2B file(s)'}</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -207,6 +373,28 @@ export default function ReconScreen({ navigation }) {
                     note={`${s.different} matched with a query`} />
             </View>
 
+            {/* THE MONTHS HE HAS NOT BROUGHT IN, NAMED — because the answer to
+                these bills is another file, not a telephone call to a supplier
+                who has done nothing wrong. */}
+            {s.unseen > 0 && (
+              <View style={{ marginBottom: 12, padding: 12, borderRadius: 12,
+                             backgroundColor: C.flagSoft, borderWidth: 1,
+                             borderColor: C.flagLine }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.flagInk }}>
+                  {fmt0(s.unseen)} bill{s.unseen === 1 ? '' : 's'} not checked
+                  {' \u00B7 '}\u20B9{fmt0(s.unseenTax)} of credit
+                </Text>
+                <Text style={{ fontSize: 12, color: C.flagInk, marginTop: 4, lineHeight: 17 }}>
+                  {missingMonths.length
+                    ? `These are dated ${missingMonths.join(', ')}, and you have not brought `
+                      + 'in the 2B for those months. They are NOT at risk — nothing has been '
+                      + 'compared. Bring those files in and they will be checked too.'
+                    : 'These are dated in months whose 2B you have not brought in, so nothing '
+                      + 'has been compared for them. They are not at risk.'}
+                </Text>
+              </View>
+            )}
+
             {(s.timing > 0 || s.noGstinTax > 0 || res.dupes.length > 0) && (
               <View style={[S.card, { marginBottom: 12 }]}>
                 {s.timing > 0 && (
@@ -223,11 +411,35 @@ export default function ReconScreen({ navigation }) {
                   </Text>
                 )}
                 {res.dupes.length > 0 && (
-                  <Text style={{ fontSize: 12.5, color: C.edit, lineHeight: 18, marginTop: 6,
-                                 fontWeight: '700' }}>
-                    {res.dupes.length} bill number{res.dupes.length === 1 ? '' : 's'} appear
-                    more than once — the same purchase may be entered twice.
-                  </Text>
+                  <View style={{ marginTop: 6 }}>
+                    <Text style={{ fontSize: 12.5, color: C.edit, lineHeight: 18,
+                                   fontWeight: '700' }}>
+                      {res.dupes.length} bill number{res.dupes.length === 1 ? '' : 's'} appear
+                      more than once — the same purchase may be entered twice.
+                    </Text>
+                    {/* AND WHICH ONES. A count sends him hunting through a
+                        year of purchases; the number and the date send him
+                        straight there. Only his own side can be opened — a
+                        repeat on the portal's side is the supplier's to fix. */}
+                    {res.dupes.map((d, i) => (
+                      <View key={i} style={{ marginTop: 8 }}>
+                        <Text style={{ fontSize: 12, color: C.muted }}>
+                          {d.docs[0]?.party || 'A supplier'} · {d.docs[0]?.docNo || '—'}
+                          {d.src === 'books' ? '' : '  (on the portal, not your books)'}
+                        </Text>
+                        {d.src === 'books' && d.docs.map((x, j) => (
+                          <TouchableOpacity key={j} disabled={!x.id}
+                            onPress={() => navigation.navigate('Bill', { voucherId: x.id })}
+                            style={[S.row, { paddingVertical: 7 }]}>
+                            <Text style={{ flex: 1, fontSize: 13, color: x.id ? C.accent : C.muted,
+                                           fontWeight: '600' }}>
+                              {x.docDate} · ₹{fmt0(x.tax)}{x.id ? '  — open it ›' : ''}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    ))}
+                  </View>
                 )}
               </View>
             )}
@@ -368,8 +580,33 @@ export default function ReconScreen({ navigation }) {
                       Enter these as purchases and the credit is yours.
                     </Text>
                     {open.rows.filter((r) => r.field === 'onlyPortal').map((r, i) => (
-                      <Row key={i} k={`${r.row.docNo || '—'} · ${r.row.docDate}`}
-                           v={`₹${fmt0(r.row.tax)}`} />
+                      // TAPPING ONE OPENS THE PURCHASE, ALREADY HEADED.
+                      //
+                      // This was a list to read and then go and act on somewhere
+                      // else, which is how a bill nobody entered stays not
+                      // entered until the audit. Supplier, number and date come
+                      // across; the goods are his to type, because the portal
+                      // never knew what was on the bill.
+                      <TouchableOpacity key={i}
+                        onPress={() => { setOpen(null); navigation.navigate('Bill', {
+                          vtype: 'purchase',
+                          from2b: { gstin: open.ctin, party: open.name,
+                                    docNo: r.row.docNo, docDate: r.row.docDate } }); }}
+                        style={[S.row, { paddingVertical: 10, borderBottomWidth: 1,
+                                         borderBottomColor: C.line }]}>
+                        <View style={{ flex: 1, paddingRight: 10 }}>
+                          <Text style={{ fontSize: 13.5, fontWeight: '600', color: C.ink }}>
+                            {r.row.docNo || '—'} · {r.row.docDate}
+                          </Text>
+                          <Text style={{ fontSize: 11.5, color: C.accent, marginTop: 2,
+                                         fontWeight: '700' }}>
+                            Enter this purchase ›
+                          </Text>
+                        </View>
+                        <Text style={[S.num, { fontSize: 14, fontWeight: '700', color: C.ink }]}>
+                          ₹{fmt0(r.row.tax)}
+                        </Text>
+                      </TouchableOpacity>
                     ))}
                   </View>
                 )}

@@ -121,30 +121,58 @@ function mkDoc(o) {
 
 /* ---------------- reading the portal's file ---------------- */
 
+// A GSTR-2B AND A GSTR-2A DO NOT NAME THE SAME FIGURE THE SAME WAY.
+//
+// This read the 2A's names and only those, so every tax on a real GSTR-2B came
+// out as nought. Nothing obvious broke: the bills still PAIRED, by number, and
+// then every single pair was reported as disagreeing because his book said
+// 12,600 and the portal said nothing. On his own five months that was
+//
+//     SAFE TO CLAIM      0        NOT IN YOUR BOOKS      0
+//     AT RISK       14,618        NEEDS A LOOK   14,32,580 across 240 bills
+//
+// -- a screen full of discrepancies with no discrepancy in it. Both of the
+// noughts are sums of the PORTAL side, which is what gave it away.
+//
+//   what           2B says      2A says
+//   the taxes      igst         iamt
+//                  cgst         camt
+//                  sgst         samt
+//                  cess         csamt
+//   the date       dt           idt
+//   a note number  ntnum        nt_num
+//
+// Both are read now, either way round, so a file from either report works.
+// A field that is not there adds nothing, so reading both cannot double it.
+const IG = (y) => num(y.igst) + num(y.iamt);
+const CG = (y) => num(y.cgst) + num(y.camt);
+const SG = (y) => num(y.sgst) + num(y.samt);
+const CS = (y) => num(y.cess) + num(y.csamt);
+
 const invOf = (ctin, trdnm, inv, docType, section, extra = {}) => {
   const itms = inv.items || inv.itms || [];
   let taxable = 0, cgst = 0, sgst = 0, igst = 0, cess = 0;
   for (const it of itms) {
     const x = it.itm_det || it;
     taxable = n2(taxable + num(x.txval));
-    cgst = n2(cgst + num(x.camt)); sgst = n2(sgst + num(x.samt));
-    igst = n2(igst + num(x.iamt)); cess = n2(cess + num(x.csamt));
+    cgst = n2(cgst + CG(x)); sgst = n2(sgst + SG(x));
+    igst = n2(igst + IG(x)); cess = n2(cess + CS(x));
   }
   if (!itms.length) {
-    taxable = num(inv.txval); cgst = num(inv.camt);
-    sgst = num(inv.samt); igst = num(inv.iamt); cess = num(inv.csamt);
+    taxable = num(inv.txval); cgst = CG(inv);
+    sgst = SG(inv); igst = IG(inv); cess = CS(inv);
   }
   return mkDoc({
     src: '2b', gstin: ctin, party: trdnm || inv.trdnm,
     docType, section,
-    docNo: inv.inum || inv.nt_num || inv.doc_num,
-    docDate: inv.idt || inv.nt_dt || inv.doc_dt,
-    bookDate: inv.idt || inv.nt_dt,
+    docNo: inv.inum || inv.ntnum || inv.nt_num || inv.docnum || inv.doc_num || inv.benum,
+    docDate: inv.dt || inv.idt || inv.ntdt || inv.nt_dt || inv.docdt || inv.doc_dt || inv.bedt,
+    bookDate: inv.dt || inv.idt || inv.ntdt || inv.nt_dt,
     taxable, cgst, sgst, igst, cess, value: num(inv.val),
     itc: s(inv.itcavl || 'Y').toUpperCase(),
     rsn: inv.rsn,
-    rcm: s(inv.rev).toUpperCase() === 'Y',
-    filed: inv.fldtr1 || inv.fldt,
+    rcm: s(inv.rev || inv.rchrg).toUpperCase() === 'Y',
+    filed: extra.filedOn || inv.fldtr1 || inv.fldt,
     ...extra,
   });
 };
@@ -164,8 +192,11 @@ export function parse2b(text) {
   const eatInv = (list, section, amend) => {
     for (const sup of list || []) {
       for (const inv of sup.inv || []) {
+        // WHEN THE SUPPLIER FILED IT. A 2B puts this once against the supplier
+        // (supfildt), not on every invoice, so reading only the invoice left it
+        // blank on every row of a real file.
         out.push(invOf(sup.ctin, sup.trdnm, inv, 'INV', section,
-          { amend, origNo: inv.oinum }));
+          { amend, origNo: inv.oinum || inv.oinvnum, filedOn: sup.supfildt }));
       }
     }
   };
@@ -174,7 +205,8 @@ export function parse2b(text) {
       for (const nt of sup.nt || []) {
         const t = s(nt.ntty).toUpperCase() === 'D' ? 'DN' : 'CN';
         out.push(invOf(sup.ctin, sup.trdnm, nt, t, 'B2B',
-          { amend, origNo: nt.ont_num }));
+          // the amended note's original number, either spelling
+          { amend, origNo: nt.ontnum || nt.ont_num, filedOn: sup.supfildt }));
       }
     }
   };
@@ -222,7 +254,14 @@ export const fromBooks = (v) => mkDoc({
 
 /* ---------------- the matching ---------------- */
 
-export function reconcile({ purchases = [], portal = [] }) {
+export function reconcile({ purchases = [], portal = [], periods = [] }) {
+  // the months the uploaded files cover, as YYYY-MM. parse2b hands back the
+  // portal's own MMYYYY, which is turned round here.
+  const months = new Set((periods || []).map((p) => {
+    const t = String(p || '').trim();
+    if (/^\d{6}$/.test(t)) return `${t.slice(2)}-${t.slice(0, 2)}`;   // MMYYYY
+    return t.slice(0, 7);                                            // YYYY-MM
+  }).filter(Boolean));
   const books = purchases
     .filter((v) => v.vtype === 'purchase' || v.vtype === 'purchase_return')
     .map(fromBooks);
@@ -370,7 +409,32 @@ export function reconcile({ purchases = [], portal = [] }) {
     p.blockedReason = p.blocked ? (p.t.rsn || '') : '';
   });
 
-  const booksOnly    = L.filter((b) => !b._m);
+  // A BILL IS ONLY JUDGED AGAINST A MONTH THAT WAS ACTUALLY UPLOADED.
+  //
+  // The books are read wider than one 2B on purpose: a supplier who files late
+  // turns up in a later month's file, and that catching works. But what is
+  // left over afterwards was ALL being called "your supplier has not filed
+  // it" -- including July and August bills, filed perfectly on time, in July's
+  // and August's own 2B, which this run never had in front of it.
+  //
+  // Measured on three months of a small shop: five bills reported unfiled and
+  // 39,600 at risk, where the truth was one bill and 7,200. The figure was
+  // five and a half times over, and the reminder button offered to send four
+  // suppliers a list of bills they had filed on time.
+  //
+  // So: `periods` is the months whose 2B files are actually in hand. An
+  // unmatched bill dated in one of them was genuinely not filed. An unmatched
+  // bill from any other month is not evidence of anything -- it is a month
+  // that was not looked at -- and it comes back separately so the screen can
+  // ask for that file instead of blaming the supplier.
+  //
+  // Given no periods at all, every bill is judged, which is how this behaved
+  // before and is right when the caller has said nothing.
+  const inScope = (d) => !months.size || months.has(String(d.period || '').slice(0, 7))
+                      || months.has(String(d.docDate || '').slice(0, 7));
+  const unmatched    = L.filter((b) => !b._m);
+  const booksOnly    = unmatched.filter(inScope);
+  const booksUnseen  = unmatched.filter((b) => !inScope(b));
   const twoLeft      = R.filter((t) => !t._m);
   const twoBlocked   = twoLeft.filter((t) => t.itc === 'N');
   const twoOnly      = twoLeft.filter((t) => t.itc !== 'N');
@@ -393,7 +457,8 @@ export function reconcile({ purchases = [], portal = [] }) {
   const queried = pairs.filter((p) => p.cls !== 'EXACT');
 
   return {
-    pairs, matched, queried, booksOnly, twoOnly, twoBlocked,
+    pairs, matched, queried, booksOnly, booksUnseen, twoOnly, twoBlocked,
+    months: [...months].sort(),
     blockedPairs: pairs.filter((x) => x.blocked),
     noGstin, other, rcm, dupes,
     summary: {
@@ -402,6 +467,9 @@ export function reconcile({ purchases = [], portal = [] }) {
       matched: matched.length,
       different: queried.length,
       onlyBooks: booksOnly.length,
+      // bills from a month whose 2B is not in hand: not at risk, not checked
+      unseen: booksUnseen.length,
+      unseenTax: n2(booksUnseen.reduce((a, d) => a + d.sign * num(d.tax), 0)),
       onlyPortal: twoOnly.length,
       timing: pairs.filter((p) => p.timing).length,
 
