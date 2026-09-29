@@ -459,6 +459,76 @@ function readBill(block, v, vtype, leds) {
     if (/\br\.?\s*charge\b|reverse\s*charge|\brcm\b/i.test(o.name)) rcm = true;
   }
 
+  // A TALLY KEPT WITHOUT INVENTORY STILL HAS BILLS ON IT.
+  //
+  // Plenty of shops run Tally in accounts-only mode -- the voucher carries the
+  // party, the purchase ledger and the taxes, and not one inventory entry.
+  // Read here, `lines` came out empty, so the goods were nought and the whole
+  // value of the bill fell through to `charge`:
+  //
+  //     taxable        0
+  //     charge  16,322.22        <- the entire bill, filed as "Charges"
+  //     total   19,260.22        <- right, and the only thing that was
+  //
+  // The bill added up, so nothing complained. But it had no body: no line to
+  // read, no HSN, nothing for GSTR-1 to summarise, and a taxable value of
+  // nought -- which is the figure GSTR-3B and the profit report both take.
+  //
+  // With no inventory on the voucher, the purchase or sales ledger IS the
+  // goods; there is nothing else it could be. So each such leg becomes a line
+  // of its own, named after the ledger. Where the masters are in hand the
+  // ledger's GROUP says which legs those are; without them, everything left
+  // after the party, the taxes, the round off and the freight is goods, for
+  // the same reason.
+  //
+  // Guarded on there being no inventory at all, so a bill with stock on it
+  // reads exactly as it did.
+  if (!lines.length && others.length) {
+    const rate = (name) => {
+      const m = String(name).match(/(\d+(?:\.\d+)?)\s*%/);
+      return m ? Number(m[1]) : 0;
+    };
+    // THE MASTERS DECIDE IT WHERE THEY CAN, AND NEVER LEAVE THE BILL EMPTY.
+    //
+    // A ledger filed under Purchase Accounts or Sales Accounts is goods and
+    // there is no argument. Where the file names those, godown rent and the
+    // like stay charges, as they should. But a shop may group its purchase
+    // ledger somewhere Skwik does not recognise, and refusing every
+    // unrecognised leg would put the bill back to having no body at all --
+    // which is the fault being fixed. So the strong answer is taken when
+    // there is one, and otherwise every leg that is not definitely something
+    // else becomes the goods.
+    const roleOf = (o) => (leds && leds[String(o.name).toLowerCase()] || {}).role;
+    const strong = others.filter((o) => {
+      const r = roleOf(o);
+      return r === 'purchase' || r === 'sales';
+    });
+    const body = strong.length ? strong : others.filter((o) => {
+      const r = roleOf(o);
+      return !r || r === 'other';
+    });
+    if (body.length) {
+      // whatever tax the named rates cannot account for belongs to the rest
+      const taxAll = cgst + sgst + igst;
+      const known = body.reduce((s, o) => s + (o.amount * rate(o.name)) / 100, 0);
+      const bare = body.filter((o) => !rate(o.name));
+      const bareSum = bare.reduce((s, o) => s + o.amount, 0);
+      let spare = 0;
+      if (bareSum > 0.5 && taxAll - known > 0.5) {
+        const asked = ((taxAll - known) / bareSum) * 100;
+        spare = [0.1, 0.25, 1, 1.5, 3, 5, 6, 12, 18, 28]
+          .find((r) => Math.abs(r - asked) < 0.2) || 0;
+      }
+      for (const o of body) {
+        lines.push({ item_name: o.name, qty: 1, unit: '', rate: round2(o.amount),
+                     amount: round2(o.amount), gst_rate: rate(o.name) || spare,
+                     from_ledger: true });
+      }
+      const gone = new Set(body);
+      for (let i = others.length - 1; i >= 0; i--) if (gone.has(others[i])) others.splice(i, 1);
+    }
+  }
+
   const goods = lines.reduce((t, l) => t + (l.amount || l.qty * l.rate), 0);
   // EVERY charge on the bill, whether it rode on a stock item or stood on its
   // own as a ledger. Counting only the first is what lost the insurance.
