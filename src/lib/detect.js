@@ -506,7 +506,19 @@ export function detect(text, opts = {}) {
     add(p.b, 'rate', w, `${p.hit} rows where ${lbl(header, p.a)} x this = ${lbl(header, p.c)}`);
     add(p.c, 'amount', w, `${p.hit} rows where ${lbl(header, p.a)} x ${lbl(header, p.b)} = this`);
   }
+  // A COLUMN THAT MULTIPLIES IS NOT THE THING BEING TAXED.
+  //
+  // Tax over base landing on a real GST rate is strong evidence -- until the
+  // base is the unit RATE and the quantity happens to be the same on every
+  // row, when 90 over 500 is 18% by accident and the rate column is declared
+  // the taxable value. The multiplication is the older and better proof, so
+  // whatever it has already named as a quantity or a rate is not offered as
+  // a base here.
+  const multiplies = new Set();
+  for (const p of ev.product) { multiplies.add(p.a); multiplies.add(p.b); }
+
   for (const r of ev.rate) {
+    if (multiplies.has(r.base)) continue;
     const w = 3 + Math.min(r.hit / 20, 3);
     add(r.tax, 'cgst', w * 0.4, `${r.hit} rows where this over ${lbl(header, r.base)} is a GST rate`);
     add(r.tax, 'sgst', w * 0.4, null);
@@ -575,7 +587,7 @@ export function detect(text, opts = {}) {
   }
 
   return {
-    kind, record, header, rows: body.length,
+    kind, record, header, body, rows: body.length,
     cleanRows: ev.clean, droppedRows: ev.dropped,
     columns: picks,
     evidence: ev,
@@ -599,3 +611,116 @@ export function report(d) {
   }
   return out;
 }
+
+/* ---------------- 7. AND NOW TAKE THE DATA OUT ---------------- */
+
+// KNOWING WHICH COLUMN IS WHICH IS NOT THE JOB. HANDING OVER THE BILLS IS.
+//
+// Everything above works out what the file means. This turns that into
+// records in one shape, whatever shape the file arrived in -- which is the
+// whole point of the machine. What comes out here is not Skwik's shape and
+// not Tally's; it is the plain shape any of them can be fed from:
+//
+//   { bills: [ { no, date, dueDate, party, gstin, godown, narration,
+//                lines: [ { item, uom, qty, rate, amount, gstRate, hsn } ],
+//                taxable, cgst, sgst, igst, cess, total } ],
+//     ledgers: [ { party, opening, debit, credit, closing } ] }
+//
+// AND IT CHECKS ITSELF. Every bill's pieces are added up against what the
+// file says the bill came to, and the share that agree is handed back. That
+// figure is the honest answer to "did this work" -- not the column names, not
+// the confidence, the arithmetic afterwards.
+
+const pick = (cols, role) => {
+  const c = cols.find((x) => x.role === role);
+  return c ? c.i : -1;
+};
+
+export function extract(d) {
+  if (d.problem) return { problem: d.problem, bills: [], ledgers: [] };
+  const cols = d.columns;
+  const at = {};
+  for (const r of ['bill_no', 'date', 'due_date', 'party', 'gstin', 'item', 'uom', 'qty',
+                   'rate', 'amount', 'discount', 'taxable', 'gst_rate', 'cgst', 'sgst',
+                   'igst', 'cess', 'total', 'hsn', 'godown', 'narration',
+                   'opening', 'closing', 'debit', 'credit']) at[r] = pick(cols, r);
+
+  const body = d.body || [];
+  const cell = (row, i) => (i < 0 ? '' : s(row[i]));
+  const n = (row, i) => (i < 0 ? null : toNum(row[i]));
+
+  // ---- a ledger file has openings and closings and no bill on it ----
+  if (at.bill_no < 0 && (at.opening >= 0 || at.closing >= 0) && at.party >= 0) {
+    const ledgers = body.map((r) => ({
+      party: cell(r, at.party),
+      opening: n(r, at.opening), debit: n(r, at.debit),
+      credit: n(r, at.credit), closing: n(r, at.closing),
+    })).filter((x) => x.party);
+    // opening + debit - credit = closing, where the file gives all four
+    let hit = 0, seen = 0;
+    for (const l of ledgers) {
+      if (l.opening == null || l.closing == null) continue;
+      seen++;
+      const made = l.opening + (l.debit || 0) - (l.credit || 0);
+      if (Math.abs(made - l.closing) <= Math.max(0.05, Math.abs(l.closing) * 0.005)) hit++;
+    }
+    return { kind: 'ledgers', bills: [], ledgers,
+             closes: seen ? hit / seen : null, checked: seen, agreed: hit, problem: null };
+  }
+
+  // ---- otherwise it is bills, one row per line or one row per bill ----
+  const groups = new Map();
+  const order = [];
+  body.forEach((r, ix) => {
+    const no = cell(r, at.bill_no);
+    const key = no ? `${no}|${cell(r, at.date)}` : `row-${ix}`;
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(r);
+  });
+
+  const bills = order.map((k) => {
+    const rs = groups.get(k);
+    const h = rs[0];
+    const lines = rs.map((r) => ({
+      item: cell(r, at.item), uom: cell(r, at.uom),
+      qty: n(r, at.qty), rate: n(r, at.rate),
+      amount: n(r, at.amount) != null ? n(r, at.amount)
+        : (n(r, at.qty) != null && n(r, at.rate) != null ? n(r, at.qty) * n(r, at.rate) : null),
+      gstRate: n(r, at.gst_rate), hsn: cell(r, at.hsn),
+      discount: n(r, at.discount),
+    })).filter((l) => l.item || l.qty != null || l.amount != null);
+
+    const sum = (i) => (i < 0 ? null
+      : rs.reduce((t, r) => (n(r, i) == null ? t : t + n(r, i)), 0));
+    const lineSum = lines.reduce((t, l) => t + (l.amount || 0), 0);
+
+    return {
+      no: cell(h, at.bill_no), date: toDate(cell(h, at.date)) || cell(h, at.date),
+      dueDate: toDate(cell(h, at.due_date)) || '',
+      party: cell(h, at.party), gstin: s(cell(h, at.gstin)).toUpperCase(),
+      godown: cell(h, at.godown), narration: cell(h, at.narration),
+      lines,
+      taxable: at.taxable >= 0 ? sum(at.taxable) : round2(lineSum),
+      cgst: sum(at.cgst), sgst: sum(at.sgst), igst: sum(at.igst), cess: sum(at.cess),
+      // the file's own figure where it has one, and only then the pieces
+      total: at.total >= 0 ? n(h, at.total) : null,
+      rows: rs.length,
+    };
+  });
+
+  // ---- THE CHECK. Does each bill add up to what the file says it came to? --
+  let hit = 0, seen = 0;
+  for (const b of bills) {
+    if (b.total == null) continue;
+    seen++;
+    const made = (b.taxable || 0) + (b.cgst || 0) + (b.sgst || 0)
+               + (b.igst || 0) + (b.cess || 0);
+    if (Math.abs(made - b.total) <= Math.max(0.05, Math.abs(b.total) * 0.005)) hit++;
+    else b.doesNotAddUp = round2(made - b.total);
+  }
+
+  return { kind: 'bills', bills, ledgers: [],
+           closes: seen ? hit / seen : null, checked: seen, agreed: hit, problem: null };
+}
+
+const round2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
