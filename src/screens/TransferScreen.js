@@ -12,7 +12,7 @@ import { saveBook, bookLoader, sayWhatWentOut, sayWhatCameBack, totalOf } from '
 import { supabase, allRows as pageAll } from '../lib/supabase';
 import { sayPlainly } from '../lib/offline';
 import { useApp } from '../AppContext';
-import { fmt0, showDate, today } from '../lib/money';
+import { fmt, fmt0, showDate, today } from '../lib/money';
 import { vouchersFromTallyXml, checkBook } from '../lib/tallybook';
 import { loadBook, planLoad } from '../lib/tallyload';
 import {
@@ -1015,6 +1015,12 @@ export default function TransferScreen({ navigation }) {
   //
   // The chosen list is still remembered on the firm, but quietly: reloading
   // the firm row here re-rendered the whole screen for nothing.
+  // THE ITEMS THAT CAME WITH A RATE, for the card that shows him a few of them
+  // before he saves. It follows the list he has picked, because ready.rows is
+  // re-priced every time he picks one.
+  const priced = (ready?.what === 'items' ? (ready.rows || []) : [])
+    .filter((r) => Number(r.sale_price) > 0);
+
   const useLevel = (level, which = 1) => {
     if (!ready) return;
     setReady((r) => {
@@ -1596,6 +1602,51 @@ export default function TransferScreen({ navigation }) {
                                  borderWidth: 1.5, borderColor: C.line, backgroundColor: C.surface }}>
                     <Text style={{ fontSize: 14, fontWeight: '800', color: C.ink }}>
                       Names: {fmt0(ready.planP.updated)} updated · {fmt0(ready.planP.added)} added
+                    </Text>
+                  </View>
+                )}
+
+                {/* AND THE RATES THEMSELVES, BEFORE ANYTHING IS SAVED.
+                    "in price list you probably added the GST of that product,
+                    and again while billing GST is added below, so price gets
+                    inflated" — and it was not double tax at all: his item was
+                    carrying 106 from a bill months old while Tally was billing
+                    110 off a list dated 20 April 2026. Nothing on this sheet
+                    showed him a single rupee figure before he saved, so the
+                    only place he could find out was a bill.
+                    Four rates, spelled out, is the whole fix. */}
+                {showsItems && priced.length > 0 && (
+                  <View style={{ marginTop: 14, padding: 12, borderRadius: 12,
+                                 borderWidth: 1, borderColor: C.line,
+                                 backgroundColor: C.surface }}>
+                    <Text style={{ fontSize: 12.5, fontWeight: '700', color: C.ink }}>
+                      The rates this will write
+                    </Text>
+                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
+                      {ready.level
+                        ? `off your \u201C${ready.level}\u201D list`
+                        : 'the newest rate Tally holds for each item'}
+                      {'  \u00B7  '}{fmt0(priced.length)} of {fmt0(ready.rows.length)} have one
+                    </Text>
+                    {priced.slice(0, 4).map((r) => (
+                      <View key={r.name} style={[S.row, { marginTop: 7, alignItems: 'flex-end' }]}>
+                        <Text numberOfLines={1}
+                          style={{ flex: 1, fontSize: 12.5, color: C.ink, paddingRight: 8 }}>
+                          {r.name}
+                        </Text>
+                        <Text style={{ fontSize: 13, fontWeight: '800', color: C.ink }}>
+                          {'\u20B9'}{fmt(r.sale_price)}
+                          <Text style={{ fontSize: 11, fontWeight: '600', color: C.muted }}>
+                            {r.unit ? ` / ${r.unit}` : ''}
+                          </Text>
+                        </Text>
+                      </View>
+                    ))}
+                    <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 9, lineHeight: 16 }}>
+                      These are rates BEFORE GST — a bill adds the tax on top of
+                      them. Check one against a Tally bill for the same item: if
+                      the figure here already has GST inside it, every bill will
+                      charge it twice.
                     </Text>
                   </View>
                 )}
