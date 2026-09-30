@@ -653,6 +653,22 @@ $('write').onclick = async () => {
       + `${n(out.payments)} money entries, ${n(out.items)} items and ${n(out.parties)} names`
       + (out.already ? `, and ${n(out.already)} that were already in your books` : '')
       + (out.mended ? `. ${n(out.mended)} name(s) filled in from the file` : '') + '.'
+      // RECEIPTS STILL WAITING TO BE TOLD WHICH BANK.
+      //
+      // Filling that in is tidying, not the import, so a request that never
+      // arrived no longer throws the whole run away. But it has to be SAID:
+      // a receipt marked bank with no bank behind it is in no bank book, and
+      // that is what 1.10.39 found 8,20,400 of on his own books. Dragging the
+      // same file on again fills them, because it only ever fills a blank.
+      + (out.noBank
+          ? ` <strong>${n(out.noBank)} receipt(s) still have to be told which bank they `
+            + 'went through</strong> — the line dropped on that one step. Drag the same '
+            + 'file on again and it will fill them in; nothing will be written twice.'
+          : '')
+      + (out.datesFailed
+          ? ` ${n(out.datesFailed)} supplier bill date(s) were not put right — drag the `
+            + 'same file on again.'
+          : '')
       // A BILL LEFT OUT ON PURPOSE MUST STILL BE IN FRONT OF HIM AFTERWARDS,
       // or it is a bill quietly missing from his books.
       + (left.length ? `<br><strong>Left out, enter these by hand:</strong> `
