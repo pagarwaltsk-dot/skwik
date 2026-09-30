@@ -113,6 +113,30 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
   // The estimate test came first, so a shop billing on estimates printed its
   // credit notes with the word "Estimate" at the top of them.
   const isNote = voucher.vtype === 'sale_return' || voucher.vtype === 'purchase_return';
+
+  // A PURCHASE IS NOT YOUR DOCUMENT.
+  //
+  // The header printed the shop's own voucher number and THE DAY THE BILL WAS
+  // ENTERED, on every kind of voucher alike. On a sale that is right: the
+  // invoice, its number and its date are all his. On a purchase it is not --
+  // the paper in his hand was written by the supplier, on the supplier's date,
+  // under the supplier's number, and printing his own entry date on top of it
+  // makes it a different bill from the one being matched.
+  //
+  // It matters more than it looks. Goods arrive in September against a bill
+  // written in August; the GSTR-2B turns on August. A printed copy saying
+  // September is a copy of a bill that does not exist.
+  //
+  // So on a purchase the supplier's number and date are printed, and the day
+  // it was entered is shown underneath, named for what it is.
+  const bought  = voucher.vtype === 'purchase' || voucher.vtype === 'purchase_return';
+  const theirNo = bought ? (voucher.supplier_invoice_no || voucher.voucher_no || '')
+                         : (voucher.voucher_no || '');
+  const theirDt = bought ? (voucher.supplier_invoice_date || voucher.vdate) : voucher.vdate;
+  const entered = bought && voucher.supplier_invoice_date
+               && String(voucher.supplier_invoice_date).slice(0, 10)
+                    !== String(voucher.vdate).slice(0, 10)
+                ? voucher.vdate : '';
   const title = voucher.vtype === 'sale_return'     ? 'Credit Note'
     : voucher.vtype === 'purchase_return' ? 'Debit Note'
     : est ? 'Estimate'
@@ -305,10 +329,12 @@ export function invoiceHtml({ org, voucher, party, lines, copy }) {
             ? `<div>State Name: ${esc(org.state_name)}, Code: ${esc(org.state_code || '')}</div>` : ''}
           ${org.phone ? `<div>Phone: ${esc(org.phone)}</div>` : ''}
         </td>
-        <td style="width:22%"><span class="k">${est ? 'Estimate No.' : 'Invoice No.'}</span>
-          <div class="v">${esc(voucher.voucher_no || '')}</div></td>
+        <td style="width:22%"><span class="k">${est ? 'Estimate No.'
+            : bought ? 'Supplier\u2019s Bill No.' : 'Invoice No.'}</span>
+          <div class="v">${esc(theirNo)}</div></td>
         <td style="width:22%;border-right:0"><span class="k">Dated</span>
-          <div class="v">${dmy(voucher.vdate)}</div></td>
+          <div class="v">${dmy(theirDt)}</div>
+          ${entered ? `<div style="font-size:9px;color:#555">Entered ${dmy(entered)}</div>` : ''}</td>
       </tr>
       <tr>
         <td><span class="k">Mode/Terms of Payment</span>

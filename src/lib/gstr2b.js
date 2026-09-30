@@ -299,8 +299,15 @@ export function reconcile({ purchases = [], portal = [], periods = [],
     if (/^\d{6}$/.test(t)) return `${t.slice(2)}-${t.slice(0, 2)}`;   // MMYYYY
     return t.slice(0, 7);                                            // YYYY-MM
   }).filter(Boolean));
+  // A CANCELLED DEBIT NOTE IS NOT A DOCUMENT ANY MORE.
+  //
+  // Before 1.10.41 a debit note was deleted outright when it was cancelled, so
+  // there was never one of these to skip. It is cancelled and kept now, so that
+  // its number stays unbroken -- which means this has to say so, or a debit note
+  // he cancelled would go on being matched against the portal for ever.
   const books = purchases
-    .filter((v) => v.vtype === 'purchase' || v.vtype === 'purchase_return')
+    .filter((v) => (v.vtype === 'purchase' || v.vtype === 'purchase_return')
+                && !v.cancelled_at)
     .map(fromBooks);
   const two = portal.map((p) => (p.src ? p : mkDoc({ ...p, src: '2b' })));
 

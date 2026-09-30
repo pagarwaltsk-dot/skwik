@@ -70,14 +70,49 @@ export const FROM_PARENT = {
   // skipped, because Skwik had no entry for it: cash in hand only ever went up
   // and a bank balance never rose from a deposit. It has one now.
   'contra':         { kind: 'cashmove' },
-  // A journal is whatever an accountant needed it to be. Importing one blind
-  // would put a figure somewhere it does not belong.
-  'journal':        { kind: 'skip', why: 'a general journal entry' },
+  // A JOURNAL IS WHATEVER AN ACCOUNTANT NEEDED IT TO BE -- WHICH IS NOT A
+  // REASON TO THROW ALL OF THEM AWAY.
+  //
+  // Every journal used to be refused, because a general journal can put a
+  // figure anywhere and importing one blind would put it somewhere wrong.
+  // The cost of that caution showed up on a real book: four suppliers with a
+  // balance in Tally and NOTHING AT ALL in Skwik, and 45,874.86 missing from
+  // the cash. A CA posts his adjustments as journals, so every shop with an
+  // accountant loses whatever he did.
+  //
+  // So a journal is read and then judged by its own legs. Two of them, one a
+  // party and one the till or a bank, IS a receipt or a payment however it
+  // was typed, and comes in as one. Anything else is still refused -- but by
+  // name, with its date, its amount and both its ledgers, so what is missing
+  // can be seen rather than counted.
+  'journal':        { kind: 'journal' },
   'delivery note':  { kind: 'skip', why: 'goods sent, not a bill' },
   'receipt note':   { kind: 'skip', why: 'goods received, not a bill' },
   'sales order':    { kind: 'skip', why: 'an order, not a bill' },
   'purchase order': { kind: 'skip', why: 'an order, not a bill' },
   'physical stock': { kind: 'count' },
+
+  // THE REST OF TALLY'S OWN TWENTY-FOUR, NAMED.
+  //
+  // These used to fall through to "a <whatever> Skwik has no place for",
+  // which is true and useless: it does not say whether something was lost.
+  // Each one now says what it is and why it is right to leave it, so the
+  // passed-over list can be read rather than worried about.
+  //
+  // Two of them MUST be left. A memorandum and a reversing journal are not
+  // in Tally's books either -- Tally itself keeps them out of the trial
+  // balance -- so importing one would put a figure in his books that is not
+  // in his accountant's.
+  'memorandum':       { kind: 'skip', why: 'a memo Tally itself keeps out of the books' },
+  'reversing journal':{ kind: 'skip', why: 'a reversing journal, which is not in the books until its date' },
+  'rejections in':    { kind: 'skip', why: 'goods a customer sent back, with no bill against them' },
+  'rejections out':   { kind: 'skip', why: 'goods returned to a supplier, with no bill against them' },
+  'material in':      { kind: 'skip', why: 'job work material received' },
+  'material out':     { kind: 'skip', why: 'job work material issued' },
+  'job work in order':  { kind: 'skip', why: 'an order for job work, not a bill' },
+  'job work out order': { kind: 'skip', why: 'an order for job work, not a bill' },
+  'payroll':          { kind: 'skip', why: 'a payroll voucher' },
+  'attendance':       { kind: 'skip', why: 'an attendance record, not money' },
 };
 
 // The tax ledgers, known by what they are rather than by what they are named,
@@ -328,6 +363,7 @@ function readVoucher(block, types, leds) {
   if (!map) return { ...v, kind: 'skip', why: `a ${typeName || 'voucher'} Skwik has no place for` };
   if (map.kind === 'skip') return { ...v, kind: 'skip', why: map.why };
 
+  if (map.kind === 'journal')  return readJournal(block, v, leds);
   if (map.kind === 'transfer') return readTransfer(block, v);
   if (map.kind === 'cashmove') return readCashMove(block, v, leds);
   if (map.kind === 'payment')  return readPayment(block, v, map.ptype, leds);
@@ -371,7 +407,7 @@ function readBill(block, v, vtype, leds) {
   // the bill these sit on. See the note under roundSign.
   let roundRaw = 0, taxRaw = 0, partyRaw = 0;
   const others = [];
-  for (const b of blocksOf(block, 'LEDGERENTRIES.LIST')) {
+  for (const b of legsOf(block)) {
     const name = top(b, 'LEDGERNAME');
     const amt = numOf(top(b, 'AMOUNT'));
     if (!name) continue;
@@ -604,7 +640,7 @@ function readBill(block, v, vtype, leds) {
 // one filed under Cash-in-hand or a Bank group" -- cannot tell them apart on
 // its own. The GROUP does: one is cash, the other is a bank.
 function readCashMove(block, v, leds) {
-  const legs = blocksOf(block, 'ALLLEDGERENTRIES.LIST').map((b) => ({
+  const legs = legsOf(block).map((b) => ({
     name: top(b, 'LEDGERNAME'),
     raw: numOf(top(b, 'AMOUNT')),
   })).filter((l) => l.name && l.raw);
@@ -656,7 +692,7 @@ function readCashMove(block, v, leds) {
 }
 
 function readPayment(block, v, ptype, leds) {
-  const legs = blocksOf(block, 'ALLLEDGERENTRIES.LIST').map((b) => ({
+  const legs = legsOf(block).map((b) => ({
     name: top(b, 'LEDGERNAME'),
     amt: Math.abs(numOf(top(b, 'AMOUNT'))),
   })).filter((l) => l.name);
@@ -701,14 +737,108 @@ function readPayment(block, v, ptype, leds) {
   };
 }
 
+// A JOURNAL, JUDGED BY ITS OWN LEGS.
+//
+// Three shapes turn up, and only one of them is a puzzle:
+//
+//   a party and the till or a bank ... a receipt or a payment, typed as a
+//                                      journal. Read as what it is.
+//   two parties ...................... one man's balance moved to another.
+//                                      Skwik has no entry for that yet, so
+//                                      it is named and left.
+//   anything else .................... an accountant's adjustment between
+//                                      ledgers Skwik does not keep. Named
+//                                      and left.
+//
+// Named means named: the date, the amount, and both ledgers, so he can see
+// the four suppliers he is missing instead of a count of things skipped.
+function readJournal(block, v, leds) {
+  const legs = legsOf(block).map((b) => ({
+    name: top(b, 'LEDGERNAME'),
+    raw: numOf(top(b, 'AMOUNT')),
+    amt: Math.abs(numOf(top(b, 'AMOUNT'))),
+  })).filter((l) => l.name && l.amt);
+
+  const roleOf = (n) => ((leds && leds[String(n).toLowerCase()]) || {}).role || '';
+  const said = () => legs.map((l) => `${l.name} ${round2(l.amt)}`).join(', ');
+
+  if (legs.length < 2) {
+    return { ...v, kind: 'skip',
+      why: `a journal with only one side \u2014 ${said()}` };
+  }
+
+  // TWO LEGS, ONE OF THEM THE TILL OR A BANK, IS A RECEIPT OR A PAYMENT
+  // however it was typed. Anything else -- three legs, five, all of them
+  // ledgers -- is a journal, and Skwik has one of those now, so the count of
+  // legs stops being a reason to refuse it. The only shape still refused is
+  // one that cannot be a voucher at all.
+  const money = legs.length === 2 ? legs.find((l) => isMoney(roleOf(l.name))) : null;
+  const other = money ? legs.find((l) => l !== money) : null;
+
+  if (money && other) {
+    const partyRole = roleOf(other.name);
+    // Money INTO the till or the bank is a receipt; out of it, a payment.
+    // Tally writes the debited leg negative, and a receipt debits the bank.
+    const ptype = money.raw < 0 ? 'receipt' : 'payment';
+    return { ...v, kind: 'payment', ptype,
+      party: other.name, amount: round2(other.amt),
+      account: money.name, mode: roleOf(money.name) === 'cash' ? 'cash' : 'bank',
+      party_role: partyRole, from_journal: true };
+  }
+
+  // EVERY OTHER JOURNAL IS STILL A JOURNAL, and Skwik has somewhere to put
+  // one now. Each leg says where it lands and which way it goes: Tally writes
+  // a debit as a NEGATIVE amount, Skwik's journal writes a debit positive, so
+  // the sign turns over here and nowhere else.
+  return { ...v, kind: 'journal',
+    legs: legs.map((l) => ({
+      name: l.name,
+      role: roleOf(l.name),
+      group: ((leds && leds[String(l.name).toLowerCase()]) || {}).parent || '',
+      amount: round2(-l.raw),
+    })),
+    said: said() };
+}
+
+// Tally's group, in the words a report can add up. A journal has to put every
+// leg somewhere, and "other" is an honest answer where the group is one Skwik
+// does not recognise -- better than filing a director's loan under expenses.
+export const roleForJournal = (group) => {
+  const g = String(group || '');
+  if (/duties\s*&?\s*(amp;)?\s*taxes/i.test(g)) return 'tax';
+  if (/sales\s*account|direct\s*income|indirect\s*income/i.test(g)) return 'income';
+  if (/purchase\s*account|direct\s*exp|indirect\s*exp/i.test(g)) return 'expense';
+  if (/capital|reserves|retained/i.test(g)) return 'capital';
+  if (/loan|liabilit|provision|payable/i.test(g)) return 'liability';
+  if (/asset|deposit|investment|stock-?in-?hand|receivable/i.test(g)) return 'asset';
+  return 'other';
+};
+
 // GOODS MOVED, AND NOTHING ELSE.
 //
 // The in-list and the out-list each carry their own store, and the header
 // names the destination. Tally writes the in-leg's amounts negative; the
 // direction is taken from which list a line came out of, never from the sign.
 function readTransfer(block, v) {
-  const inn = blocksOf(block, 'INVENTORYENTRIESIN.LIST').map(lineOf).filter((l) => l.item_name);
-  const out = blocksOf(block, 'INVENTORYENTRIESOUT.LIST').map(lineOf).filter((l) => l.item_name);
+  // I GOT THIS WRONG AND IT IS WORTH SAYING SO.
+  //
+  // A bench fixture of mine spelled the tag INVENTRYENTRIESIN.LIST -- no O --
+  // the fixture failed, and I "fixed" the reader to match my own typo and
+  // wrote a confident comment saying Tally misspells its own tag. It does
+  // not. His real day book was then counted: INVENTORYENTRIESIN with the O,
+  // 57 occurrences; without the O, none. Tally's own TDL reference names the
+  // collections "Inventory Entries In" and "Inventory Entries Out", and a
+  // community import template uses the O spelling too.
+  //
+  // The correct spelling is asked for first. The other is still accepted,
+  // because accepting a spelling that never turns up costs nothing and this
+  // is the second tag tonight where Tally has used two names for one thing.
+  const both = (a, b) => {
+    const x = blocksOf(block, a);
+    return (x.length ? x : blocksOf(block, b)).map(lineOf).filter((l) => l.item_name);
+  };
+  const inn = both('INVENTORYENTRIESIN.LIST', 'INVENTRYENTRIESIN.LIST');
+  const out = both('INVENTORYENTRIESOUT.LIST', 'INVENTRYENTRIESOUT.LIST');
   const dest = tagTop(block, 'DESTINATIONGODOWN');
   return {
     ...v, kind: 'transfer',
@@ -757,6 +887,25 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // "New Purchase" means nothing until the masters in the same file say its
 // parent is Purchase. A file with vouchers and no voucher-type masters falls
 // back to the name, which is right for a shop that never renamed anything.
+// TALLY SPELLS THE SAME THING TWO WAYS, AND THE READER ONLY KNEW ONE EACH.
+//
+// A voucher's ledger legs come out as LEDGERENTRIES.LIST or as
+// ALLLEDGERENTRIES.LIST depending on the version and the report they were
+// exported from. The bill reader looked for the first, the cash and payment
+// readers for the second -- so a file written the other way round gave bills
+// with no party and contras that "move money between two bank accounts".
+//
+// Found by running the reader over twenty made-up shapes rather than over his
+// file, which happens to use the spelling each reader expected. Nothing in
+// two weeks of his own data could have shown this.
+const legsOf = (block) => {
+  const a = blocksOf(block, 'ALLLEDGERENTRIES.LIST');
+  const b = blocksOf(block, 'LEDGERENTRIES.LIST');
+  // LEDGERENTRIES.LIST is a substring of the other, so a file carrying only
+  // the long spelling would otherwise be read twice over
+  return a.length ? a : b;
+};
+
 export function voucherTypesIn(xml) {
   const out = {};
   for (const b of blocksOf(xml, 'VOUCHERTYPE')) {
@@ -773,7 +922,7 @@ export function vouchersFromTallyXml(xml) {
   const all = blocksOf(xml, 'VOUCHER').map((b) => readVoucher(b, types, leds));
 
   const book = { vouchers: [], payments: [], transfers: [], counts: [],
-                 cashMoves: [], skipped: [] };
+                 cashMoves: [], journals: [], skipped: [] };
   for (const v of all) {
     if (v.kind === 'skip')          book.skipped.push(v);
     else if (v.cancelled)           book.skipped.push({ ...v, why: 'cancelled in Tally' });
@@ -783,6 +932,7 @@ export function vouchersFromTallyXml(xml) {
     else if (v.kind === 'transfer') book.transfers.push(v);
     else if (v.kind === 'cashmove') book.cashMoves.push(v);
     else if (v.kind === 'count')    book.counts.push(v);
+    else if (v.kind === 'journal')  book.journals.push(v);
   }
   return book;
 }
@@ -859,6 +1009,12 @@ export function checkBook(book, { items = [], parties = [], godowns = [] } = {})
     v.lines.forEach((l) => { lookItem(l.item_name); lookGodown(l.godown); });
   }
   book.payments.forEach((p) => lookParty(p.party));
+  // A NAME THAT APPEARS ONLY ON A JOURNAL IS STILL ONE OF HIS PEOPLE.
+  // Four of his suppliers are exactly that, and they had no balance in Skwik
+  // at all because nothing ever looked at a journal for a name.
+  (book.journals || []).forEach((j) => (j.legs || []).forEach((l) => {
+    if (l.role === 'customer' || l.role === 'supplier') lookParty(l.name);
+  }));
   book.transfers.forEach((t) => {
     lookGodown(t.from); lookGodown(t.to);
     t.lines.forEach((l) => { lookItem(l.item_name); lookGodown(l.from); lookGodown(l.to); });

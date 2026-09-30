@@ -32,6 +32,7 @@
 
 import { guessUqc } from './uqc.js';
 import { STATES, codeForState } from './states.js';
+import { roleForJournal } from './tallybook.js';
 
 /* ============== WHERE A NAME IS, AND WHETHER HE IS REGISTERED ==============
  *
@@ -585,7 +586,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
   const made = { godowns: 0, parties: 0, items: 0, bills: 0, already: 0, payments: 0,
                  transfers: 0, accounts: 0, banked: 0, opened: 0, openedAccounts: 0,
-                 dates: 0, run };
+                 dates: 0, journals: 0, journalsSkipped: 0, run };
   // purchases already in his books whose supplier bill number and date this
   // file can put right -- see the note where they are collected
   const putRight = [];
@@ -740,6 +741,91 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
 
   /* ---- the bills ---- */
+  //
+  // FIFTY AT A TIME, NOT ONE.
+  //
+  // This asked the server to write one bill, waited, then asked for the next.
+  // On his own file that is 2,254 questions, and a question and its answer on
+  // a shop's line is about a fifth of a second before the server has done
+  // anything -- so seven or eight minutes of the import was the ASKING, not
+  // the work. A wholesaler with fifty thousand bills would have waited over
+  // three hours and put the phone down long before the end.
+  //
+  // save_vouchers takes a block of them and calls the very same save_voucher
+  // on each one inside, so every rule still applies to every bill on its own:
+  // the bill-number check, the stock, the bill's own receipt for a cash sale,
+  // and the Tally id that stops a second import doubling his books. A bill the
+  // server refuses comes back as its own refusal with its own message, and the
+  // other forty-nine still go in.
+  //
+  // A DATABASE THAT HAS NOT HAD 1.10.40 YET has no save_vouchers, and the
+  // import must still work on it -- so the first block that comes back with
+  // "does not exist" drops back to one bill at a time for the whole run.
+  const BLOCK = 50;
+  let blockWise = true;
+  let pending = [];
+
+  // what to do with one answer, whichever way it was asked for
+  const took = (v, data) => {
+    if (data && data.already) {
+      made.already += 1;
+      // THE ONE THING WORTH CHANGING ON A BILL ALREADY WRITTEN.
+      //
+      // save_voucher recognises Tally's GUID and writes a voucher once, which
+      // is what stops a file imported twice from doubling his books. But
+      // every purchase imported before 1.10.26 carries the day it was ENTERED
+      // as the supplier's bill date, because the reader never looked at
+      // REFERENCEDATE -- and the whole GSTR-2B comparison turns on that date.
+      //
+      // The alternative was to undo the import and run it again: hundreds of
+      // bills, receipts and payments taken out and put back, to correct two
+      // columns that no figure in his books depends on. So they are corrected
+      // where they stand instead, on the way past. Collected here and sent in
+      // one go below, because one round trip per bill is a long wait on a
+      // shop's phone.
+      if (v.vtype === 'purchase' && data.id && (v.sup_no || v.sup_date)) {
+        putRight.push({ id: data.id, no: v.sup_no || null, date: v.sup_date || null });
+      }
+    } else made.bills += 1;
+    step(`bill ${v.no}`);
+  };
+
+  // one bill on its own, which is what an older database gets
+  const sendOne = async ({ v, payload }) => {
+    const { data, error } = await supabase.rpc('save_voucher', { p: payload });
+    if (error) fail(`could not write ${v.tally_type} ${v.no} of ${v.vdate}`, error);
+    took(v, data);
+  };
+
+  const flush = async () => {
+    if (!pending.length) return;
+    const block = pending;
+    pending = [];
+    if (blockWise) {
+      const { data, error } = await supabase.rpc('save_vouchers',
+        { p: block.map((b) => b.payload) });
+      if (error && /does not exist|PGRST202|404/i.test(error.message || '')) {
+        // an older database: from here on, one at a time
+        blockWise = false;
+      } else if (error) {
+        fail('could not write the bills', error);
+      } else {
+        const answers = Array.isArray(data) ? data : [];
+        for (let k = 0; k < block.length; k++) {
+          const a = answers[k];
+          const { v } = block[k];
+          if (!a || a.ok === false) {
+            fail(`could not write ${v.tally_type} ${v.no} of ${v.vdate}`,
+                 { message: a?.why || 'the server said nothing about this bill' });
+          }
+          took(v, a);
+        }
+        return;
+      }
+    }
+    for (const b of block) await sendOne(b);
+  };
+
   for (const v of book.vouchers) {
     const lines = v.lines.map((l) => {
       const rate = Number(l.rate) || 0;
@@ -831,30 +917,10 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       lines,
     };
 
-    const { data, error } = await supabase.rpc('save_voucher', { p: { ...payload, import_run: run } });
-    if (error) fail(`could not write ${v.tally_type} ${v.no} of ${v.vdate}`, error);
-    if (data && data.already) {
-      made.already += 1;
-      // THE ONE THING WORTH CHANGING ON A BILL ALREADY WRITTEN.
-      //
-      // save_voucher recognises Tally's GUID and writes a voucher once, which
-      // is what stops a file imported twice from doubling his books. But
-      // every purchase imported before 1.10.26 carries the day it was ENTERED
-      // as the supplier's bill date, because the reader never looked at
-      // REFERENCEDATE -- and the whole GSTR-2B comparison turns on that date.
-      //
-      // The alternative was to undo the import and run it again: hundreds of
-      // bills, receipts and payments taken out and put back, to correct two
-      // columns that no figure in his books depends on. So they are corrected
-      // where they stand instead, on the way past. Collected here and sent in
-      // one go below, because one round trip per bill is a long wait on a
-      // shop's phone.
-      if (v.vtype === 'purchase' && data.id && (v.sup_no || v.sup_date)) {
-        putRight.push({ id: data.id, no: v.sup_no || null, date: v.sup_date || null });
-      }
-    } else made.bills += 1;
-    step(`bill ${v.no}`);
+    pending.push({ v, payload: { ...payload, import_run: run } });
+    if (pending.length >= BLOCK) await flush();
   }
+  await flush();
 
   // and in blocks, so a year of purchases is a handful of calls
   for (let i = 0; i < putRight.length; i += 200) {
@@ -901,11 +967,26 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     // is what makes a second import a no-op -- but it also means the three and
     // a half thousand receipts already imported would keep their blank account
     // for ever. Only a BLANK is filled; an account he has set himself stands.
-    const mend = block.filter((x) => x.account_id && x.mode === 'bank');
-    for (const x of mend) {
-      const { error: e2 } = await supabase.from('payments')
-        .update({ account_id: x.account_id }).eq('id', x.id).is('account_id', null);
-      if (e2) fail('could not say which bank a receipt went through', e2);
+    //
+    // AND IN ONE CALL, NOT ONE PER RECEIPT. On his own file this was about
+    // fourteen hundred round trips to fill in a column, which on a shop's line
+    // is nearly five minutes of nothing but asking. fill_payment_account does
+    // the same thing -- and makes the same promise, that only a BLANK is
+    // filled -- for a whole block at once.
+    const mend = block.filter((x) => x.account_id && x.mode === 'bank')
+      .map((x) => ({ id: x.id, account_id: x.account_id }));
+    if (mend.length) {
+      const { error: e2 } = await supabase.rpc('fill_payment_account', { p: mend });
+      if (e2 && /does not exist|PGRST202|404/i.test(e2.message || '')) {
+        // a database without 1.10.40: one at a time, the way it used to be
+        for (const x of mend) {
+          const { error: e3 } = await supabase.from('payments')
+            .update({ account_id: x.account_id }).eq('id', x.id).is('account_id', null);
+          if (e3) fail('could not say which bank a receipt went through', e3);
+        }
+      } else if (e2) {
+        fail('could not say which bank a receipt went through', e2);
+      }
     }
     made.payments += block.length;
     block.forEach((p) => step(`${p.ptype} of ${p.pdate}`));
@@ -929,6 +1010,44 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     if (error) fail(`could not move the goods of ${t.vdate}`, error);
     made.transfers += 1;
     step(`transfer of ${t.vdate}`);
+  }
+
+  /* ---- and the journals, which used to be thrown away ---- */
+  //
+  // Every one of them was refused, on the reasoning that a general journal
+  // can put a figure anywhere. On his own book that cost four suppliers'
+  // whole balances, a transporter out by 19,500 and 45,874.86 of cash. Skwik
+  // has a journal of its own now, so each leg lands where it belongs: a
+  // party against his ledger, the till, a bank, or a ledger made on the spot
+  // and named after the file it came out of.
+  for (const j of book.journals || []) {
+    const legs = (j.legs || []).map((l) => {
+      const base = { amount: l.amount, note: l.name };
+      if (l.role === 'cash') return { ...base, cash: true };
+      if (l.role === 'bank') return { ...base, account: l.name };
+      if (l.role === 'customer' || l.role === 'supplier') {
+        // only if he really is one of his people by now; otherwise the leg
+        // still lands, as a ledger of his own name, rather than being lost
+        return idOf(parties, l.name)
+          ? { ...base, party: l.name }
+          : { ...base, ledger: l.name, group: l.group, role: roleForJournal(l.group) };
+      }
+      return { ...base, ledger: l.name, group: l.group, role: roleForJournal(l.group) };
+    });
+    const { data, error } = await supabase.rpc('save_journal', {
+      p: { id: idFor(j.ref || `journal|${j.no}|${j.vdate}|${j.said || ''}`, `journal|${org.id}`),
+           date: j.vdate, no: j.no || null, narration: j.narration || null,
+           legs, import_run: run },
+    });
+    // AN OLDER DATABASE HAS NO JOURNAL TO WRITE TO, and the rest of the
+    // import is sound without it -- so it is counted as passed over rather
+    // than stopping a year of bills.
+    if (error) {
+      if (/does not exist/i.test(error.message || '')) { made.journalsSkipped += 1; continue; }
+      fail(`could not write the journal of ${j.vdate}`, error);
+    }
+    if (data && data.already) made.already += 1; else made.journals += 1;
+    step(`journal of ${j.vdate}`);
   }
 
   /* ---- the opening stock, into the store it is actually in ---- */

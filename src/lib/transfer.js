@@ -1158,11 +1158,26 @@ export const partiesToCsv = (parties) => csv(
                       p.state_code || '', p.address || '', p.opening_balance ?? '',
                       p.opening_type === 'you_owe' ? 'you' : 'them']));
 
+// A CANCELLED BILL HAS TO SAY SO ON THE ACCOUNTANT'S COPY.
+//
+// This is the file that goes to his CA, and a cancelled bill came out of it
+// looking exactly like a live one -- same taxable value, same tax, same total,
+// no column anywhere to say otherwise. Every report inside Skwik asks whether a
+// bill was cancelled before counting it; this did not, and it is the one place
+// the figures leave the app and get added up by somebody else.
+//
+// 1.10.41 puts a cancelled bill at nil in the database as well, so these
+// columns now read zero -- but the column stays, because a row of zeroes with
+// no explanation is its own kind of puzzle, and because the CA needs to see
+// that the number was issued and voided rather than skipped.
 export const billsToCsv = (vouchers) => csv(
-  ['Date', 'Number', 'Kind', 'Name', 'GSTIN', 'Taxable', 'CGST', 'SGST', 'IGST', 'Extra', 'Round off', 'Total'],
+  ['Date', 'Number', 'Kind', 'Name', 'GSTIN', 'Taxable', 'CGST', 'SGST', 'IGST',
+   'Extra', 'Round off', 'Total', 'Cancelled', 'Why'],
   vouchers.map((v) => [v.vdate, v.voucher_no || '', v.vtype,
                        v.parties?.name || v.printed_name || '', v.parties?.gstin || '',
-                       v.taxable, v.cgst, v.sgst, v.igst, v.extra_amount, v.round_off, v.total]));
+                       v.taxable, v.cgst, v.sgst, v.igst, v.extra_amount, v.round_off, v.total,
+                       v.cancelled_at ? String(v.cancelled_at).slice(0, 10) : '',
+                       v.cancelled_at ? (v.cancel_reason || 'Cancelled') : '']));
 
 export const billLinesToCsv = (rows) => csv(
   ['Date', 'Number', 'Name', 'Item', 'HSN', 'Unit', 'Qty', 'Rate', 'Taxable', 'GST rate', 'CGST', 'SGST', 'IGST', 'Amount'],
