@@ -258,6 +258,25 @@ export default function MoneyScreen({ route, navigation }) {
         + 'again under Settings, or date this on a later day.');
     }
 
+    // MONEY THROUGH THE BANK HAS TO SAY WHICH BANK.
+    //
+    // This wrote account_id: null whenever no account was chosen, and a
+    // receipt with mode 'bank' and no account is in the payments table and in
+    // NO bank book -- so the firm's total is right, the bank's own page shows
+    // its opening balance with nothing underneath, and the trial balance
+    // cannot foot. On his own live book that came to 25 entries worth
+    // 8,20,400, found months later by a migration rather than by the screen
+    // that wrote them.
+    //
+    // Expenses have refused this since the day they were written. Money, which
+    // is used a hundred times more often, did not.
+    if (mode === 'bank' && !account) {
+      return Alert.alert('Which bank?',
+        'Say which bank account this went through, or mark it as Cash. Money '
+        + 'put through "bank" with no account named lands in no bank book at '
+        + 'all, and then nothing adds up.');
+    }
+
     setBusy(true);
     try {
       // EVERY CALL ON THIS SCREEN GETS A CLOCK PUT ON IT.
@@ -390,6 +409,13 @@ export default function MoneyScreen({ route, navigation }) {
     if (org?.books_locked_upto && when <= org.books_locked_upto) {
       return Alert.alert('Books are closed to that date',
         `Everything up to ${dmy(org.books_locked_upto)} is closed.`);
+    }
+    // and the same for twenty lines at once -- see the note on the single save
+    if (mode === 'bank' && !account) {
+      return Alert.alert('Which bank?',
+        'Say which bank account these went through, or mark them as Cash. Money '
+        + 'put through "bank" with no account named lands in no bank book at '
+        + 'all, and then nothing adds up.');
     }
 
     setBusy(true);
