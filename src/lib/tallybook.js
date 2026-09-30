@@ -717,12 +717,41 @@ function readPayment(block, v, ptype, leds) {
   let mode = money ? (roleOf(money.name) === 'cash' ? 'cash' : 'bank') : '';
 
   if (!money) {
-    // no masters to go on: fall back to the header, and to the old habit of
-    // reading the name — said plainly rather than pretended to be certain
-    party = v.party || (legs[0] && legs[0].name) || '';
-    const rest = legs.find((l) => l.name.toLowerCase() !== party.toLowerCase());
-    account = rest ? rest.name : '';
-    mode = /^cash$|^cash\s*in\s*hand$|^petty\s*cash$/i.test(account.trim()) ? 'cash' : 'bank';
+    // NO MASTERS TO GO ON, SO THE NAME HAS TO DECIDE.
+    //
+    // The header used to decide, and the header is wrong about as often as it
+    // is right: his own "Cash Credit Account Fedral Bank paid 16,500 via Mr
+    // Harsa Gowala" is the header naming the BANK as the party. Read that way
+    // the bank becomes a customer and the customer becomes the bank, and every
+    // figure after it is the wrong way round.
+    //
+    // When the ledger masters are there, role decides and none of this runs.
+    // When they are not, the only thing left is what the ledgers are CALLED --
+    // and a bank account in an Indian book nearly always says so: "Bank of
+    // Baroda", "HDFC Bank", "Cash Credit Account", "OD Account", "Current
+    // A/c". A person almost never does. Checked against real names from his own
+    // book: Bank Of Baroda, Cash Credit Account Fedral Bank, OD Account and
+    // Current A/c all read as money; Mr Harsa Gowala, Sri Ganesh Store, Soni
+    // Brothers and even Ramesh Bankar all read as people, because \bbank\b does
+    // not match inside a longer word.
+    //
+    // This is a guess, and it is written down as a guess. It is a better guess
+    // than the header, which was also a guess with no reason behind it. Only
+    // ONE leg naming itself as money counts -- two of them, or none, and it
+    // falls back to the header exactly as before.
+    const saysMoney = (n) => /\bbank\b|\bcash\b|cash\s*credit|\bc\s*\/?\s*c\b|\bo\s*\/?\s*d\b|overdraft|current\s*a\s*\/?\s*c/i
+      .test(String(n || ''));
+    const byName = legs.filter((l) => saysMoney(l.name));
+    if (byName.length === 1) {
+      account = byName[0].name;
+      party = (legs.find((l) => l !== byName[0]) || {}).name || v.party || '';
+    } else {
+      party = v.party || (legs[0] && legs[0].name) || '';
+      const rest = legs.find((l) => l.name.toLowerCase() !== String(party).toLowerCase());
+      account = rest ? rest.name : '';
+    }
+    mode = /^cash$|^cash\s*in\s*hand$|^petty\s*cash$|^cash\s*a\s*\/?\s*c$/i
+      .test(account.trim()) ? 'cash' : 'bank';
   }
 
   const partyLeg = legs.find((l) => l.name.toLowerCase() === String(party).toLowerCase());

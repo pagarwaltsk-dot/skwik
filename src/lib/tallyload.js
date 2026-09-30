@@ -296,6 +296,8 @@ export function planLoad(book, have = {}) {
     }
   }
 
+
+
   // Whatever the file said about each name, carried onto the ones being made
   // so they are born with it rather than mended a moment later.
   for (const [k, np] of newParties) {
@@ -389,6 +391,48 @@ export function planLoad(book, have = {}) {
         state_name: r.state_name || '',
       });
     }
+  }
+
+  // THIS HAS TO COME AFTER THE NAMES ARE FINAL. The masters' own customers
+  // and suppliers are added to newParties further up this function, so asking
+  // "is this name a person?" any earlier than here would not yet know about
+  // them -- and the whole point of the check is not to turn a person into a
+  // bank account.
+  // AND THE BANK EVERY RECEIPT AND PAYMENT ACTUALLY WENT THROUGH.
+  //
+  // This was the hole. Bank accounts were made from two places -- the bank
+  // LEDGERS in a masters file, and the accounts a contra deposit touched --
+  // and never from the receipts and payments themselves. So a day book
+  // imported without its masters named "Bank Of Baroda" on every bank receipt,
+  // no account of that name existed, and every one of them was written as
+  // mode 'bank' with no bank behind it: money that is in the payments table
+  // and in NO bank book, so the trial balance cannot foot and no bank
+  // statement will ever reconcile.
+  //
+  // Found on his own live book by 1.10.39's last check: 25 entries worth
+  // 8,20,400 sitting in no bank. Reproduced here from a 25-receipt day book
+  // with no masters: 19 entries, 2,97,000.
+  //
+  // AND NOT NAMED AFTER A PERSON. When the file carries no ledger masters the
+  // reader has to guess which leg is the money, and it can guess wrong -- the
+  // comment in readPayment is about exactly that, "Cash Credit Account Fedral
+  // Bank paid 16,500 via Mr Harsa Gowala", the two legs the wrong way round.
+  // So a name that is also a customer or a supplier in this same book is never
+  // turned into a bank account. Better to leave that one unplaced and say so
+  // than to put a man in the list of bank accounts.
+  const isAName = (k) => parties.has(k) || newParties.has(k);
+  for (const p of (book.payments || [])) {
+    if (p.mode !== 'bank') continue;
+    const k = norm(p.account);
+    if (!k || accounts.has(k) || newAccounts.has(k) || isAName(k)) continue;
+    newAccounts.set(k, { name: p.account, opening: 0 });
+  }
+  // the same for an expense paid out of a bank
+  for (const e of (book.expenses || [])) {
+    if (e.mode !== 'bank') continue;
+    const k = norm(e.account);
+    if (!k || accounts.has(k) || newAccounts.has(k) || isAName(k)) continue;
+    newAccounts.set(k, { name: e.account, opening: 0 });
   }
 
   // ---- and NOW the opening figures, once the list of items is final ----
