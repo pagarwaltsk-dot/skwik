@@ -120,8 +120,17 @@ rule('every migration is safe to paste into the Supabase editor',
     if (!f.includes('migrations/')) return [];
     const s = sql[f];
     const out = [];
-    // older files already installed are left as they are
-    if (!/1\.9\.(4[3-9]|5[0-9])/.test(f)) return [];
+    // OLDER FILES ALREADY INSTALLED ARE LEFT AS THEY ARE -- but everything
+    // from 1.9.43 on has to pass, and that means COMPARING THE VERSION, not
+    // matching its digits. This was written as /1\\.9\\.(4[3-9]|5[0-9])/ on the
+    // day 1.9.43 was the newest file there was, and it quietly stopped
+    // covering anything the moment the numbers went to 1.10 -- so every
+    // migration written since has gone unchecked, and one of them had a bare
+    // begin; in it that the editor would have cut a function in half on.
+    const v = (f.match(/(\d+)\.(\d+)\.(\d+)/) || []).slice(1).map(Number);
+    if (v.length < 3) return [];
+    const after = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+    if (after(v, [1, 9, 43]) < 0) return [];
     if (s.includes('$$')) out.push(`${f}  has an unnamed $$ block -- name it, e.g. $fn$`);
     const tx = [...s.matchAll(/^[ \t]*(begin|commit|rollback)[ \t]*;/gim)];
     if (tx.length) out.push(`${f}:${lineOf(s, tx[0].index)}  a bare ${tx[0][1]}; -- migrations must not wrap themselves`);
@@ -652,6 +661,147 @@ rule('every way the page asks the database a question is one its own client has'
     }
   }
   return [...new Set(bad)];
+})());
+
+// -------------------------------------------------------------------------
+// 28. A MIGRATION THAT WRITES DOWN THE WORDS A COLUMN MAY HOLD HAS TO NAME
+//     THE ONES THE BOOK ACTUALLY WRITES.
+//
+//     Written on the night two of these were wrong from memory and would each
+//     have broken a real thing the day they ran:
+//
+//       * a rule for cash_moves.direction naming 'in' and 'out'. The column
+//         has carried check (direction in ('deposit','withdrawal')) since
+//         1.10.6, and every bank deposit would have been refused.
+//       * a rule for payments.mode naming 'cash' and 'bank'. write_off() files
+//         its entry with mode 'writeoff', and every write-off would have been
+//         refused.
+//
+//     Both were caught by running it; neither would have been caught by
+//     reading it. So the check is mechanical, and deliberately narrow enough
+//     to be certain rather than wide enough to be noisy. Two questions only:
+//
+//       a) does an EXISTING constraint on the same column allow a word the new
+//          list leaves out?
+//       b) does any migration INSERT a word into that column that the new list
+//          leaves out?
+rule('every word list covers the words the book writes', (() => {
+  const bad = [];
+  const MIG = SQL.filter((f) => f.includes('migrations/'));
+
+  const lists = [];
+  for (const f of MIG) {
+    for (const m of sql[f].matchAll(
+      /tighten_words\s*\(\s*'([a-z_]+)'\s*,\s*'([a-z_]+)'\s*,\s*'[a-z_]+'\s*,\s*array\[([^\]]*)\]/gi)) {
+      lists.push({ file: f, table: m[1], col: m[2],
+                   ok: [...m[3].matchAll(/'([^']*)'/g)].map((x) => x[1]) });
+    }
+  }
+  if (!lists.length) return [];
+
+  // the literals at one column's position in an INSERT, respecting brackets and
+  // quotes so a function call in an earlier column does not shift the count
+  const insertedInto = (text, table, col) => {
+    const found = new Set();
+    const re = new RegExp(
+      `insert\\s+into\\s+(?:public\\.)?${table}\\s*\\(([^)]*)\\)\\s*values\\s*`, 'gi');
+    for (const m of text.matchAll(re)) {
+      const cols = m[1].split(',').map((c) => c.trim().toLowerCase());
+      const at = cols.indexOf(col);
+      if (at < 0) continue;
+      let i = m.index + m[0].length;
+      // every ( ... ) tuple after VALUES, until the statement plainly ends
+      while (text[i] === '(') {
+        let depth = 0, q = false, part = 0, cur = '';
+        for (; i < text.length; i++) {
+          const ch = text[i];
+          if (q) { cur += ch; if (ch === "'") q = false; continue; }
+          if (ch === "'") { q = true; cur += ch; continue; }
+          if (ch === '(') { depth++; if (depth === 1) continue; }
+          if (ch === ')') { depth--; if (depth === 0) { i++; break; } }
+          if (ch === ',' && depth === 1) {
+            if (part === at) { const v = cur.trim().match(/^'([^']*)'$/); if (v) found.add(v[1]); }
+            part++; cur = ''; continue;
+          }
+          cur += ch;
+        }
+        if (part === at) { const v = cur.trim().match(/^'([^']*)'$/); if (v) found.add(v[1]); }
+        while (/[\s,]/.test(text[i] || '')) i++;
+      }
+    }
+    return found;
+  };
+
+  for (const L of lists) {
+    const seen = new Set();
+    for (const f of MIG) {
+      const text = sql[f];
+      // a) A CONSTRAINT ALREADY WRITTEN DOWN FOR THE SAME COLUMN -- and for the
+      //    same TABLE. 'role' is a column on ledgers as well as on profiles,
+      //    and reading ledgers' list as profiles' would say a login may have
+      //    the role 'liability'. So only the text of a statement that names
+      //    this table is looked at.
+      const areas = [];
+      for (const m of text.matchAll(
+        new RegExp(`(?:create\\s+table[^;]*?|alter\\s+table\\s+)(?:if\\s+not\\s+exists\\s+)?`
+                 + `(?:public\\.)?${L.table}\\b`, 'gi'))) {
+        const end2 = text.indexOf(';', m.index);
+        areas.push(text.slice(m.index, end2 < 0 ? text.length : end2));
+      }
+      for (const a of areas) {
+        const re = new RegExp(`check\\s*\\(\\s*${L.col}\\s+in\\s*\\(([^)]*)\\)`, 'gi');
+        for (const m of a.matchAll(re)) {
+          for (const w of m[1].matchAll(/'([^']*)'/g)) seen.add(w[1]);
+        }
+      }
+      // b) a word some migration puts into it
+      for (const w of insertedInto(text, L.table, L.col)) seen.add(w);
+    }
+    for (const w of seen) {
+      if (!L.ok.includes(w)) {
+        bad.push(`${L.file}  ${L.table}.${L.col} is written as '${w}' somewhere in `
+          + `the book, and the word list (${L.ok.join(', ')}) leaves it out`);
+      }
+    }
+  }
+  return [...new Set(bad)];
+})());
+
+// -------------------------------------------------------------------------
+// 29. ANYTHING THAT PICKS BILLS OUT BY THEIR KIND HAS TO ASK WHETHER THEY
+//     WERE CANCELLED.
+//
+//     A cancelled bill is not a bill. Every report inside the database asks
+//     this already -- the balance sheet, the profit, GSTR-3B, both party
+//     balances, the party ledger. Two places in the app did not:
+//
+//       * billsToCsv, the file that goes to his CA, which showed a cancelled
+//         bill with its full taxable value, its tax and its total, and had no
+//         column anywhere to say otherwise. The one place the figures leave
+//         Skwik and get added up by somebody else.
+//       * gstr2b's book side, which would have gone on matching a cancelled
+//         debit note against the portal for ever once 1.10.41 started keeping
+//         them instead of deleting them.
+//
+//     So: a file that filters on a voucher kind and sums or exports money must
+//     mention cancelled_at somewhere. This does not prove it asks in the right
+//     place -- nothing textual could -- but it makes forgetting it loud.
+rule('nothing counts a bill by its kind without asking if it was cancelled', (() => {
+  const bad = [];
+  for (const f of APP) {
+    const text = src[f];
+    // A WHOLE ARRAY OF BILLS SORTED BY KIND is the shape that goes wrong. A
+    // screen holding ONE bill is not: the sheet will not open a cancelled one,
+    // the ledger's rows come from party_ledger which leaves them out, and the
+    // server refuses to save over one.
+    if (!/\.filter\(\s*\(?\s*[a-z]\w*\s*\)?\s*=>[^;]{0,200}?\bvtype\b/s.test(text)) continue;
+    if (!/cancelled_at/.test(text)) {
+      bad.push(`${f} sorts a list of bills by their kind and never mentions `
+        + 'cancelled_at -- either leave the cancelled ones out, or say in a '
+        + 'comment why they belong in what this builds');
+    }
+  }
+  return bad;
 })());
 
 // -------------------------------------------------------------------------
