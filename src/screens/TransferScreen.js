@@ -952,6 +952,19 @@ export default function TransferScreen({ navigation }) {
          out.journals && `${out.journals} journal entr${out.journals === 1 ? 'y' : 'ies'}`,
          out.journalsSkipped
            && `${out.journalsSkipped} journal(s) left out \u2014 run the latest SQL to take them`,
+         // RECEIPTS WAITING TO BE TOLD WHICH BANK THEY WENT THROUGH.
+         //
+         // Filling that column in is tidying, not the import, so a dropped
+         // request there no longer throws the whole run away -- but he has to
+         // be TOLD, or he would never know, and a receipt in no bank book is
+         // exactly what 1.10.39 found 8,20,400 of. Bringing the same file in
+         // again fills them, because it only ever fills a blank.
+         out.noBank
+           && `${out.noBank} receipt${out.noBank === 1 ? '' : 's'} still to be told which `
+              + 'bank \u2014 bring the same file in again and it will fill them',
+         out.datesFailed
+           && `${out.datesFailed} supplier bill date${out.datesFailed === 1 ? '' : 's'} not `
+              + 'put right \u2014 bring the file in again',
          out.items && `${out.items} new items`,
          out.parties && `${out.parties} new names`]
           .filter(Boolean).join('\n')
