@@ -8,7 +8,7 @@ import { File, Paths } from 'expo-file-system';
 
 import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { fmt0, today } from '../lib/money';
+import { fmt0, n2, num, today } from '../lib/money';
 import { readPickedFile } from '../lib/pickfile';
 import {
   parse2b, reconcile, chaseList, worklist, claimBy, READER, WHY_STUCK,
@@ -272,8 +272,65 @@ export default function ReconScreen({ navigation }) {
 
   const s = res?.summary;
   const ring = useMemo(() => (res ? chaseList(res) : []), [res]);
+
+  // WHY THEY ARE STUCK, IN ONE SENTENCE, BEFORE HE OPENS ANYTHING.
+  //
+  // Three of these are a reminder and one is his own ledger to fix, and the
+  // difference decides whether he picks up the telephone at all. His own
+  // report says so in the line under the heading; this said only "it is not
+  // in the government record", which is true of all three.
+  const why = useMemo(() => {
+    if (!res) return '';
+    const bag = { GSTIN: [0, 0], MONTH: [0, 0], OMITTED: [0, 0] };
+    (res.booksOnly || []).forEach((b) => {
+      const k = bag[b.why] ? b.why : 'OMITTED';
+      bag[k][0] += 1;
+      bag[k][1] += (b.sign || 1) * (Number(b.tax) || 0);
+    });
+    const bit = (k, said) => (bag[k][0]
+      ? `${bag[k][0]} ${said} — ₹${fmt0(Math.abs(bag[k][1]))}` : null);
+    const parts = [
+      bit('MONTH', 'where he has not filed that month at all, a reminder rather than a complaint'),
+      bit('OMITTED', 'he filed that month and left out'),
+      bit('GSTIN', 'from firms that appear in no return at all, which usually means a wrong '
+                 + 'GSTIN in your ledger'),
+    ].filter(Boolean);
+    return 'You have the bill and you paid the tax, but it is not in the government record.'
+      + (parts.length ? ` Of these, ${parts.join('; ')}.` : '');
+  }, [res]);
   const enter = useMemo(
     () => (res ? [...res.twoOnly].sort((a, b) => b.tax - a.tax) : []), [res]);
+
+  // LAST YEAR'S BILLS ARE NOT THIS YEAR'S WORK.
+  //
+  // A bill from a finished year is a different job: its deadline is months
+  // away rather than a year, and nothing he does this evening about this
+  // month's return touches it. Mixed into the list it is noise; named on its
+  // own it is a deadline. Split on the financial year of the newest file he
+  // has given, because that is the year he is working in.
+  const thisYear = useMemo(() => {
+    const newest = (kept[0] && kept[0].period) || today().slice(0, 7);
+    const y = Number(newest.slice(0, 4)), m = Number(newest.slice(5, 7));
+    return m >= 4 ? y : y - 1;
+  }, [kept]);
+  const fyOf = (d) => {
+    const y = Number(String(d).slice(0, 4)), m = Number(String(d).slice(5, 7));
+    return m >= 4 ? y : y - 1;
+  };
+  const split = useMemo(() => {
+    const now = [], before = [];
+    ring.forEach((g) => {
+      const a = g.bills.filter((b) => fyOf(b.docDate) >= thisYear);
+      const b = g.bills.filter((x) => fyOf(x.docDate) < thisYear);
+      const cut = (bills) => n2(bills.reduce((s, x) => s + (x.sign || 1) * num(x.tax), 0));
+      if (a.length) now.push({ ...g, bills: a, tax: cut(a) });
+      if (b.length) before.push({ ...g, bills: b, tax: cut(b) });
+    });
+    const sum = (gs) => n2(gs.reduce((s, g) => s + g.tax, 0));
+    const count = (gs) => gs.reduce((s, g) => s + g.bills.length, 0);
+    return { now, before, nowTax: sum(now), beforeTax: sum(before),
+             nowBills: count(now), beforeBills: count(before) };
+  }, [ring, thisYear]);
   const earlier = useMemo(() => {
     const seen = [];
     (res?.booksUnseen || []).forEach((b) => {
@@ -289,7 +346,12 @@ export default function ReconScreen({ navigation }) {
 
   /* ---------------- the small pieces the page is drawn from --------------- */
 
-  const Job = ({ id, title, count, note, children }) => {
+  // THE COUNT WITHOUT THE MONEY IS HALF A HEADING.
+  //
+  // "2 bills" does not tell him whether to open it. "2 bills · ₹5,040" tells him
+  // whether it is worth his evening. His own report carries the money in
+  // every heading and that is most of why it reads faster than this did.
+  const Job = ({ id, title, count, money, tone, note, children }) => {
     const on = open === id;
     return (
       <View style={[S.card, { marginBottom: 10, paddingVertical: 0 }]}>
@@ -300,7 +362,16 @@ export default function ReconScreen({ navigation }) {
               {title}
             </Text>
             <Text style={{ fontSize: 13, fontWeight: '700', color: C.muted }}>
-              {count} {count === 1 ? 'bill' : 'bills'}  {on ? '⌃' : '⌄'}
+              {count} {count === 1 ? 'bill' : 'bills'}
+              {money ? '  ·  ' : ''}
+              {money ? (
+                <Text style={[{ fontWeight: '800',
+                                color: tone === 'bad' ? C.danger
+                                     : tone === 'ok' ? '#0B5C34' : C.ink }, S.num]}>
+                  {'₹' + fmt0(money)}
+                </Text>
+              ) : null}
+              {'  '}{on ? '⌃' : '⌄'}
             </Text>
           </View>
           {!!note && (
@@ -415,10 +486,9 @@ export default function ReconScreen({ navigation }) {
               </View>
             )}
 
-            <Job id="ring" title="Ring these suppliers" count={s.stuckBills}
-                 note={'You have the bill and you paid the tax, but it is not in the '
-                     + 'government record.'}>
-              {ring.map((g) => (
+            <Job id="ring" title="Ring these suppliers" count={split.nowBills}
+                 money={split.nowTax} tone="bad" note={why}>
+              {split.now.map((g) => (
                 <View key={g.key} style={{ marginTop: 12 }}>
                   <View style={S.row}>
                     <Text style={{ flex: 1, fontSize: 14.5, fontWeight: '800', color: C.ink }}>
@@ -448,13 +518,44 @@ export default function ReconScreen({ navigation }) {
               ))}
             </Job>
 
+            {split.beforeBills > 0 && (
+              <Job id="lastyear" title="From an earlier year" count={split.beforeBills}
+                   money={Math.abs(split.beforeTax)}
+                   note={'These are stuck too, but they belong to a year that has finished. '
+                       + 'Nothing you file this month touches them — what matters is the '
+                       + 'date each one has to be claimed by.'}>
+                {split.before.map((g) => (
+                  <View key={g.key} style={{ marginTop: 12 }}>
+                    <View style={S.row}>
+                      <Text style={{ flex: 1, fontSize: 14.5, fontWeight: '800', color: C.ink }}>
+                        {g.name}
+                      </Text>
+                      <Text style={[{ fontSize: 15, fontWeight: '800', color: C.danger }, S.num]}>
+                        {'₹' + fmt0(Math.abs(g.tax))}
+                      </Text>
+                    </View>
+                    {g.bills.map((b, i) => (
+                      <Line key={i} tone="bad"
+                            k={`${b.docNo || '(no number)'} · ${b.docDate}`}
+                            sub={b.daysLeft == null ? ''
+                                 : b.daysLeft < 0 ? 'the date to claim it has gone'
+                                 : `${b.daysLeft} days left — claim by ${claimBy(b.docDate)}`}
+                            v={'₹' + fmt0(b.tax)} />
+                    ))}
+                  </View>
+                ))}
+              </Job>
+            )}
+
             <Job id="enter" title="Enter these in your books" count={s.waitingBills}
+                 money={s.waiting} tone="ok"
                  note={'The supplier has declared these to the government, but they are not '
                      + 'in your books. Tap one and the purchase opens, already headed.'}>
               {enter.map((x, i) => (
                 <Line key={i}
                       k={`${x.party || x.gstin || '—'} · ${x.docNo || '—'}`}
-                      sub={`${x.docDate} — enter this purchase`} go
+                      sub={`${x.docDate}${x.taxable ? `  ·  goods ₹${fmt0(x.taxable)}` : ''}`
+                           + '  — enter this purchase'} go
                       v={`₹${fmt0(x.tax)}`}
                       onPress={() => { dirty.current = true;
                         navigation.navigate('Bill', {
@@ -466,6 +567,7 @@ export default function ReconScreen({ navigation }) {
 
             {s.unseen > 0 && (
               <Job id="earlier" title="Look in an earlier return" count={s.unseen}
+                   money={Math.abs(s.unseenTax)}
                    note={`These are dated ${earlier.join(', ')}, and you have not brought in `
                        + 'the 2B for those months. Nobody is at fault and nothing has been '
                        + 'compared — download those files and they will be checked too.'}>
@@ -479,6 +581,7 @@ export default function ReconScreen({ navigation }) {
 
             {s.different > 0 && (
               <Job id="fix" title="Small corrections" count={s.different}
+                   money={s.queriedTax}
                    note={'These bills are on both sides, so the credit is safe. Something on '
                        + 'the entry just needs tidying.'}>
                 {res.queried.map((p, i) => (

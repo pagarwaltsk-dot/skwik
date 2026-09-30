@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList, Modal, Alert, ActivityIndicator,
 } from 'react-native';
@@ -118,6 +118,23 @@ export default function BillsScreen({ navigation }) {
   const [open, setOpen]   = useState(null);      // the bill tapped on
   const [lines, setLines] = useState(null);      // its lines, once fetched
   const [working, setWorking] = useState(false);
+  // WHY IT WAS CANCELLED, ASKED FOR RATHER THAN GUESSED.
+  //
+  // The column has been there since 1.9 and the sheet has always printed it,
+  // and the app passed null every single time -- so no cancelled bill in any
+  // book has ever said why. It matters at audit, when nobody remembers, and it
+  // matters to whoever is reading the ledger six months later.
+  //
+  // Asked for in the sheet, not in a popup: Alert cannot take typing on
+  // Android at all, and a second popup on top of the first is exactly the
+  // thing he asked me never to do.
+  const [why, setWhy] = useState(null);          // null = not asking
+
+  // A BILL PUT AWAY PUTS THE QUESTION AWAY. Opening a different bill must not
+  // land on a half-answered reason belonging to the last one, and there are
+  // four places in this screen that close the sheet -- so it is done here, on
+  // the bill changing, rather than remembered at each of them.
+  useEffect(() => { setWhy(null); }, [open?.id]);
 
   // PAST BILLS STOPPED DEAD AT FOUR HUNDRED.
   //
@@ -134,12 +151,56 @@ export default function BillsScreen({ navigation }) {
   const [more, setMore] = useState(false);     // is there another page behind this one
   const [loadingMore, setLoadingMore] = useState(false);
 
+  const SEL = '*, parties(id, name, phone, gstin, address, state_name, state_code, opening_date)';
+  const SELJ = '*, parties!inner(id, name, phone, gstin, address, state_name, state_code, opening_date)';
+
   const page = useCallback(async (from) => supabase
     .from('vouchers')
-    .select('*, parties(id, name, phone, gstin, address, state_name, state_code, opening_date)')
+    .select(SEL)
     .order('vdate', { ascending: false })
     .order('created_at', { ascending: false })
-    .range(from, from + PAGE - 1), []);
+    .range(from, from + PAGE - 1), [SEL]);
+
+  // SEARCH LOOKED ONLY AT WHAT WAS ALREADY ON SCREEN.
+  //
+  // The list loads two hundred bills at a time and the box filtered THAT
+  // array, so typing a supplier's name searched the newest two hundred and
+  // nothing else. His own words: "in purchase I type soni brothers, it shows
+  // no bill, I keep on tapping old bills, and woha, it appears" -- the bill
+  // was two thousand rows down, and every tap on "show older bills" dragged
+  // another page into memory until the one he wanted happened to be in it.
+  //
+  // A man cannot find his own bill in his own book. So the question goes to
+  // the server, over the whole book, however far back it goes.
+  //
+  // Two queries because the supplier's name lives on another table: one over
+  // the bill's own columns, one over the name, joined. Merged and de-duped.
+  const hunt = useCallback(async (s) => {
+    // PostgREST reads commas and brackets as part of its own or() grammar, so
+    // a name with one in it would tear the filter in half.
+    const safe = s.replace(/[,()%*\\]/g, ' ').trim();
+    if (!safe) return null;
+    const like = `%${safe}%`;
+    const fields = [`voucher_no.ilike.${like}`,
+                    `supplier_invoice_no.ilike.${like}`,
+                    `printed_name.ilike.${like}`];
+    // a bare number is a bill's total as often as it is a bill's number
+    if (/^\d+$/.test(safe)) fields.push(`total.eq.${safe}`);
+    const [a, b] = await Promise.all([
+      supabase.from('vouchers').select(SEL).or(fields.join(','))
+        .order('vdate', { ascending: false }).limit(300),
+      supabase.from('vouchers').select(SELJ).ilike('parties.name', like)
+        .order('vdate', { ascending: false }).limit(300),
+    ]);
+    if (a.error && b.error) throw a.error;
+    const out = [], seen = new Set();
+    for (const r of [...(a.data || []), ...(b.data || [])]) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id); out.push(r);
+    }
+    out.sort((x, y) => String(y.vdate).localeCompare(String(x.vdate)));
+    return out;
+  }, [SEL, SELJ]);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -166,19 +227,47 @@ export default function BillsScreen({ navigation }) {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  // The box asks the server a moment after he stops typing, and what is
+  // already on screen is filtered meanwhile so the list never feels dead.
+  const [found, setFound] = useState(null);
+  const [hunting, setHunting] = useState(false);
+  useEffect(() => {
+    const s = q.trim();
+    if (s.length < 2) { setFound(null); setHunting(false); return undefined; }
+    let live = true;
+    setHunting(true);
+    const t = setTimeout(async () => {
+      try {
+        const got = await hunt(s);
+        if (live) setFound(got);
+      } catch (e) {
+        if (live) setFound(null);           // the list below still shows what is loaded
+      } finally {
+        if (live) setHunting(false);
+      }
+    }, 300);
+    return () => { live = false; clearTimeout(t); };
+  }, [q, hunt]);
+
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return rows.filter((v) => {
+    const served = s.length >= 2 && !!found;
+    const base = served ? found : rows;
+    return base.filter((v) => {
       if (kind === 'returns') {
         if (v.vtype !== 'sale_return' && v.vtype !== 'purchase_return') return false;
       } else if (kind !== 'all' && v.vtype !== kind) return false;
-      if (!s) return true;
+      // The server has already matched these, and on more than this side can
+      // see -- a supplier's own bill number among them. Filtering them again
+      // here would throw away the very rows it was asked for.
+      if (!s || served) return true;
       const who = v.parties?.name || v.printed_name || '';
       return who.toLowerCase().includes(s)
           || String(v.voucher_no || '').toLowerCase().includes(s)
+          || String(v.supplier_invoice_no || '').toLowerCase().includes(s)
           || String(Math.round(Number(v.total) || 0)).includes(s);
     });
-  }, [rows, q, kind]);
+  }, [rows, q, kind, found]);
 
   // WHAT "SALES SHOWN" ACTUALLY MEANT.
   //
@@ -329,28 +418,69 @@ export default function BillsScreen({ navigation }) {
     navigation.navigate('Bill', { voucherId: v.id, vtype: v.vtype });
   };
 
-  // Removing a bill is not undoable, so it is asked twice and says plainly
-  // what else goes with it.
+  // WHICH BILLS KEEP THEIR NUMBER, AND WHICH SIMPLY GO.
+  //
+  // Skwik hands out the number itself for a sale, an estimate, a credit note
+  // and a debit note, off counters that only ever go forward -- so one of those
+  // deleted outright leaves a permanent hole in a series the shop issues, and a
+  // credit note's number is reported in GSTR-1. Those are cancelled and keep
+  // their number.
+  //
+  // A PURCHASE is the exception: the number on it is the supplier's, not one of
+  // his, so there is no series of his to keep unbroken and it simply goes.
+  //
+  // This box used to tell every bill the sale story -- "stays in your book,
+  // marked cancelled, keeps its number" -- including a purchase, where the row
+  // really does disappear. It said the opposite of what happened.
+  const KEEPS_ITS_NUMBER = ['sale', 'estimate', 'sale_return', 'purchase_return'];
+  const wordFor = (t) => (t === 'purchase' ? 'purchase'
+    : t === 'sale_return' ? 'credit note'
+    : t === 'purchase_return' ? 'debit note'
+    : t === 'estimate' ? 'estimate' : 'bill');
+
+  // The commonest reasons, so most cancellations are one tap rather than
+  // typing. Anything else he writes himself.
+  const WHY = ['Entered twice', 'Wrong customer', 'Wrong amount',
+               'Customer refused the goods', 'Order cancelled', 'Test entry'];
+
+  // Cancelling is not undoable, so it is asked twice: once here, saying plainly
+  // what goes with it, and once on the panel that asks why.
   const remove = () => {
     const v = open;
+    const kind = wordFor(v.vtype);
+    const keeps = KEEPS_ITS_NUMBER.includes(v.vtype);
     const name = v.parties?.name || v.printed_name || 'this customer';
     Alert.alert(
-      `Remove ${v.voucher_no ? `bill ${v.voucher_no}` : 'this bill'}?`,
-      `₹${fmt0(v.total)} to ${name}.\n\nThe stock it moved goes back, and any cash `
-      + `recorded against it is removed too.\n\nThe bill itself stays in your book, `
-      + `marked cancelled, and keeps its number. GST wants an unbroken run of `
-      + `numbers, and a bill that simply disappears leaves a hole in it.`,
+      `${keeps ? 'Cancel' : 'Remove'} ${v.voucher_no ? `${kind} ${v.voucher_no}` : `this ${kind}`}?`,
+      `₹${fmt0(v.total)} · ${name}.\n\nThe stock it moved goes back, and any cash `
+      + `recorded against it is removed too.\n\n`
+      + (keeps
+        ? `The ${kind} itself stays in your book, marked cancelled, and keeps its `
+          + `number — at nil. GST wants an unbroken run of numbers, and one that `
+          + `simply disappears leaves a hole in it.`
+        : `The purchase goes altogether. The number on it is your supplier's, not `
+          + `one of yours, so there is no numbering of your own left with a gap in it.`),
       [
         { text: 'Keep it' },
-        { text: 'Remove', style: 'destructive', onPress: async () => {
-            setWorking(true);
-            const { error } = await supabase.rpc('delete_voucher',
-              { p_id: v.id, p_reason: null });
-            setWorking(false);
-            if (error) return Alert.alert('Could not remove it', sayPlainly(error));
-            setOpen(null); setLines(null); load();
-          } },
+        { text: keeps ? 'Cancel it' : 'Remove', style: 'destructive',
+          onPress: () => setWhy('') },
       ]);
+  };
+
+  // and then why, which is written into the book against it
+  const cancelFor = async (reason) => {
+    const v = open;
+    setWorking(true);
+    const { error } = await supabase.rpc('delete_voucher',
+      { p_id: v.id, p_reason: reason || null });
+    setWorking(false);
+    setWhy(null);
+    if (error) {
+      return Alert.alert(
+        `Could not ${KEEPS_ITS_NUMBER.includes(v.vtype) ? 'cancel' : 'remove'} it`,
+        sayPlainly(error));
+    }
+    setOpen(null); setLines(null); load();
   };
 
   /* ---------------- screen ---------------- */
@@ -406,14 +536,17 @@ export default function BillsScreen({ navigation }) {
           ListEmptyComponent={
             <Text style={{ color: C.muted, fontWeight: '600', textAlign: 'center', marginTop: 40,
                            lineHeight: 20 }}>
-              {q || kind !== 'all'
+              {hunting ? 'Looking through every bill…'
+                : q.trim().length >= 2
+                ? 'Nothing matches that — and that is the whole book, not just\nwhat is on screen.'
+                : q || kind !== 'all'
                 ? 'Nothing matches that.'
                 : 'No bills yet. Every bill you save will be here, and you can\nsend it again from here any time.'}
             </Text>}
           /* AND A WAY BACK PAST THE NEWEST TWO HUNDRED. It says where the list
              has got to either way, so an end is an end rather than something
              that looks like a bill having disappeared. */
-          ListFooterComponent={!rows.length ? null : (
+          ListFooterComponent={!rows.length || (q.trim().length >= 2 && found) ? null : (
             <View style={{ paddingTop: 14, paddingBottom: 6, alignItems: 'center' }}>
               {more ? (
                 <TouchableOpacity onPress={fetchMore} disabled={loadingMore}
@@ -511,7 +644,7 @@ export default function BillsScreen({ navigation }) {
 
       {/* ---------- one bill, and what can be done with it ---------- */}
       <Modal visible={!!open} transparent animationType="slide"
-             onRequestClose={() => { setOpen(null); setLines(null); }}>
+             onRequestClose={() => { setOpen(null); setLines(null); setWhy(null); }}>
         <View style={{ flex: 1, backgroundColor: '#3B3A35DD', justifyContent: 'flex-end' }}>
           <View style={{ backgroundColor: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22,
                          padding: 20, paddingBottom: 28 }}>
@@ -611,18 +744,82 @@ export default function BillsScreen({ navigation }) {
                   </TouchableOpacity>
                 )}
 
-                {isOwner && (
+                {isOwner && (why === null ? (
                   <TouchableOpacity onPress={remove} disabled={working}
                     style={{ marginTop: 14, alignItems: 'center', paddingVertical: 10 }}>
                     <Text style={{ fontSize: 14.5, fontWeight: '700', color: C.danger }}>
-                      Remove this {open.vtype === 'purchase' ? 'purchase' : 'bill'}
+                      {KEEPS_ITS_NUMBER.includes(open.vtype)
+                        ? `Cancel this ${wordFor(open.vtype)}`
+                        : 'Remove this purchase'}
                     </Text>
                   </TouchableOpacity>
-                )}
+                ) : (
+                  /* WHY, IN THE SHEET, NOT IN A SECOND POPUP.
+                     Six taps for the reasons a bill is actually cancelled, and
+                     a line to write anything else. Whatever is here is written
+                     into the book against the bill and printed on it for ever
+                     after, so it is worth one screen. */
+                  <View style={[S.card, { marginTop: 14, borderLeftWidth: 3,
+                                          borderLeftColor: C.danger }]}>
+                    <Text style={{ fontSize: 14.5, fontWeight: '800', color: C.ink }}>
+                      Why is it being cancelled?
+                    </Text>
+                    <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 5, lineHeight: 18 }}>
+                      This stays on the {wordFor(open.vtype)} for good. In six months
+                      nobody will remember, and your CA will ask.
+                    </Text>
+
+                    <View style={[S.row, { flexWrap: 'wrap', gap: 7, marginTop: 11 }]}>
+                      {WHY.map((w) => (
+                        <TouchableOpacity key={w} disabled={working}
+                          onPress={() => setWhy(w)}
+                          style={[{ paddingHorizontal: 11, paddingVertical: 8, borderRadius: 8,
+                                    borderWidth: 1, borderColor: C.line,
+                                    backgroundColor: C.surface },
+                                  why === w && { borderColor: C.danger, backgroundColor: C.bg }]}>
+                          <Text style={{ fontSize: 13,
+                                         fontWeight: why === w ? '800' : '600',
+                                         color: why === w ? C.danger : C.muted }}>
+                            {w}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    <TextInput style={[S.input, { marginTop: 11 }]}
+                      placeholder="or write the reason yourself"
+                      placeholderTextColor={C.faint}
+                      value={why} onChangeText={setWhy}
+                      editable={!working} returnKeyType="done"
+                      onSubmitEditing={() => why.trim() && cancelFor(why.trim())} />
+
+                    <View style={[S.row, { marginTop: 12, gap: 10 }]}>
+                      <TouchableOpacity style={[S.btnGhost, { flex: 1, paddingVertical: 14 }]}
+                        onPress={() => setWhy(null)} disabled={working}>
+                        <Text style={[S.ghostText, { fontSize: 15 }]}>Keep it</Text>
+                      </TouchableOpacity>
+                      {/* A REASON IS REQUIRED, not merely offered. The whole
+                          point of this screen is that "Cancelled" and nothing
+                          else is what every cancelled bill in every book says
+                          today. */}
+                      <TouchableOpacity
+                        style={[S.btn, { flex: 1, paddingVertical: 14,
+                                         backgroundColor: C.danger },
+                                (working || !why.trim()) && { opacity: 0.5 }]}
+                        onPress={() => cancelFor(why.trim())}
+                        disabled={working || !why.trim()}>
+                        <Text style={S.btnText}>
+                          {working ? 'One moment\u2026'
+                            : KEEPS_ITS_NUMBER.includes(open.vtype) ? 'Cancel it' : 'Remove it'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
                   </>
                 )}
 
-                <TouchableOpacity onPress={() => { setOpen(null); setLines(null); }}
+                <TouchableOpacity onPress={() => { setOpen(null); setLines(null); setWhy(null); }}
                   style={{ marginTop: 4, alignItems: 'center', paddingVertical: 10 }}>
                   <Text style={{ fontSize: 16, fontWeight: '600', color: C.muted }}>Close</Text>
                 </TouchableOpacity>

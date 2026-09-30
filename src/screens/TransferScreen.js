@@ -658,6 +658,20 @@ export default function TransferScreen({ navigation }) {
       const bal = balR?.data;
       const cashBook = bookR?.data;
 
+      // A CANCELLED BILL BELONGS IN THE ACCOUNTANT'S COPY, AND SAYS SO.
+      //
+      // Every report inside Skwik leaves a cancelled bill out. This one keeps
+      // it, on purpose: a CA reconciling a numbering series has to see that
+      // number 1380 was issued and voided rather than skipped, and a hole with
+      // no explanation is the thing he will ring up about.
+      //
+      // What made that wrong before was not keeping them, it was keeping them
+      // SILENTLY -- billsToCsv had no column to say so, so a cancelled bill
+      // came out carrying its full taxable value and total and looked exactly
+      // like a live one. It now carries Cancelled and Why, read off cancelled_at
+      // and cancel_reason, and since 1.10.41 the figures on a cancelled bill are
+      // nil in the database as well. So these three are deliberately NOT
+      // filtered on cancelled_at.
       const sale = vs.filter((v) => v.vtype === 'sale' || v.vtype === 'estimate');
       const buy  = vs.filter((v) => v.vtype === 'purchase');
       const rtn  = vs.filter((v) => v.vtype === 'sale_return' || v.vtype === 'purchase_return');
@@ -922,8 +936,22 @@ export default function TransferScreen({ navigation }) {
       Alert.alert('It is in your books',
         [out.bills && `${out.bills} bill${out.bills === 1 ? '' : 's'}`,
          out.already && `${out.already} already there`,
+         // A BILL ALREADY IN HIS BOOKS CAN STILL BE PUT RIGHT.
+         //
+         // Purchases imported before 1.10.26 carry the day they were ENTERED
+         // as the supplier's bill date, because the reader never read
+         // REFERENCEDATE. Re-importing the same file corrects them where they
+         // stand -- no undo, nothing deleted, nothing written twice -- and he
+         // should be told it happened, because it is the difference between
+         // the 2B comparison working and blaming suppliers who filed on time.
+         out.dates && `${out.dates} supplier bill date${out.dates === 1 ? '' : 's'} put right`,
          out.payments && `${out.payments} money entries`,
          out.transfers && `${out.transfers} stock moves`,
+         // THE ADJUSTMENTS HIS ACCOUNTANT MADE. Every journal used to be
+         // thrown away silently; they are his books as much as the bills are.
+         out.journals && `${out.journals} journal entr${out.journals === 1 ? 'y' : 'ies'}`,
+         out.journalsSkipped
+           && `${out.journalsSkipped} journal(s) left out \u2014 run the latest SQL to take them`,
          out.items && `${out.items} new items`,
          out.parties && `${out.parties} new names`]
           .filter(Boolean).join('\n')
