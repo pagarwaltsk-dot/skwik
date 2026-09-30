@@ -630,7 +630,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
   const made = { godowns: 0, parties: 0, items: 0, bills: 0, already: 0, payments: 0,
                  transfers: 0, accounts: 0, banked: 0, opened: 0, openedAccounts: 0,
-                 dates: 0, journals: 0, journalsSkipped: 0, run };
+                 dates: 0, journals: 0, journalsSkipped: 0, noBank: 0, run };
   // purchases already in his books whose supplier bill number and date this
   // file can put right -- see the note where they are collected
   const putRight = [];
@@ -639,6 +639,67 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     err.made = made; err.done = done; err.total = total;
     throw err;
   };
+
+  // ONE DROPPED REQUEST MUST NOT COST AN IMPORT OF 2,254 BILLS.
+  //
+  // An import is hundreds of requests over several minutes on a shop's line,
+  // and on that line a request occasionally just does not arrive -- the browser
+  // says "Failed to fetch", the phone says "Network request failed", and
+  // neither means anything is wrong with the file or the book. Every one of
+  // those was fatal: the run stopped, and whatever had not been written yet
+  // had to be started again.
+  //
+  // So a call that fails for a reason that might not happen twice is tried
+  // again, three times, waiting a little longer each time. What is NOT retried
+  // is an answer from the server -- a bill number already used, a date in a
+  // closed month, a login that cannot write. Those are the same answer however
+  // many times you ask, and asking again just wastes the shopkeeper's evening.
+  const mightPassNextTime = (e) => {
+    if (!e) return false;
+    // the server answered, so it will answer the same way again
+    if (e.status && e.status !== 502 && e.status !== 503 && e.status !== 504) return false;
+    if (e.code && /^[0-9A-Z]{5}$/.test(String(e.code)) && e.code !== 'PGRST000') return false;
+    // ONE LINE, AND NO /x FLAG. A regex literal cannot span lines in
+    // JavaScript and there is no such flag as x. I wrote it across two lines
+    // and the file stopped parsing altogether -- and I did not notice, because
+    // I ran the parse check before that edit and not after it. The check would
+    // have caught it in a second. Run the ladder after the LAST change, not
+    // after the last change you happen to remember.
+    const BLIP = /failed to fetch|network request failed|load failed|networkerror|timeout|timed out|econnreset|socket hang up|fetch failed|50[234]|gateway/i;
+    return BLIP.test(String(e.message || ''));
+  };
+
+  const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // `ask` wraps one call and hands back the same { data, error } it always did,
+  // so nothing that uses it has to change shape.
+  const ask = async (label, go) => {
+    let last = null;
+    for (let tryNo = 1; tryNo <= 3; tryNo++) {
+      const r = await go();
+      if (!r?.error) return r;
+      last = r.error;
+      if (!mightPassNextTime(r.error)) return r;
+      if (tryNo < 3) { step(`${label} — the line dropped, trying again`); await nap(tryNo * 1200); }
+    }
+    return { data: null, error: last };
+  };
+
+  // IS THIS FUNCTION SIMPLY NOT THERE? ASKED BY STATUS, NOT BY WORDING.
+  //
+  // This used to read the error's TEXT -- /does not exist|PGRST202|404/ -- and
+  // the app has two different clients that word things differently. The phone
+  // uses supabase-js; the browser page uses web/rest.js, whose fetch says
+  // "Failed to fetch" when a request never reaches the server at all. So a
+  // dropped request on the web page did not look like "no such function" and
+  // did not look like anything else either.
+  //
+  // PostgREST answers 404 with PGRST202 for a function it cannot find, and
+  // rest.js already puts that on err.status and err.code. So the status is
+  // asked first and the wording is only the last resort.
+  const noSuchFunction = (e) => !!e && (
+    e.status === 404 || e.code === 'PGRST202' || e.code === '42883'
+    || /does not exist|PGRST202|could not find the function/i.test(e.message || ''));
 
   const godowns = indexBy(have.godowns);
   const parties = indexBy(have.parties);
@@ -836,7 +897,8 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
   // one bill on its own, which is what an older database gets
   const sendOne = async ({ v, payload }) => {
-    const { data, error } = await supabase.rpc('save_voucher', { p: payload });
+    const { data, error } = await ask(`bill ${v.no}`,
+      () => supabase.rpc('save_voucher', { p: payload }));
     if (error) fail(`could not write ${v.tally_type} ${v.no} of ${v.vdate}`, error);
     took(v, data);
   };
@@ -846,9 +908,9 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     const block = pending;
     pending = [];
     if (blockWise) {
-      const { data, error } = await supabase.rpc('save_vouchers',
-        { p: block.map((b) => b.payload) });
-      if (error && /does not exist|PGRST202|404/i.test(error.message || '')) {
+      const { data, error } = await ask(`${block.length} bills`,
+        () => supabase.rpc('save_vouchers', { p: block.map((b) => b.payload) }));
+      if (error && noSuchFunction(error)) {
         // an older database: from here on, one at a time
         blockWise = false;
       } else if (error) {
@@ -968,13 +1030,17 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
   // and in blocks, so a year of purchases is a handful of calls
   for (let i = 0; i < putRight.length; i += 200) {
-    const { data: n, error } = await supabase.rpc('patch_supplier_ref',
-      { p: putRight.slice(i, i + 200) });
+    const { data: n, error } = await ask('the supplier bill dates',
+      () => supabase.rpc('patch_supplier_ref', { p: putRight.slice(i, i + 200) }));
     // AN OLDER DATABASE SIMPLY HAS NOTHING TO PUT RIGHT, and the import it
     // has just finished is sound either way -- this corrects bills written
     // before, it does not write any.
-    if (error && !/does not exist/i.test(error.message || '')) {
-      fail('could not put the supplier bill dates right', error);
+    // AND THIS IS TIDYING TOO. It corrects two columns on purchases already in
+    // the book; it writes nothing new. An older database has no such function,
+    // and a dropped request is not a reason to throw away an import that has
+    // already landed.
+    if (error && !noSuchFunction(error)) {
+      made.datesFailed = (made.datesFailed || 0) + putRight.slice(i, i + 200).length;
     }
     made.dates += Number(n || 0);
   }
@@ -1001,8 +1067,9 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     }));
     // ignoreDuplicates is what makes a second import a no-op rather than a
     // second set of receipts.
-    const { error } = await supabase.from('payments')
-      .upsert(block, { onConflict: 'id', ignoreDuplicates: true });
+    const { error } = await ask(`${block.length} receipts and payments`,
+      () => supabase.from('payments')
+        .upsert(block, { onConflict: 'id', ignoreDuplicates: true }));
     if (error) fail('could not write the receipts and payments', error);
 
     // AND THE ONES ALREADY IN THE BOOKS, WITH NO ACCOUNT AGAINST THEM.
@@ -1020,16 +1087,30 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     const mend = block.filter((x) => x.account_id && x.mode === 'bank')
       .map((x) => ({ id: x.id, account_id: x.account_id }));
     if (mend.length) {
-      const { error: e2 } = await supabase.rpc('fill_payment_account', { p: mend });
-      if (e2 && /does not exist|PGRST202|404/i.test(e2.message || '')) {
+      const { error: e2 } = await ask('which bank they went through',
+        () => supabase.rpc('fill_payment_account', { p: mend }));
+      if (e2 && noSuchFunction(e2)) {
         // a database without 1.10.40: one at a time, the way it used to be
         for (const x of mend) {
           const { error: e3 } = await supabase.from('payments')
             .update({ account_id: x.account_id }).eq('id', x.id).is('account_id', null);
-          if (e3) fail('could not say which bank a receipt went through', e3);
+          if (e3) { made.noBank += 1; break; }
         }
       } else if (e2) {
-        fail('could not say which bank a receipt went through', e2);
+        // FILLING IN WHICH BANK IS TIDYING, NOT THE IMPORT.
+        //
+        // This called fail(), which throws and stops the whole run. His import
+        // died on "could not say which bank a receipt went through: Failed to
+        // fetch" -- one dropped request, after the bills, the items, the names
+        // and the receipts themselves were all safely in. A column that says
+        // which bank a receipt went through is worth having; it is not worth
+        // throwing away an import of 2,254 bills for.
+        //
+        // The receipts are written BEFORE this runs, so they are already in the
+        // book. It is counted and reported instead, and a second run of the
+        // same file fills them in -- fill_payment_account only ever fills a
+        // blank, so running it again is safe and finishes the job.
+        made.noBank += mend.length;
       }
     }
     made.payments += block.length;
@@ -1046,11 +1127,12 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
                      batch: l.batch || null }))
       .filter((l) => l.item_id && l.qty > 0);
     if (!lines.length) { step('transfer'); continue; }
-    const { error } = await supabase.rpc('transfer_stock', {
-      p: { from_godown: from, to_godown: to, mdate: t.vdate, lines,
-           ref: idFor(t.ref || `${t.vdate}|${t.from}|${t.to}`, `transfer|${org.id}`),
-           import_run: run },
-    });
+    const { error } = await ask(`the goods moved on ${t.vdate}`,
+      () => supabase.rpc('transfer_stock', {
+        p: { from_godown: from, to_godown: to, mdate: t.vdate, lines,
+             ref: idFor(t.ref || `${t.vdate}|${t.from}|${t.to}`, `transfer|${org.id}`),
+             import_run: run },
+      }));
     if (error) fail(`could not move the goods of ${t.vdate}`, error);
     made.transfers += 1;
     step(`transfer of ${t.vdate}`);
@@ -1078,11 +1160,12 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       }
       return { ...base, ledger: l.name, group: l.group, role: roleForJournal(l.group) };
     });
-    const { data, error } = await supabase.rpc('save_journal', {
-      p: { id: idFor(j.ref || `journal|${j.no}|${j.vdate}|${j.said || ''}`, `journal|${org.id}`),
-           date: j.vdate, no: j.no || null, narration: j.narration || null,
-           legs, import_run: run },
-    });
+    const { data, error } = await ask(`the journal of ${j.vdate}`,
+      () => supabase.rpc('save_journal', {
+        p: { id: idFor(j.ref || `journal|${j.no}|${j.vdate}|${j.said || ''}`, `journal|${org.id}`),
+             date: j.vdate, no: j.no || null, narration: j.narration || null,
+             legs, import_run: run },
+      }));
     // AN OLDER DATABASE HAS NO JOURNAL TO WRITE TO, and the rest of the
     // import is sound without it -- so it is counted as passed over rather
     // than stopping a year of bills.
@@ -1151,28 +1234,49 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   // account and direction twice. That is what makes pressing the import again
   // safe: the bills are already skipped by their own ids, and a deposit is
   // skipped by being the same deposit.
+  // THE SAME DEPOSIT TWICE IS NOT AN ERROR -- AND SHOULD NOT LOOK LIKE ONE.
+  //
+  // This inserted one at a time and let the database refuse a repeat by its own
+  // unique index, then ignored the refusal. Right in the books, wrong on the
+  // screen: every ignored repeat went out as a real request that came back 400,
+  // so a second import of the same file filled the browser's console with
+  // "Failed to load resource: 400 (Bad Request)" and the page looked like it
+  // was failing while it was working perfectly.
+  //
+  // Now each deposit gets an id worked out from the deposit itself -- the same
+  // trick bills and receipts already use -- so the SAME deposit is the same row
+  // and the server is asked to ignore a repeat rather than refuse it. No 400,
+  // and one call a block instead of one a deposit.
+  //
+  // The tolerance stays for a book imported before this change, whose deposits
+  // were written with random ids and will still trip the unique index.
+  const banked = [];
   for (const v of (book.cashMoves || [])) {
-   for (const m of (v.moves || [v])) {
-    const acc = idOf(accounts, m.account);
-    const { error } = await supabase.from('cash_moves').insert({
-      org_id: org.id,
-      direction: m.direction,
-      mdate: v.vdate,
-      amount: m.amount,
-      account_id: acc,
-      note: v.narration || (m.direction === 'deposit' ? 'paid into bank' : 'taken from bank'),
-      import_run: run,
-    });
-    // THE SAME DEPOSIT TWICE IS NOT AN ERROR, it is the second press of a
-    // button that is meant to be safe to press twice. The database says no by
-    // its own unique index, and that no is the right answer, not a failure.
+    for (const m of (v.moves || [v])) {
+      banked.push({
+        id: idFor(m.ref || `${v.vdate}|${m.direction}|${m.amount}|${m.account || ''}`,
+                  `cashmove|${org.id}`),
+        org_id: org.id,
+        direction: m.direction,
+        mdate: v.vdate,
+        amount: m.amount,
+        account_id: idOf(accounts, m.account),
+        note: v.narration || (m.direction === 'deposit' ? 'paid into bank' : 'taken from bank'),
+        import_run: run,
+      });
+    }
+  }
+  for (let i = 0; i < banked.length; i += 50) {
+    const block = banked.slice(i, i + 50);
+    const { error } = await ask(`${block.length} deposits and withdrawals`,
+      () => supabase.from('cash_moves')
+        .upsert(block, { onConflict: 'id', ignoreDuplicates: true }));
     if (error && !/duplicate key|unique constraint|23505/i.test(
         `${error.message || ''} ${error.code || ''}`)) {
-      fail(`could not record the money banked on ${m.vdate}`, error);
+      fail('could not record the money banked', error);
     }
-    if (!error) made.banked += 1;
-    step(`banked ${m.amount}`);
-   }
+    if (!error) made.banked += block.length;
+    block.forEach((m) => step(`banked ${m.amount}`));
   }
 
   // THE RUN IS CLOSED, with what it actually brought in written on it. That
