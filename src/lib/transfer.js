@@ -1014,6 +1014,23 @@ export function openingByGodownFromTallyXml(xml) {
 // A cash credit account is an overdraft. Read as written it would show 23 lakh
 // sitting in the bank instead of 23 lakh owed to it, so the sign is turned
 // round here and an overdraft arrives as the negative balance it is.
+// IS THIS LEDGER THE TILL OR A BANK? Decided by the group it sits under,
+// walking up the chain when the ledger itself does not say. Lifted out of
+// moneyLedgersFromTallyXml so ledgerRolesFromTallyXml can ask the same question
+// and get the same answer -- two copies of this would drift.
+function moneyRoleOf(groups, parent, primary, depth = 0) {
+  for (const g of [primary, parent]) {
+    const t = String(g || '');
+    if (!t) continue;
+    if (/^cash-?in-?hand$/i.test(t.replace(/\s+/g, '')) || /\bcash\s*in\s*hand\b/i.test(t)) return 'cash';
+    if (/\bbank\b/i.test(t)) return 'bank';
+  }
+  if (depth > 8) return '';
+  const up = groups[String(parent || '').toLowerCase()];
+  if (!up) return '';
+  return moneyRoleOf(groups, up.parent, up.primary, depth + 1);
+}
+
 export function moneyLedgersFromTallyXml(xml) {
   xml = cleanText(xml);
   const groups = ledgerGroupsFromTallyXml(xml);
@@ -1021,19 +1038,7 @@ export function moneyLedgersFromTallyXml(xml) {
   let cash = null;
   let sawClosing = false, sawOpening = false;
 
-  // the group decides, walking up the chain when the ledger does not say
-  const roleOf = (parent, primary, depth = 0) => {
-    for (const g of [primary, parent]) {
-      const t = String(g || '');
-      if (!t) continue;
-      if (/^cash-?in-?hand$/i.test(t.replace(/\s+/g, '')) || /\bcash\s*in\s*hand\b/i.test(t)) return 'cash';
-      if (/\bbank\b/i.test(t)) return 'bank';
-    }
-    if (depth > 8) return '';
-    const up = groups[String(parent || '').toLowerCase()];
-    if (!up) return '';
-    return roleOf(up.parent, up.primary, depth + 1);
-  };
+  const roleOf = (parent, primary) => moneyRoleOf(groups, parent, primary);
 
   for (const b of blocksOf(xml, 'LEDGER')) {
     const name = nameAttr(b) || tagTop(b, 'NAME');
@@ -1057,6 +1062,65 @@ export function moneyLedgersFromTallyXml(xml) {
 
   return { banks, cash,
            basis: sawClosing && !sawOpening ? 'closing' : sawClosing ? 'mixed' : 'opening' };
+}
+
+// ---------------------------------------------------------------------------
+//  WHAT EVERY LEDGER IN THE MASTERS ACTUALLY IS
+//
+//  A TRIAL BALANCE HAS NO GROUPS IN IT. Nothing in that file says Bank Of
+//  Baroda is a bank and Priti Goyal is the shop's own capital -- it is a flat
+//  run of names and figures. So a reconciliation given only the trial balance
+//  cannot tell a customer it has never heard of from an account it was never
+//  meant to keep, and it lists both the same way:
+//
+//      Priti Goyal                     13,50,000.00
+//      Piyush Agarwal                  -6,61,458.00
+//      Pramod Kumar Agarwal (HUF)      -4,08,746.00
+//
+//  Those three are his capital and family loans. They are not customers, Skwik
+//  does not keep capital accounts, and calling them missing balances buries the
+//  handful of rows that matter under a heap that is correct by design.
+//
+//  THE MASTERS KNOW. Every ledger in them carries a PARENT, and the chain of
+//  groups above it ends at a primary group -- Capital Account, Loans
+//  (Liability), Sundry Debtors, Bank Accounts. That chain is already walked
+//  here to decide who is a customer; this hands the answer out so the
+//  comparison can use it too.
+//
+//  Which is the real reason for reading all three files together rather than
+//  one at a time: it is not only fewer steps, it is the only way the
+//  comparison can be right.
+// ---------------------------------------------------------------------------
+export function ledgerRolesFromTallyXml(xml) {
+  xml = cleanText(xml);
+  const groups = ledgerGroupsFromTallyXml(xml);
+  const out = {};
+  for (const b of blocksOf(xml, 'LEDGER')) {
+    const name = nameAttr(b) || tagTop(b, 'NAME');
+    if (!name) continue;
+    const parent  = tagTop(b, 'PARENT');
+    const primary = tagTop(b, 'PRIMARYGROUP');
+    // walk up to whatever the chain calls itself, so "Sri Ganesh Family Loan"
+    // under "Unsecured Loans" under "Loans (Liability)" is a loan
+    const chain = [];
+    let at = primary || parent;
+    for (let hop = 0; at && hop < 12; hop++) {
+      chain.push(at);
+      const up = groups[String(at).toLowerCase()];
+      at = up ? (up.primary || up.parent) : null;
+    }
+    const all = [parent, primary, ...chain].filter(Boolean).join(' / ');
+    const side = sideOf(groups, primary) || sideOf(groups, parent);
+    const money = moneyRoleOf(groups, parent, primary);
+    out[String(name).toLowerCase()] = {
+      name,
+      parent: parent || primary || '',
+      chain: all,
+      // what Skwik would call it
+      role: side ? 'party' : money || 'other',
+    };
+  }
+  return out;
 }
 
 export function partiesFromTallyXml(xml) {

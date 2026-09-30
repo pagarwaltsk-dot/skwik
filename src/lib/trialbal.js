@@ -71,10 +71,37 @@ const inner = (block, tag) => {
 // worst possible answer.
 export function trialBalanceFromXml(xml) {
   const text = cleanText(xml || '');
-  const names = [...text.matchAll(/<DSPDISPNAME>([\s\S]*?)<\/DSPDISPNAME>/gi)]
-    .map((m) => m[1].trim());
-  const infos = [...text.matchAll(/<DSPACCINFO>([\s\S]*?)<\/DSPACCINFO>/gi)]
-    .map((m) => m[1]);
+
+  // EACH LEDGER'S FIGURES ARE THE ONES THAT FOLLOW ITS OWN NAME.
+  //
+  // This gathered every name into one list and every set of figures into
+  // another, then paired them by POSITION -- names[3] with infos[3] -- and
+  // guarded it by checking only that the two lists were the same LENGTH.
+  //
+  // Equal lengths do not mean the two lists line up. One row that carries its
+  // figures somewhere the other rows do not, one group heading with figures of
+  // its own, one ledger whose figures are missing and another with two sets:
+  // the counts still match and every row from that point on is reading somebody
+  // else's balance. And it fails SILENTLY, as a wrong figure rather than an
+  // error -- which is the worst way for a reconciliation to be wrong, because
+  // the whole purpose of it is to be believed.
+  //
+  // So a name is now paired with the figures that come AFTER it in the file and
+  // BEFORE the next name. That is what the file itself says they belong to, and
+  // it cannot drift. A name with no figures before the next name is reported as
+  // unreadable rather than quietly given the next ledger's numbers.
+  const nameAt = [...text.matchAll(/<DSPDISPNAME>([\s\S]*?)<\/DSPDISPNAME>/gi)]
+    .map((m) => ({ name: m[1].trim(), at: m.index }));
+  const infoAt = [...text.matchAll(/<DSPACCINFO>([\s\S]*?)<\/DSPACCINFO>/gi)]
+    .map((m) => ({ body: m[1], at: m.index }));
+
+  const names = nameAt.map((n) => n.name);
+  const infos = nameAt.map((n, i) => {
+    const stop = i + 1 < nameAt.length ? nameAt[i + 1].at : Infinity;
+    const mine = infoAt.find((f) => f.at > n.at && f.at < stop);
+    return mine ? mine.body : null;
+  });
+  const unreadable = names.filter((_, i) => infos[i] === null);
 
   if (!names.length) {
     return {
@@ -86,15 +113,26 @@ export function trialBalanceFromXml(xml) {
           + 'Balance, then Export, and pick XML.',
     };
   }
-  if (names.length !== infos.length) {
-    return { rows: [], why: `The file has ${names.length} ledger name(s) but ${infos.length} `
-      + 'set(s) of figures, so it cannot be read safely. Export the Trial Balance again.' };
+  // SAID OUT LOUD WHEN A LEDGER HAS NO FIGURES OF ITS OWN, rather than handing
+  // it the next one's. A few of these is normal -- a group heading with nothing
+  // under it -- but if most of the file reads this way it is not a Trial
+  // Balance and the shop should be told so.
+  if (unreadable.length && unreadable.length > names.length / 2) {
+    return { rows: [], why: `${unreadable.length} of the ${names.length} ledger name(s) in `
+      + 'that file have no figures against them, so it cannot be read safely. In Tally: '
+      + 'Display \u2192 Trial Balance, then Export, and pick XML.' };
   }
 
   const rows = names.map((name, i) => {
     const b = infos[i] || '';
     return {
       name,
+      // WAS THERE AN OPENING COLUMN AT ALL? A missing tag reads as nought, and
+      // nought is a real opening figure -- so without this, a trial balance
+      // exported with the opening column turned off would look like every
+      // account opening at nothing, and offering to "put right" a figure to
+      // nought would wipe the one that was correct.
+      hasOpening: /<DSPOPAMT>/i.test(b),
       opening: flip(num(inner(inner(b, 'DSPOPAMT'), 'DSPOPAMTA'))),
       debit:   flip(num(inner(inner(b, 'DSPDRAMT'), 'DSPDRAMTA'))),
       credit:  flip(num(inner(inner(b, 'DSPCRAMT'), 'DSPCRAMTA'))),
@@ -222,7 +260,7 @@ export function unseenInSkwik(tb, known = []) {
 // Enterprises", a full stop, a double space. So a name that does not match is
 // never silently dropped -- it is listed, because an unmatched name is exactly
 // where a missing balance hides.
-export function compareParties(tb, rows, mine = {}, alreadyDone = []) {
+export function compareParties(tb, rows, mine = {}, alreadyDone = [], roles = {}) {
   // CASH AND THE BANKS ARE NOT NAMES HE HAS NEVER HEARD OF.
   //
   // They are compared in the money table above, correctly, and then turned up
@@ -253,11 +291,35 @@ export function compareParties(tb, rows, mine = {}, alreadyDone = []) {
   const out = lines.filter((l) => Math.abs(l.gap) >= 1)
     .sort((a, b) => Math.abs(b.gap) - Math.abs(a.gap));
 
-  // in his Tally with a balance, and Skwik has no such name
-  const onlyTally = (tb.rows || [])
+  // IN HIS TALLY WITH A BALANCE, AND SKWIK HAS NO SUCH NAME -- split in two,
+  // once the masters are here to say what each one IS.
+  //
+  // His own three: Priti Goyal 13,50,000, Piyush Agarwal -6,61,458, Pramod
+  // Kumar Agarwal (HUF) -4,08,746. Listed as missing customers, worth 24 lakh
+  // between them, and not one of them is a customer -- they are his capital and
+  // his family's loans, which Skwik does not keep and never will.
+  //
+  // A trial balance cannot tell them apart from a real missing customer,
+  // because it carries no groups. The MASTERS do. So when both files are read
+  // together the two are separated: the ones worth chasing, and the ones that
+  // are correct by design.
+  const roleFor = (n) => {
+    const r = (roles || {})[key(n)] || (roles || {})[String(n || '').toLowerCase()];
+    return r || null;
+  };
+  const missing = (tb.rows || [])
     .filter((t) => (t.closing || 0) !== 0 && skwikKeeps(t.name)
       && !byKey.has(key(t.name)) && !done.has(key(t.name)))
     .sort((a, b) => Math.abs(b.closing) - Math.abs(a.closing));
+
+  const onlyTally = missing.filter((t) => {
+    const r = roleFor(t.name);
+    return !r || r.role === 'party';          // a real name Skwik has not got
+  });
+  const notOurs = missing.filter((t) => {
+    const r = roleFor(t.name);
+    return r && r.role !== 'party';           // not a customer at all
+  }).map((t) => ({ ...t, under: (roleFor(t.name) || {}).parent || '' }));
 
   // in Skwik with a balance, and his Tally has no such name
   const tbKeys = new Set((tb.rows || []).map((t) => key(t.name)));
@@ -270,6 +332,7 @@ export function compareParties(tb, rows, mine = {}, alreadyDone = []) {
     agree: out.length === 0,
     out,
     onlyTally,
+    notOurs,
     onlySkwik,
     worst: out[0] || null,
     total: Math.round(out.reduce((t, l) => t + l.gap, 0) * 100) / 100,
@@ -306,4 +369,112 @@ export function openingsToFill(tb, have = {}) {
 
   return { cash, banks, parties,
            count: (cash ? 1 : 0) + banks.length + parties.length };
+}
+
+// ---------------------------------------------------------------------------
+//  AND THE OPENINGS THAT ARE ALREADY SET AND ARE WRONG.
+//
+//  "Nothing already set is touched" is the right rule and it left a hole with
+//  no way out of it. His own book: cash out by 1,30,041.45 and the Fedral Bank
+//  account out by 2,41,610.00, and the fill said "cash left as it was, 0
+//  bank(s)" -- because both already had a figure against them, so both were
+//  passed over. An opening set WRONGLY could never be put right from here, and
+//  the cash book and the bank book were out by that amount for ever.
+//
+//  A wrong opening is also the likeliest single cause of a cash or bank gap,
+//  because the movements are checked separately and, on his book, Bank Of
+//  Baroda agrees to the paisa -- which says the receipts and payments are being
+//  read correctly and only the figure they start from is not.
+//
+//  So the ones that disagree are listed too, SEPARATELY, with both figures
+//  shown. Nothing is written until he presses. An opening is his own figure
+//  until he says otherwise, and the difference between offering and doing it
+//  quietly is the whole point.
+//
+//  Only where the file actually carries an opening. A trial balance with no
+//  opening column says nothing about what an account opened at, and a nought
+//  read out of an absent column would wipe a figure that was right.
+// ---------------------------------------------------------------------------
+export function openingsToPutRight(tb, have = {}) {
+  const byKey = new Map();
+  (tb.rows || []).forEach((r) => byKey.set(key(r.name), r));
+  const said = (name) => {
+    const r = byKey.get(key(name));
+    if (!r || !r.hasOpening) return null;      // no column, so the file says nothing
+    return Number.isFinite(Number(r.opening)) ? Number(r.opening) : null;
+  };
+  const differs = (mine, theirs) =>
+    theirs !== null && Math.abs(Number(mine || 0) - theirs) >= 1;
+
+  const banks = (have.banks || [])
+    .filter((b) => (Number(b.opening || 0) || b.opening_on) && differs(b.opening, said(b.name)))
+    .map((b) => ({ id: b.id, name: b.name, was: Number(b.opening || 0),
+                   opening: said(b.name) }));
+
+  const parties = (have.parties || [])
+    .filter((p) => (Number(p.opening_balance || 0) || p.opening_date)
+                && differs((p.opening_type === 'you_owe' ? -1 : 1) * Number(p.opening_balance || 0),
+                           said(p.name)))
+    .map((p) => ({ id: p.id, name: p.name,
+                   was: (p.opening_type === 'you_owe' ? -1 : 1) * Number(p.opening_balance || 0),
+                   opening: said(p.name) }));
+
+  const cashSaid = said('cash');
+  const cash = ((Number(have.opening_cash || 0) || have.opening_cash_on)
+                && differs(have.opening_cash, cashSaid))
+    ? { was: Number(have.opening_cash || 0), opening: cashSaid } : null;
+
+  return { cash, banks, parties,
+           count: (cash ? 1 : 0) + banks.length + parties.length };
+}
+
+/* ===================== which of the three files is this? ===================== */
+
+// ONE DROP, ANY NUMBER OF FILES, IN ANY ORDER.
+//
+// A shop was asked to export three things out of Tally and bring each one to a
+// different box on the page, in the right order, pressing a different button
+// for each: the masters and the day book to one, the trial balance to another,
+// then "Fill these in", then drop the trial balance AGAIN to see the result.
+// Four presses and an understanding of why, before any of it is right.
+//
+// He put it plainly: why will my customer do that?
+//
+// He will not. So Skwik reads the file and works out for itself which of the
+// three it is, and there is one box and one button. The three are told apart by
+// what only each of them has:
+//
+//    a TRIAL BALANCE  is a flat run of DSPDISPNAME / DSPACCINFO pairs
+//    a DAY BOOK       has VOUCHER blocks in it
+//    the MASTERS      have LEDGER or STOCKITEM blocks and no vouchers
+//
+// A file can be more than one of these at once -- Tally will happily export
+// masters and vouchers together -- so this returns everything it found rather
+// than picking one, and the caller uses each part for what it is good for.
+export function whichTallyFile(text) {
+  const t = String(text || '');
+  const has = (re) => re.test(t);
+  const trial   = has(/<DSPDISPNAME>/i) && has(/<DSPACCINFO>/i);
+  const daybook = has(/<VOUCHER[\s>]/i);
+  const ledgers = has(/<LEDGER[\s>]/i);
+  const items   = has(/<STOCKITEM[\s>]/i);
+  const masters = (ledgers || items) && !daybook;
+
+  const kinds = [];
+  if (trial) kinds.push('trial balance');
+  if (daybook) kinds.push('day book');
+  if (masters || ((ledgers || items) && daybook)) kinds.push('masters');
+
+  return {
+    trial,
+    daybook,
+    masters: masters || ((ledgers || items) && daybook),
+    // for a tally file that is none of the three, and for one that is not Tally
+    tally: has(/<ENVELOPE/i) || has(/<TALLYMESSAGE/i) || trial || daybook || ledgers || items,
+    kinds,
+    // what to call it on screen
+    say: kinds.length ? kinds.join(' and ')
+       : has(/<ENVELOPE/i) ? 'a Tally file, but not one Skwik can use'
+       : 'not a Tally export',
+  };
 }
