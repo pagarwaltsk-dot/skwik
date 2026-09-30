@@ -121,9 +121,13 @@
 
   <section class="card hide" id="inCard">
     <h2>Bring a Tally export in</h2>
-    <p class="note">Export the day book and the masters out of Tally as XML — a whole year
-       at once is fine here. Nothing is written until you have seen what is in the file.
-       Bringing the same period in twice writes nothing the second time.</p>
+    <p class="note">Export the <b>day book</b>, the <b>masters</b> and the
+       <b>trial balance</b> out of Tally as XML and pick all three at once — a whole year
+       at a time is fine. Skwik works out for itself which file is which and uses each one
+       for what it knows: the masters for what things are, the day book for what happened,
+       the trial balance for what each account opened at. Nothing is written until you have
+       seen what is in them, and bringing the same period in twice writes nothing the
+       second time.</p>
     <div class="row" style="margin-top:14px">
       <input id="file" type="file" accept=".xml,text/xml,application/xml" multiple>
     </div>
@@ -152,9 +156,10 @@
 
   <section class="card hide" id="checkCard">
     <h2>Does Skwik agree with Tally?</h2>
-    <p class="note">Export a <b>Trial Balance</b> out of Tally — Display → Trial Balance →
-       Export → XML — and drop it here. Nothing is written. It puts your figures side by
-       side and says where they differ, biggest first.</p>
+    <p class="note">This runs on its own when you bring a trial balance in above. It is
+       here as well for when that is the only file you have — Tally: Display → Trial
+       Balance → Export → XML. Nothing is written. It puts your figures side by side and
+       says where they differ, biggest first.</p>
     <div class="row" style="margin-top:14px">
       <input id="tbFile" type="file" accept=".xml,text/xml,application/xml">
     </div>
@@ -197,8 +202,10 @@ import { signIn, restClient } from './rest.js';
 import { project } from './project.js';
 import { vouchersFromTallyXml, checkBook } from '../src/lib/tallybook.js';
 import { loadBook, planLoad, readMasters } from '../src/lib/tallyload.js';
+import { ledgerRolesFromTallyXml } from '../src/lib/transfer.js';
 import { saveBook, sayWhatWentOut } from '../src/lib/booksave.js';
-import { trialBalanceFromXml, compareMoney, compareParties, openingsToFill }
+import { trialBalanceFromXml, compareMoney, compareParties, openingsToFill,
+         openingsToPutRight, whichTallyFile }
   from '../src/lib/trialbal.js';
 import { itemsFromTallyXml, partiesFromTallyXml, moneyLedgersFromTallyXml,
          openingByGodownFromTallyXml } from '../src/lib/transfer.js';
@@ -288,20 +295,82 @@ async function readWide(f, little, onAt) {
   return out.charCodeAt(0) === 0xFEFF ? out.slice(1) : out;
 }
 
+// THE TRIAL BALANCE FOUND AMONG THE FILES HE DROPPED, and what the masters said
+// each ledger is. Both are kept here so the check that runs after the import can
+// use them without being handed anything.
+let tbFound = null;
+let rolesFound = {};
+
 $('file').onchange = async () => {
   const files = [...$('file').files];
   if (!files.length) return;
   show($('planBox'), false); show($('writeBox'), false); show($('readBox'));
+  tbFound = null; rolesFound = {};
   const texts = [];
+  const wasWhat = [];
   for (const f of files) {
     $('readMsg').textContent = `Reading ${f.name}…`;
-    texts.push(await readFile(f, (at, of) => {
+    const text = await readFile(f, (at, of) => {
       $('readBar').style.width = `${Math.round((at / (of || 1)) * 100)}%`;
       $('readMsg').textContent = `Reading ${f.name} — ${(at / 1048576).toFixed(0)} of `
         + `${(of / 1048576).toFixed(0)} MB`;
-    }));
+    });
+
+    // ------------------------------------------------------------------
+    //  WHICH OF THE THREE IS THIS? SKWIK WORKS IT OUT.
+    //
+    //  He asked the question that mattered: a shop was being told to export
+    //  three things out of Tally, bring each one to a different box, in the
+    //  right order, and press a different button for each -- then drop the
+    //  trial balance a SECOND time to see whether it had worked. Four presses
+    //  and an understanding of why. "Why my customer will do that?"
+    //
+    //  He will not. So all three go in one box in any order, Skwik reads each
+    //  one and says what it is, and there is one button.
+    //
+    //  A trial balance is set aside rather than fed to the bill reader, which
+    //  would find nothing in it and say the file was empty. The masters are
+    //  read twice on purpose: once for the items and names, and once for what
+    //  GROUP each ledger sits under -- which is the thing that makes the
+    //  comparison afterwards correct rather than merely quicker.
+    // ------------------------------------------------------------------
+    const kind = whichTallyFile(text);
+    wasWhat.push({ name: f.name, say: kind.say, kind });
+    if (kind.trial && !kind.daybook) { tbFound = text; continue; }
+    if (kind.masters) {
+      try { Object.assign(rolesFound, ledgerRolesFromTallyXml(text)); }
+      catch (e) { /* a masters file with no groups in it: nothing to learn */ }
+    }
+    texts.push(text);
   }
-  $('readMsg').textContent = 'Checking what is in it\u2026';
+
+  // WHICH FILE WAS WHICH, SOMEWHERE IT SURVIVES.
+  //
+  // This went into the reading message, which is overwritten a second later by
+  // "Checking what is in it" and then by the plan -- so the one line telling him
+  // Skwik had understood his three files flashed past and was gone. It goes in
+  // the plan now, where it stays in front of him while he decides.
+  const saidWhat = '<p class="note" style="margin-top:6px"><b>What Skwik made of your '
+    + wasWhat.length + ' file(s):</b><br>'
+    + wasWhat.map((w) => '&bull; <b>' + w.name + '</b> — ' + w.say
+        + (w.kind.trial && !w.kind.daybook
+            ? ' (set aside for the check after the import)' : '')).join('<br>')
+    + '</p>';
+  $('readMsg').innerHTML = saidWhat;
+  await new Promise((r) => setTimeout(r, 30));
+
+  // NOTHING BUT A TRIAL BALANCE? Then there is nothing to import, and the check
+  // is the whole job. Run it and say so, rather than reporting an empty file.
+  if (!texts.length && tbFound) {
+    show($('readBox'), false);
+    $('tbMsg').textContent = 'That is a trial balance, so there is nothing to bring in — '
+      + 'here is how it compares with your books.';
+    try { await checkAgainstTally(tbFound); }
+    catch (err) { $('tbMsg').textContent = 'Could not finish the check. '
+      + (err && err.message ? err.message : err); }
+    return;
+  }
+  $('readMsg').innerHTML = saidWhat + '<p class="note">Checking what is in it\u2026</p>';
   await new Promise((r) => setTimeout(r, 30));
 
   // ---------------------------------------------------------------------
@@ -676,6 +745,35 @@ $('write').onclick = async () => {
                 .join('; ') : '');
     show($('planBox'), false);
     loadRuns();
+
+    // ------------------------------------------------------------------
+    //  AND THEN THE TRIAL BALANCE, IN THE SAME PRESS AND IN THE RIGHT ORDER.
+    //
+    //  The order is not a detail, it is the whole reason this could not simply
+    //  be three boxes in any sequence:
+    //
+    //      the masters say what things ARE          -- names, items, banks
+    //      the day book says what HAPPENED          -- bills, receipts
+    //      the trial balance says what each account OPENED AT
+    //
+    //  The openings have to be written AFTER the import, because the import is
+    //  what creates the names and the bank accounts they attach to. Drop the
+    //  trial balance first and there is nothing for it to attach to; that is
+    //  why the old page made him do it in one particular order and never said
+    //  so. Now it does it for him.
+    //
+    //  The comparison also needs the masters, for the groups -- so this runs
+    //  with everything the three files between them know, which is more than
+    //  any one of them knows alone.
+    // ------------------------------------------------------------------
+    if (tbFound) {
+      $('writeMsg').innerHTML += '<br>Now checking it against your trial balance\u2026';
+      try { await checkAgainstTally(tbFound); }
+      catch (err) {
+        $('tbMsg').textContent = 'The import is done. The check against your trial balance '
+          + 'could not finish: ' + (err && err.message ? err.message : err);
+      }
+    }
   } catch (e) {
     $('writeMsg').innerHTML = `<span style="color:var(--danger)">${e.message || e}</span>`;
     $('write').disabled = false;
@@ -705,17 +803,27 @@ $('tbFile').onchange = async () => {
   }
 };
 
-async function checkAgainstTally() {
-  const f = $('tbFile').files && $('tbFile').files[0];
-  if (!f) return;
+// TAKES THE TEXT, NOT THE FILE INPUT.
+//
+// It used to reach into $('tbFile') for itself, which meant the only way to run
+// a check was to have dropped a file into that one box. Now the one box at the
+// top can hand it a trial balance it found among three files, and the separate
+// box still works for somebody who only has that one file.
+async function checkAgainstTally(given) {
+  let text = given || null;
+  if (!text) {
+    const f = $('tbFile').files && $('tbFile').files[0];
+    if (!f) return;
+    $('tbMsg').textContent = 'Reading ' + f.name + '…';
+    try { text = await readFile(f, () => {}); }
+    catch (err) {
+      $('tbMsg').textContent = 'Could not read that file. ' + (err.message || err); return;
+    }
+  }
+  show($('checkCard'));
   show($('tbBox'));
   $('tbTable').innerHTML = '';
   $('tbUnseen').innerHTML = '';
-  $('tbMsg').textContent = 'Reading ' + f.name + '…';
-
-  let text;
-  try { text = await readFile(f, () => {}); }
-  catch (err) { $('tbMsg').textContent = 'Could not read that file. ' + (err.message || err); return; }
 
   const tb = trialBalanceFromXml(text);
   if (!tb.rows.length || !tb.balances) { $('tbMsg').textContent = tb.why; return; }
@@ -784,7 +892,13 @@ async function checkAgainstTally() {
     (mine.parties || []).forEach((x) => {
       mineBy[String(x.name).toLowerCase().replace(/\s+/g, ' ').trim()] = x.amount;
     });
-    pc = compareParties(tb, rows || [], mineBy, c.lines.map((l) => l.label).concat(['Cash']));
+    // WITH WHAT THE MASTERS SAID EACH LEDGER IS, when they came in the same
+    // drop. Without them a capital account and a customer Skwik has never heard
+    // of look exactly alike; with them, his Priti Goyal, Piyush Agarwal and
+    // Pramod Kumar Agarwal (HUF) -- 24 lakh between them -- stop being listed
+    // as missing balances and are set aside as accounts Skwik does not keep.
+    pc = compareParties(tb, rows || [], mineBy,
+                        c.lines.map((l) => l.label).concat(['Cash']), rolesFound);
   } catch (err) {
     $('tbParties').innerHTML = '<p class="note" style="margin-top:18px">Could not check the '
       + 'customers and suppliers. ' + (err.message || err) + ' — run '
@@ -807,7 +921,29 @@ async function checkAgainstTally() {
       + oneSided('With a balance in your Tally, and no such name in Skwik',
           pc.onlyTally.map((r) => [r.name, r.closing]))
       + oneSided('With a balance in Skwik, and no such name in your Tally',
-          pc.onlySkwik.map((r) => [r.name, r.balance]));
+          pc.onlySkwik.map((r) => [r.name, r.balance]))
+      // ACCOUNTS SKWIK WAS NEVER MEANT TO KEEP, SAID SO RATHER THAN LISTED AS
+      // DIFFERENCES. His capital and his family's loans -- Priti Goyal,
+      // Piyush Agarwal, Pramod Kumar Agarwal (HUF), 24 lakh between them --
+      // were sitting in the list above under "no such name in Skwik", which
+      // reads as twenty-four lakh missing and is nothing of the kind. Only the
+      // masters know they are capital accounts, which is why the three files
+      // belong in one drop.
+      + ((pc.notOurs || []).length
+        ? '<p class="note" style="margin-top:18px"><b>' + (pc.notOurs || []).length
+          + ' account(s) in your Tally that Skwik does not keep.</b> Your capital, your '
+          + 'loans, your duties and taxes — your accountant\u2019s ledgers. These are not '
+          + 'differences and there is nothing to do about them; they are here so you can '
+          + 'see they were looked at and set aside on purpose.</p><table>'
+          + '<tr><th>Account</th><th>Under</th><th class="r">Your Tally</th></tr>'
+          + (pc.notOurs || []).slice(0, 12).map((r) =>
+              '<tr><td>' + r.name + '</td><td class="note">' + (r.under || '')
+              + '</td><td class="r">' + rupee(r.closing) + '</td></tr>').join('')
+          + ((pc.notOurs || []).length > 12
+              ? '<tr><td colspan="3" class="note">and ' + ((pc.notOurs || []).length - 12)
+                + ' more</td></tr>' : '')
+          + '</table>'
+        : '');
   }
 
   /* ---- and the openings this file can fill in ---- */
@@ -851,22 +987,87 @@ async function offerOpenings(tb) {
   } catch (err) { return; }
 
   const fill = openingsToFill(tb, have);
-  if (!fill.count) return;
+  const put  = openingsToPutRight(tb, have);
+  if (!fill.count && !put.count) return;
 
   const bits = [];
   if (fill.cash) bits.push('cash in hand ' + rupee(fill.cash));
   fill.banks.forEach((b) => bits.push(b.name + ' ' + rupee(b.opening)));
   if (fill.parties.length) bits.push(fill.parties.length + ' customer/supplier opening(s)');
 
-  $('tbFix').innerHTML =
-    '<p class="note" style="margin-top:16px"><b>This file can fill in ' + fill.count
-    + ' opening figure(s) that are still nil.</b><br>' + bits.slice(0, 6).join(' · ')
-    + (bits.length > 6 ? ' · and ' + (bits.length - 6) + ' more' : '')
-    + '<br>Nothing already set is touched.</p>'
-    + '<div class="row"><button id="fixOpen">Fill these in</button>'
-    + '<span class="note" id="fixMsg"></span></div>';
+  // AND THE ONES ALREADY SET THAT DISAGREE, offered separately with BOTH
+  // figures on the button.
+  //
+  // "Nothing already set is touched" is the right rule and it left no way out.
+  // On his own book the reconciliation said cash was out by 1,30,041.45 and the
+  // Fedral Bank account by 2,41,610.00, he pressed Fill these in, and it
+  // answered "cash left as it was, 0 bank(s)" -- because both already had a
+  // figure, so both were passed over, for ever.
+  //
+  // Correcting one is a different act from filling in a blank, so it is a
+  // different button, and it prints what Skwik has now beside what the file
+  // says before he presses. Nothing is written until he does.
+  const putRows = [];
+  if (put.cash) putRows.push(['Cash in hand', put.cash.was, put.cash.opening]);
+  put.banks.forEach((b) => putRows.push([b.name, b.was, b.opening]));
+  put.parties.forEach((q) => putRows.push([q.name, q.was, q.opening]));
 
-  $('fixOpen').onclick = async () => {
+  $('tbFix').innerHTML =
+    (fill.count
+      ? '<p class="note" style="margin-top:16px"><b>This file can fill in ' + fill.count
+        + ' opening figure(s) that are still nil.</b><br>' + bits.slice(0, 6).join(' · ')
+        + (bits.length > 6 ? ' · and ' + (bits.length - 6) + ' more' : '')
+        + '<br>Nothing already set is touched.</p>'
+        + '<div class="row"><button id="fixOpen">Fill these in</button>'
+        + '<span class="note" id="fixMsg"></span></div>'
+      : '')
+    + (put.count
+      ? '<p class="note" style="margin-top:18px"><b>And ' + put.count
+        + ' opening figure(s) are already set and do not agree with this file.</b><br>'
+        + 'These are the ones "Fill these in" leaves alone. A wrong opening makes the '
+        + 'cash book and the bank book wrong by that amount for ever, so here is what '
+        + 'each one would become. Nothing is written until you press.</p>'
+        + '<table><tr><th>OPENING</th><th>SKWIK HAS</th><th>YOUR TALLY SAYS</th>'
+        + '<th>WOULD MOVE BY</th></tr>'
+        + putRows.slice(0, 12).map(([n, was, now]) =>
+            '<tr><td>' + n + '</td><td class="num">' + rupee(was)
+            + '</td><td class="num">' + rupee(now)
+            + '</td><td class="num">' + rupee(now - was) + '</td></tr>').join('')
+        + (putRows.length > 12
+            ? '<tr><td colspan="4" class="note">and ' + (putRows.length - 12)
+              + ' more</td></tr>' : '')
+        + '</table>'
+        + '<div class="row"><button id="fixWrong">Put these right</button>'
+        + '<span class="note" id="wrongMsg"></span></div>'
+      : '');
+
+  if ($('fixWrong')) $('fixWrong').onclick = async () => {
+    $('fixWrong').disabled = true;
+    $('wrongMsg').textContent = 'Writing…';
+    const { data, error } = await db.rpc('put_openings_right', {
+      p: { on: openingDay(),
+           cash: put.cash ? put.cash.opening : null,
+           banks: put.banks.map((b) => ({ name: b.name, opening: b.opening })),
+           parties: put.parties.map((q) => ({ name: q.name, opening: q.opening })) },
+    });
+    if (error) {
+      $('fixWrong').disabled = false;
+      $('wrongMsg').textContent = /does not exist|PGRST202/i.test(error.message || '')
+        ? 'This needs the 1.10.44 SQL run in Supabase first.'
+        : 'Could not write them. ' + error.message;
+      return;
+    }
+    const said = [];
+    if (data.cash) said.push('cash ' + rupee(data.cash.was) + ' \u2192 ' + rupee(data.cash.now));
+    if ((data.banks || []).length) said.push((data.banks || []).length + ' bank(s)');
+    if ((data.parties || []).length) said.push((data.parties || []).length + ' name(s)');
+    const miss = (data.missing || []).length;
+    $('wrongMsg').innerHTML = '<b>Put right:</b> ' + (said.join(', ') || 'nothing')
+      + (miss ? '. ' + miss + ' could not be found in Skwik and were left alone' : '')
+      + '. Drop the file in again to see it.';
+  };
+
+  if ($('fixOpen')) $('fixOpen').onclick = async () => {
     $('fixOpen').disabled = true;
     $('fixMsg').textContent = 'Writing…';
     const { data, error } = await db.rpc('set_openings', {
