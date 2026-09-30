@@ -1,0 +1,228 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Skwik — what is in this file?</title>
+<!--
+  THE EXTRACTING MACHINE, WITH NOTHING BEHIND IT.
+
+  No sign-in, no database, no writing of any kind. Drop a file and it says
+  what it thinks each column is and why. That is the whole page. It exists so
+  a dozen files from a dozen different programs can be thrown at the detector
+  in an evening and we can count how often it is right, before a line of
+  importing is written against it.
+
+  It loads the app's OWN src/lib/detect.js, so what is being judged here is
+  the code that would ship.
+-->
+<style>
+  :root { --bg:#FBFAF6; --ink:#10201C; --muted:#4F5D59; --line:#E6E1D6;
+          --accent:#0B6B5E; --soft:#F2F7F6; --bad:#C2410C; --flag:#FBF3DC; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+  header { background:var(--ink); color:#fff; padding:18px 20px; }
+  header b { font-size:19px; }
+  header span { color:#9FB3AE; margin-left:10px; font-size:13px; }
+  main { max-width:960px; margin:0 auto; padding:20px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px;
+          padding:20px; margin-bottom:16px; }
+  h2 { font-size:16px; margin:0 0 8px; }
+  .note { color:var(--muted); font-size:13px; margin:0 0 14px; }
+  #drop { border:2px dashed var(--line); border-radius:14px; padding:38px 20px;
+          text-align:center; color:var(--muted); background:#fff; cursor:pointer; }
+  #drop.over { border-color:var(--accent); background:var(--soft); color:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; font-size:11px; letter-spacing:.6px; text-transform:uppercase;
+       color:var(--muted); border-bottom:1px solid var(--line); padding:8px 6px; }
+  td { padding:9px 6px; border-bottom:1px solid #F4F2EB; vertical-align:top; }
+  td.name { font-weight:600; }
+  td.role { font-family:ui-monospace,Menlo,monospace; font-weight:700; }
+  .certain { color:#0B5C34; } .likely { color:var(--accent); }
+  .guess { color:#7A5B12; } .none { color:var(--muted); }
+  .why { color:var(--muted); font-size:12.5px; }
+  .pill { display:inline-block; background:var(--soft); border:1px solid #CFE3DF;
+          color:var(--accent); border-radius:999px; padding:3px 10px; font-size:12px;
+          font-weight:700; margin-right:6px; }
+  .warn { background:var(--flag); border:1px solid #E9DCB4; border-radius:12px;
+          padding:12px 14px; color:#7A5B12; font-size:13.5px; }
+  pre { background:#F7F6F1; border:1px solid var(--line); border-radius:10px;
+        padding:12px; overflow:auto; font-size:12.5px; max-height:240px; }
+  footer { color:var(--muted); font-size:12px; text-align:center; padding:8px 20px 40px; }
+</style>
+
+<header><b>Skwik</b><span>what is in this file?</span></header>
+<main>
+  <div class="card">
+    <h2>Drop any export here</h2>
+    <p class="note">A day book, a ledger, a sales register, a stock summary — out of Tally,
+       Busy, Marg, Vyapar, a spreadsheet, anything. CSV, TSV, XML or JSON. It reads the file
+       and says what it thinks each column is, and why it thinks so.
+       <b>Nothing is written anywhere.</b> There is no login and no database behind this page.</p>
+    <div id="drop">Drop a file here, or click to pick one
+      <input id="file" type="file" hidden
+             accept=".csv,.tsv,.txt,.xml,.json,text/csv,text/plain,application/xml,application/json">
+    </div>
+  </div>
+  <div id="out"></div>
+</main>
+<footer>If it is wrong about a column, that is the point of this page. Send the file.</footer>
+
+<script type="module">
+import { detect, extract } from '../src/lib/detect.js';
+
+const $ = (id) => document.getElementById(id);
+const esc = (x) => String(x == null ? '' : x)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const drop = $('drop'), file = $('file'), out = $('out');
+drop.onclick = () => file.click();
+['dragenter', 'dragover'].forEach((e) => drop.addEventListener(e, (ev) => {
+  ev.preventDefault(); drop.classList.add('over');
+}));
+['dragleave', 'drop'].forEach((e) => drop.addEventListener(e, (ev) => {
+  ev.preventDefault(); drop.classList.remove('over');
+}));
+drop.addEventListener('drop', (ev) => { if (ev.dataTransfer.files[0]) read(ev.dataTransfer.files[0]); });
+file.onchange = () => { if (file.files[0]) read(file.files[0]); file.value = ''; };
+
+// TALLY WRITES UTF-16, and read as UTF-8 it is a screen of nonsense with a
+// nought between every letter. The first bytes say which it is.
+async function textOf(f) {
+  const buf = new Uint8Array(await f.arrayBuffer());
+  let enc = 'utf-8';
+  if (buf[0] === 0xFF && buf[1] === 0xFE) enc = 'utf-16le';
+  else if (buf[0] === 0xFE && buf[1] === 0xFF) enc = 'utf-16be';
+  else if (buf.length > 3 && buf[1] === 0x00 && buf[3] === 0x00) enc = 'utf-16le';
+  return new TextDecoder(enc).decode(buf);
+}
+
+async function read(f) {
+  out.innerHTML = '<div class="card"><p class="note">Reading…</p></div>';
+  let text;
+  try { text = await textOf(f); }
+  catch (e) { out.innerHTML = card(`Could not read that file. ${esc(e.message)}`); return; }
+  let d, x;
+  try { d = detect(text); x = d.problem ? null : extract(d); }
+  catch (e) { out.innerHTML = card(`It fell over on that file. ${esc(e.message)}`); return; }
+  show(f, d, text, x);
+}
+
+const card = (html) => `<div class="card">${html}</div>`;
+
+function show(f, d, text, x) {
+  if (d.problem) {
+    out.innerHTML = card(`<h2>${esc(f.name)}</h2><div class="warn">${esc(d.problem)}</div>`
+      + `<p class="note" style="margin-top:12px">The first few lines of it:</p>`
+      + `<pre>${esc(text.slice(0, 700))}</pre>`);
+    return;
+  }
+  const sureClass = { certain: 'certain', likely: 'likely', 'a guess': 'guess', none: 'none' };
+  const rows = d.columns.map((c) => `
+    <tr>
+      <td class="name">${esc(c.name) || '<i>(no name)</i>'}</td>
+      <td class="role ${sureClass[c.sure]}">${esc(c.role || '—')}</td>
+      <td class="${sureClass[c.sure]}">${esc(c.sure)}</td>
+      <td class="why">${esc(c.why.slice(0, 3).join('; ')) || ''}</td>
+      <td class="why">${esc((c.shape.values.slice(0, 2).join(' · ') || '').slice(0, 40))}</td>
+    </tr>`).join('');
+
+  const n = (r) => d.columns.filter((c) => c.sure === r).length;
+  out.innerHTML = card(`
+    <h2>${esc(f.name)}</h2>
+    <p class="note">
+      <span class="pill">${esc(d.kind.toUpperCase())}</span>
+      <span class="pill">${d.rows} rows</span>
+      <span class="pill">${d.header.length} columns</span>
+      ${d.record ? `<span class="pill">record: ${esc(d.record)}</span>` : ''}
+      ${d.droppedRows ? `<span class="pill">${d.droppedRows} set aside</span>` : ''}
+    </p>
+    <p class="note">${n('certain')} certain · ${n('likely')} likely ·
+       ${n('a guess')} a guess · ${n('none')} it cannot say.
+       A column is <b>certain</b> only when the arithmetic in the file proves it —
+       not because of what it is called.</p>
+    <table>
+      <tr><th>Column</th><th>Skwik thinks</th><th>How sure</th><th>Why</th><th>Looks like</th></tr>
+      ${rows}
+    </table>`)
+    + taken(x, d)
+    + card(`<h2>What proved itself</h2>
+      <p class="note">These are the sums that hold across the file. They are the evidence;
+         everything above is read off them.</p>
+      ${proofLines(d).map((l) => `<div class="why" style="padding:3px 0">· ${esc(l)}</div>`)
+        .join('') || '<div class="why">Nothing in this file proves itself by arithmetic. '
+        + 'Everything above is read off the column names alone.</div>'}`);
+}
+
+// WHAT CAME OUT. The column table is the working; this is the answer.
+function taken(x, d) {
+  if (!x || x.problem) return '';
+  const pc = x.closes == null ? null : Math.round(x.closes * 100);
+  const verdict = pc == null
+    ? '<span class="warn" style="display:inline-block">The file gives no total to check against, '
+      + 'so nothing here has been proved by arithmetic.</span>'
+    : pc === 100
+      ? `<b class="certain">Every one of the ${x.checked} adds up.</b>`
+      : `<b class="${pc >= 95 ? 'likely' : 'guess'}">${x.agreed} of ${x.checked} add up`
+        + ` \u2014 ${x.checked - x.agreed} do not.</b>`;
+
+  if (x.kind === 'ledgers') {
+    const rows = x.ledgers.slice(0, 40).map((l) => `<tr>
+      <td class="name">${esc(l.party)}</td>
+      <td>${num(l.opening)}</td><td>${num(l.debit)}</td>
+      <td>${num(l.credit)}</td><td>${num(l.closing)}</td></tr>`).join('');
+    return card(`<h2>What came out \u2014 ${x.ledgers.length} ledgers</h2>
+      <p class="note">${verdict} The test is opening + debit \u2212 credit = closing.</p>
+      <table><tr><th>Party</th><th>Opening</th><th>Debit</th><th>Credit</th><th>Closing</th></tr>
+      ${rows}</table>
+      ${x.ledgers.length > 40 ? `<p class="note">\u2026 and ${x.ledgers.length - 40} more.</p>` : ''}`);
+  }
+
+  const bills = x.bills.slice(0, 15).map((b) => `
+    <tr>
+      <td class="name">${esc(b.no) || '<i>\u2014</i>'}</td>
+      <td>${esc(b.date)}</td>
+      <td>${esc(b.party)}</td>
+      <td class="why">${b.lines.length} line${b.lines.length === 1 ? '' : 's'}${
+        b.lines[0] && b.lines[0].item ? ': ' + esc(b.lines[0].item) : ''}</td>
+      <td>${num(b.taxable)}</td>
+      <td>${num((b.cgst || 0) + (b.sgst || 0) + (b.igst || 0) + (b.cess || 0))}</td>
+      <td>${num(b.total)}</td>
+      <td class="${b.doesNotAddUp != null ? 'guess' : 'certain'}">${
+        b.doesNotAddUp != null ? 'out by ' + num(b.doesNotAddUp) : 'adds up'}</td>
+    </tr>`).join('');
+
+  return card(`<h2>What came out \u2014 ${x.bills.length} bills</h2>
+    <p class="note">${verdict} The test is taxable + tax = the total the file itself states.
+      This is the answer; the table above is only the working.</p>
+    <table>
+      <tr><th>Bill</th><th>Date</th><th>Party</th><th>Lines</th>
+          <th>Taxable</th><th>Tax</th><th>Total</th><th></th></tr>
+      ${bills}
+    </table>
+    ${x.bills.length > 15 ? `<p class="note">\u2026 and ${x.bills.length - 15} more.</p>` : ''}
+    <p class="note" style="margin-top:14px">This is the shape anything can be fed from \u2014
+      not Tally's and not Skwik's:</p>
+    <pre>${esc(JSON.stringify(x.bills[0], null, 1))}</pre>`);
+}
+
+const num = (v) => (v == null ? '' : Number(v).toLocaleString('en-IN',
+  { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+function proofLines(d) {
+  const nm = (i) => d.header[i] || `column ${i + 1}`;
+  const out = [];
+  for (const p of d.evidence.product.slice(0, 6)) {
+    out.push(`${nm(p.a)} × ${nm(p.b)} = ${nm(p.c)} on ${p.hit} of ${p.seen} rows`);
+  }
+  for (const r of d.evidence.rate.slice(0, 6)) {
+    out.push(`${nm(r.tax)} over ${nm(r.base)} lands on a real GST rate on ${r.hit} of ${r.seen} rows`);
+  }
+  for (const h of d.evidence.halves.slice(0, 4)) {
+    out.push(`${nm(h.a)} and ${nm(h.b)} are always the same figure — CGST and SGST`);
+  }
+  for (const s of d.evidence.sum.slice(0, 6)) {
+    out.push(`${s.parts.map(nm).join(' + ')} = ${nm(s.z)} on ${s.hit} of ${s.seen} rows`);
+  }
+  return out;
+}
+</script>

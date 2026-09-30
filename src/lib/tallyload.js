@@ -32,6 +32,7 @@
 
 import { guessUqc } from './uqc.js';
 import { STATES, codeForState } from './states.js';
+import { roleForJournal } from './tallybook.js';
 
 /* ============== WHERE A NAME IS, AND WHETHER HE IS REGISTERED ==============
  *
@@ -95,6 +96,22 @@ const cleanGstin = (g, ownGstin, org) => {
 // from the same Tally id can never collide.
 const HEX = /^[0-9a-f]+$/i;
 
+// A TALLY GUID IS THE SAME GUID IN EVERY FIRM, and the row's id was made
+// from it alone. So the second firm to be given the same Tally file tried to
+// write a row whose id another firm already held -- a PRIMARY KEY clash, not
+// a numbering one. save_voucher catches any unique violation and reports the
+// only one it expects, so the message read:
+//
+//     could not write Sales 1380 of 2026-09-01:
+//     Bill number 1380 is already used in your books.
+//
+// -- on a firm with nothing whatever in it. An hour went on the bill number.
+// Reproduced since as a test: an empty second firm, the same voucher, the
+// same words.
+//
+// The firm is part of the identity now. The same file in one firm is still
+// the same rows, brought in twice and written once; the same file in another
+// firm is that firm's own copy.
 export function idFor(ref, salt = '') {
   const t = String(ref || '').trim().toLowerCase();
   const m = t.match(/^([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})(?:-([0-9a-f]+))?$/);
@@ -279,6 +296,8 @@ export function planLoad(book, have = {}) {
     }
   }
 
+
+
   // Whatever the file said about each name, carried onto the ones being made
   // so they are born with it rather than mended a moment later.
   for (const [k, np] of newParties) {
@@ -372,6 +391,48 @@ export function planLoad(book, have = {}) {
         state_name: r.state_name || '',
       });
     }
+  }
+
+  // THIS HAS TO COME AFTER THE NAMES ARE FINAL. The masters' own customers
+  // and suppliers are added to newParties further up this function, so asking
+  // "is this name a person?" any earlier than here would not yet know about
+  // them -- and the whole point of the check is not to turn a person into a
+  // bank account.
+  // AND THE BANK EVERY RECEIPT AND PAYMENT ACTUALLY WENT THROUGH.
+  //
+  // This was the hole. Bank accounts were made from two places -- the bank
+  // LEDGERS in a masters file, and the accounts a contra deposit touched --
+  // and never from the receipts and payments themselves. So a day book
+  // imported without its masters named "Bank Of Baroda" on every bank receipt,
+  // no account of that name existed, and every one of them was written as
+  // mode 'bank' with no bank behind it: money that is in the payments table
+  // and in NO bank book, so the trial balance cannot foot and no bank
+  // statement will ever reconcile.
+  //
+  // Found on his own live book by 1.10.39's last check: 25 entries worth
+  // 8,20,400 sitting in no bank. Reproduced here from a 25-receipt day book
+  // with no masters: 19 entries, 2,97,000.
+  //
+  // AND NOT NAMED AFTER A PERSON. When the file carries no ledger masters the
+  // reader has to guess which leg is the money, and it can guess wrong -- the
+  // comment in readPayment is about exactly that, "Cash Credit Account Fedral
+  // Bank paid 16,500 via Mr Harsa Gowala", the two legs the wrong way round.
+  // So a name that is also a customer or a supplier in this same book is never
+  // turned into a bank account. Better to leave that one unplaced and say so
+  // than to put a man in the list of bank accounts.
+  const isAName = (k) => parties.has(k) || newParties.has(k);
+  for (const p of (book.payments || [])) {
+    if (p.mode !== 'bank') continue;
+    const k = norm(p.account);
+    if (!k || accounts.has(k) || newAccounts.has(k) || isAName(k)) continue;
+    newAccounts.set(k, { name: p.account, opening: 0 });
+  }
+  // the same for an expense paid out of a bank
+  for (const e of (book.expenses || [])) {
+    if (e.mode !== 'bank') continue;
+    const k = norm(e.account);
+    if (!k || accounts.has(k) || newAccounts.has(k) || isAName(k)) continue;
+    newAccounts.set(k, { name: e.account, opening: 0 });
   }
 
   // ---- and NOW the opening figures, once the list of items is final ----
@@ -568,12 +629,77 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   }
 
   const made = { godowns: 0, parties: 0, items: 0, bills: 0, already: 0, payments: 0,
-                 transfers: 0, accounts: 0, banked: 0, opened: 0, openedAccounts: 0, run };
+                 transfers: 0, accounts: 0, banked: 0, opened: 0, openedAccounts: 0,
+                 dates: 0, journals: 0, journalsSkipped: 0, noBank: 0, run };
+  // purchases already in his books whose supplier bill number and date this
+  // file can put right -- see the note where they are collected
+  const putRight = [];
   const fail = (what, e) => {
     const err = new Error(`${what}: ${e?.message || e}`);
     err.made = made; err.done = done; err.total = total;
     throw err;
   };
+
+  // ONE DROPPED REQUEST MUST NOT COST AN IMPORT OF 2,254 BILLS.
+  //
+  // An import is hundreds of requests over several minutes on a shop's line,
+  // and on that line a request occasionally just does not arrive -- the browser
+  // says "Failed to fetch", the phone says "Network request failed", and
+  // neither means anything is wrong with the file or the book. Every one of
+  // those was fatal: the run stopped, and whatever had not been written yet
+  // had to be started again.
+  //
+  // So a call that fails for a reason that might not happen twice is tried
+  // again, three times, waiting a little longer each time. What is NOT retried
+  // is an answer from the server -- a bill number already used, a date in a
+  // closed month, a login that cannot write. Those are the same answer however
+  // many times you ask, and asking again just wastes the shopkeeper's evening.
+  const mightPassNextTime = (e) => {
+    if (!e) return false;
+    // the server answered, so it will answer the same way again
+    if (e.status && e.status !== 502 && e.status !== 503 && e.status !== 504) return false;
+    if (e.code && /^[0-9A-Z]{5}$/.test(String(e.code)) && e.code !== 'PGRST000') return false;
+    // ONE LINE, AND NO /x FLAG. A regex literal cannot span lines in
+    // JavaScript and there is no such flag as x. I wrote it across two lines
+    // and the file stopped parsing altogether -- and I did not notice, because
+    // I ran the parse check before that edit and not after it. The check would
+    // have caught it in a second. Run the ladder after the LAST change, not
+    // after the last change you happen to remember.
+    const BLIP = /failed to fetch|network request failed|load failed|networkerror|timeout|timed out|econnreset|socket hang up|fetch failed|50[234]|gateway/i;
+    return BLIP.test(String(e.message || ''));
+  };
+
+  const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // `ask` wraps one call and hands back the same { data, error } it always did,
+  // so nothing that uses it has to change shape.
+  const ask = async (label, go) => {
+    let last = null;
+    for (let tryNo = 1; tryNo <= 3; tryNo++) {
+      const r = await go();
+      if (!r?.error) return r;
+      last = r.error;
+      if (!mightPassNextTime(r.error)) return r;
+      if (tryNo < 3) { step(`${label} — the line dropped, trying again`); await nap(tryNo * 1200); }
+    }
+    return { data: null, error: last };
+  };
+
+  // IS THIS FUNCTION SIMPLY NOT THERE? ASKED BY STATUS, NOT BY WORDING.
+  //
+  // This used to read the error's TEXT -- /does not exist|PGRST202|404/ -- and
+  // the app has two different clients that word things differently. The phone
+  // uses supabase-js; the browser page uses web/rest.js, whose fetch says
+  // "Failed to fetch" when a request never reaches the server at all. So a
+  // dropped request on the web page did not look like "no such function" and
+  // did not look like anything else either.
+  //
+  // PostgREST answers 404 with PGRST202 for a function it cannot find, and
+  // rest.js already puts that on err.status and err.code. So the status is
+  // asked first and the wording is only the last resort.
+  const noSuchFunction = (e) => !!e && (
+    e.status === 404 || e.code === 'PGRST202' || e.code === '42883'
+    || /does not exist|PGRST202|could not find the function/i.test(e.message || ''));
 
   const godowns = indexBy(have.godowns);
   const parties = indexBy(have.parties);
@@ -720,6 +846,92 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
 
 
   /* ---- the bills ---- */
+  //
+  // FIFTY AT A TIME, NOT ONE.
+  //
+  // This asked the server to write one bill, waited, then asked for the next.
+  // On his own file that is 2,254 questions, and a question and its answer on
+  // a shop's line is about a fifth of a second before the server has done
+  // anything -- so seven or eight minutes of the import was the ASKING, not
+  // the work. A wholesaler with fifty thousand bills would have waited over
+  // three hours and put the phone down long before the end.
+  //
+  // save_vouchers takes a block of them and calls the very same save_voucher
+  // on each one inside, so every rule still applies to every bill on its own:
+  // the bill-number check, the stock, the bill's own receipt for a cash sale,
+  // and the Tally id that stops a second import doubling his books. A bill the
+  // server refuses comes back as its own refusal with its own message, and the
+  // other forty-nine still go in.
+  //
+  // A DATABASE THAT HAS NOT HAD 1.10.40 YET has no save_vouchers, and the
+  // import must still work on it -- so the first block that comes back with
+  // "does not exist" drops back to one bill at a time for the whole run.
+  const BLOCK = 50;
+  let blockWise = true;
+  let pending = [];
+
+  // what to do with one answer, whichever way it was asked for
+  const took = (v, data) => {
+    if (data && data.already) {
+      made.already += 1;
+      // THE ONE THING WORTH CHANGING ON A BILL ALREADY WRITTEN.
+      //
+      // save_voucher recognises Tally's GUID and writes a voucher once, which
+      // is what stops a file imported twice from doubling his books. But
+      // every purchase imported before 1.10.26 carries the day it was ENTERED
+      // as the supplier's bill date, because the reader never looked at
+      // REFERENCEDATE -- and the whole GSTR-2B comparison turns on that date.
+      //
+      // The alternative was to undo the import and run it again: hundreds of
+      // bills, receipts and payments taken out and put back, to correct two
+      // columns that no figure in his books depends on. So they are corrected
+      // where they stand instead, on the way past. Collected here and sent in
+      // one go below, because one round trip per bill is a long wait on a
+      // shop's phone.
+      if (v.vtype === 'purchase' && data.id && (v.sup_no || v.sup_date)) {
+        putRight.push({ id: data.id, no: v.sup_no || null, date: v.sup_date || null });
+      }
+    } else made.bills += 1;
+    step(`bill ${v.no}`);
+  };
+
+  // one bill on its own, which is what an older database gets
+  const sendOne = async ({ v, payload }) => {
+    const { data, error } = await ask(`bill ${v.no}`,
+      () => supabase.rpc('save_voucher', { p: payload }));
+    if (error) fail(`could not write ${v.tally_type} ${v.no} of ${v.vdate}`, error);
+    took(v, data);
+  };
+
+  const flush = async () => {
+    if (!pending.length) return;
+    const block = pending;
+    pending = [];
+    if (blockWise) {
+      const { data, error } = await ask(`${block.length} bills`,
+        () => supabase.rpc('save_vouchers', { p: block.map((b) => b.payload) }));
+      if (error && noSuchFunction(error)) {
+        // an older database: from here on, one at a time
+        blockWise = false;
+      } else if (error) {
+        fail('could not write the bills', error);
+      } else {
+        const answers = Array.isArray(data) ? data : [];
+        for (let k = 0; k < block.length; k++) {
+          const a = answers[k];
+          const { v } = block[k];
+          if (!a || a.ok === false) {
+            fail(`could not write ${v.tally_type} ${v.no} of ${v.vdate}`,
+                 { message: a?.why || 'the server said nothing about this bill' });
+          }
+          took(v, a);
+        }
+        return;
+      }
+    }
+    for (const b of block) await sendOne(b);
+  };
+
   for (const v of book.vouchers) {
     const lines = v.lines.map((l) => {
       const rate = Number(l.rate) || 0;
@@ -764,7 +976,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     });
 
     const payload = {
-      id: idFor(v.ref || `${v.vtype}|${v.no}|${v.vdate}|${v.party}`, 'voucher'),
+      id: idFor(v.ref || `${v.vtype}|${v.no}|${v.vdate}|${v.party}`, `voucher|${org.id}`),
       vtype: v.vtype,
       vdate: v.vdate,
       voucher_no: v.no || null,
@@ -800,22 +1012,43 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
         || (v.vtype === 'purchase' ? String(org.state_code || '')
             : stateOf(cleanGstin(v.party_gstin, v.own_gstin, org), v.party_state, org)) || null,
       notes: v.narration || null,
-      // A purchase keeps the supplier's own bill number where it belongs.
-      supplier_invoice_no: v.vtype === 'purchase' ? (v.no || null) : null,
-      supplier_invoice_date: v.vtype === 'purchase' ? v.vdate : null,
+      // A purchase keeps the supplier's own bill number and HIS date, not the
+      // day it was entered. See the note in tallybook.js: falling back to the
+      // entry date moved every late-entered bill into the wrong month and the
+      // 2B comparison then blamed suppliers who had filed on time. The
+      // fallback stays for a file that carries neither, because a bill with no
+      // date at all matches nothing.
+      supplier_invoice_no: v.vtype === 'purchase' ? (v.sup_no || v.no || null) : null,
+      supplier_invoice_date: v.vtype === 'purchase' ? (v.sup_date || v.vdate) : null,
       lines,
     };
 
-    const { data, error } = await supabase.rpc('save_voucher', { p: { ...payload, import_run: run } });
-    if (error) fail(`could not write ${v.tally_type} ${v.no} of ${v.vdate}`, error);
-    if (data && data.already) made.already += 1; else made.bills += 1;
-    step(`bill ${v.no}`);
+    pending.push({ v, payload: { ...payload, import_run: run } });
+    if (pending.length >= BLOCK) await flush();
+  }
+  await flush();
+
+  // and in blocks, so a year of purchases is a handful of calls
+  for (let i = 0; i < putRight.length; i += 200) {
+    const { data: n, error } = await ask('the supplier bill dates',
+      () => supabase.rpc('patch_supplier_ref', { p: putRight.slice(i, i + 200) }));
+    // AN OLDER DATABASE SIMPLY HAS NOTHING TO PUT RIGHT, and the import it
+    // has just finished is sound either way -- this corrects bills written
+    // before, it does not write any.
+    // AND THIS IS TIDYING TOO. It corrects two columns on purchases already in
+    // the book; it writes nothing new. An older database has no such function,
+    // and a dropped request is not a reason to throw away an import that has
+    // already landed.
+    if (error && !noSuchFunction(error)) {
+      made.datesFailed = (made.datesFailed || 0) + putRight.slice(i, i + 200).length;
+    }
+    made.dates += Number(n || 0);
   }
 
   /* ---- the money ---- */
   for (let i = 0; i < book.payments.length; i += 50) {
     const block = book.payments.slice(i, i + 50).map((p) => ({
-      id: idFor(p.ref || `${p.ptype}|${p.no}|${p.vdate}|${p.party}|${p.amount}`, 'payment'),
+      id: idFor(p.ref || `${p.ptype}|${p.no}|${p.vdate}|${p.party}|${p.amount}`, `payment|${org.id}`),
       org_id: org.id,
       ptype: p.ptype,
       party_id: idOf(parties, p.party),
@@ -834,8 +1067,9 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     }));
     // ignoreDuplicates is what makes a second import a no-op rather than a
     // second set of receipts.
-    const { error } = await supabase.from('payments')
-      .upsert(block, { onConflict: 'id', ignoreDuplicates: true });
+    const { error } = await ask(`${block.length} receipts and payments`,
+      () => supabase.from('payments')
+        .upsert(block, { onConflict: 'id', ignoreDuplicates: true }));
     if (error) fail('could not write the receipts and payments', error);
 
     // AND THE ONES ALREADY IN THE BOOKS, WITH NO ACCOUNT AGAINST THEM.
@@ -844,11 +1078,40 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     // is what makes a second import a no-op -- but it also means the three and
     // a half thousand receipts already imported would keep their blank account
     // for ever. Only a BLANK is filled; an account he has set himself stands.
-    const mend = block.filter((x) => x.account_id && x.mode === 'bank');
-    for (const x of mend) {
-      const { error: e2 } = await supabase.from('payments')
-        .update({ account_id: x.account_id }).eq('id', x.id).is('account_id', null);
-      if (e2) fail('could not say which bank a receipt went through', e2);
+    //
+    // AND IN ONE CALL, NOT ONE PER RECEIPT. On his own file this was about
+    // fourteen hundred round trips to fill in a column, which on a shop's line
+    // is nearly five minutes of nothing but asking. fill_payment_account does
+    // the same thing -- and makes the same promise, that only a BLANK is
+    // filled -- for a whole block at once.
+    const mend = block.filter((x) => x.account_id && x.mode === 'bank')
+      .map((x) => ({ id: x.id, account_id: x.account_id }));
+    if (mend.length) {
+      const { error: e2 } = await ask('which bank they went through',
+        () => supabase.rpc('fill_payment_account', { p: mend }));
+      if (e2 && noSuchFunction(e2)) {
+        // a database without 1.10.40: one at a time, the way it used to be
+        for (const x of mend) {
+          const { error: e3 } = await supabase.from('payments')
+            .update({ account_id: x.account_id }).eq('id', x.id).is('account_id', null);
+          if (e3) { made.noBank += 1; break; }
+        }
+      } else if (e2) {
+        // FILLING IN WHICH BANK IS TIDYING, NOT THE IMPORT.
+        //
+        // This called fail(), which throws and stops the whole run. His import
+        // died on "could not say which bank a receipt went through: Failed to
+        // fetch" -- one dropped request, after the bills, the items, the names
+        // and the receipts themselves were all safely in. A column that says
+        // which bank a receipt went through is worth having; it is not worth
+        // throwing away an import of 2,254 bills for.
+        //
+        // The receipts are written BEFORE this runs, so they are already in the
+        // book. It is counted and reported instead, and a second run of the
+        // same file fills them in -- fill_payment_account only ever fills a
+        // blank, so running it again is safe and finishes the job.
+        made.noBank += mend.length;
+      }
     }
     made.payments += block.length;
     block.forEach((p) => step(`${p.ptype} of ${p.pdate}`));
@@ -864,14 +1127,54 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
                      batch: l.batch || null }))
       .filter((l) => l.item_id && l.qty > 0);
     if (!lines.length) { step('transfer'); continue; }
-    const { error } = await supabase.rpc('transfer_stock', {
-      p: { from_godown: from, to_godown: to, mdate: t.vdate, lines,
-           ref: idFor(t.ref || `${t.vdate}|${t.from}|${t.to}`, 'transfer'),
-           import_run: run },
-    });
+    const { error } = await ask(`the goods moved on ${t.vdate}`,
+      () => supabase.rpc('transfer_stock', {
+        p: { from_godown: from, to_godown: to, mdate: t.vdate, lines,
+             ref: idFor(t.ref || `${t.vdate}|${t.from}|${t.to}`, `transfer|${org.id}`),
+             import_run: run },
+      }));
     if (error) fail(`could not move the goods of ${t.vdate}`, error);
     made.transfers += 1;
     step(`transfer of ${t.vdate}`);
+  }
+
+  /* ---- and the journals, which used to be thrown away ---- */
+  //
+  // Every one of them was refused, on the reasoning that a general journal
+  // can put a figure anywhere. On his own book that cost four suppliers'
+  // whole balances, a transporter out by 19,500 and 45,874.86 of cash. Skwik
+  // has a journal of its own now, so each leg lands where it belongs: a
+  // party against his ledger, the till, a bank, or a ledger made on the spot
+  // and named after the file it came out of.
+  for (const j of book.journals || []) {
+    const legs = (j.legs || []).map((l) => {
+      const base = { amount: l.amount, note: l.name };
+      if (l.role === 'cash') return { ...base, cash: true };
+      if (l.role === 'bank') return { ...base, account: l.name };
+      if (l.role === 'customer' || l.role === 'supplier') {
+        // only if he really is one of his people by now; otherwise the leg
+        // still lands, as a ledger of his own name, rather than being lost
+        return idOf(parties, l.name)
+          ? { ...base, party: l.name }
+          : { ...base, ledger: l.name, group: l.group, role: roleForJournal(l.group) };
+      }
+      return { ...base, ledger: l.name, group: l.group, role: roleForJournal(l.group) };
+    });
+    const { data, error } = await ask(`the journal of ${j.vdate}`,
+      () => supabase.rpc('save_journal', {
+        p: { id: idFor(j.ref || `journal|${j.no}|${j.vdate}|${j.said || ''}`, `journal|${org.id}`),
+             date: j.vdate, no: j.no || null, narration: j.narration || null,
+             legs, import_run: run },
+      }));
+    // AN OLDER DATABASE HAS NO JOURNAL TO WRITE TO, and the rest of the
+    // import is sound without it -- so it is counted as passed over rather
+    // than stopping a year of bills.
+    if (error) {
+      if (/does not exist/i.test(error.message || '')) { made.journalsSkipped += 1; continue; }
+      fail(`could not write the journal of ${j.vdate}`, error);
+    }
+    if (data && data.already) made.already += 1; else made.journals += 1;
+    step(`journal of ${j.vdate}`);
   }
 
   /* ---- the opening stock, into the store it is actually in ---- */
@@ -931,28 +1234,49 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
   // account and direction twice. That is what makes pressing the import again
   // safe: the bills are already skipped by their own ids, and a deposit is
   // skipped by being the same deposit.
+  // THE SAME DEPOSIT TWICE IS NOT AN ERROR -- AND SHOULD NOT LOOK LIKE ONE.
+  //
+  // This inserted one at a time and let the database refuse a repeat by its own
+  // unique index, then ignored the refusal. Right in the books, wrong on the
+  // screen: every ignored repeat went out as a real request that came back 400,
+  // so a second import of the same file filled the browser's console with
+  // "Failed to load resource: 400 (Bad Request)" and the page looked like it
+  // was failing while it was working perfectly.
+  //
+  // Now each deposit gets an id worked out from the deposit itself -- the same
+  // trick bills and receipts already use -- so the SAME deposit is the same row
+  // and the server is asked to ignore a repeat rather than refuse it. No 400,
+  // and one call a block instead of one a deposit.
+  //
+  // The tolerance stays for a book imported before this change, whose deposits
+  // were written with random ids and will still trip the unique index.
+  const banked = [];
   for (const v of (book.cashMoves || [])) {
-   for (const m of (v.moves || [v])) {
-    const acc = idOf(accounts, m.account);
-    const { error } = await supabase.from('cash_moves').insert({
-      org_id: org.id,
-      direction: m.direction,
-      mdate: v.vdate,
-      amount: m.amount,
-      account_id: acc,
-      note: v.narration || (m.direction === 'deposit' ? 'paid into bank' : 'taken from bank'),
-      import_run: run,
-    });
-    // THE SAME DEPOSIT TWICE IS NOT AN ERROR, it is the second press of a
-    // button that is meant to be safe to press twice. The database says no by
-    // its own unique index, and that no is the right answer, not a failure.
+    for (const m of (v.moves || [v])) {
+      banked.push({
+        id: idFor(m.ref || `${v.vdate}|${m.direction}|${m.amount}|${m.account || ''}`,
+                  `cashmove|${org.id}`),
+        org_id: org.id,
+        direction: m.direction,
+        mdate: v.vdate,
+        amount: m.amount,
+        account_id: idOf(accounts, m.account),
+        note: v.narration || (m.direction === 'deposit' ? 'paid into bank' : 'taken from bank'),
+        import_run: run,
+      });
+    }
+  }
+  for (let i = 0; i < banked.length; i += 50) {
+    const block = banked.slice(i, i + 50);
+    const { error } = await ask(`${block.length} deposits and withdrawals`,
+      () => supabase.from('cash_moves')
+        .upsert(block, { onConflict: 'id', ignoreDuplicates: true }));
     if (error && !/duplicate key|unique constraint|23505/i.test(
         `${error.message || ''} ${error.code || ''}`)) {
-      fail(`could not record the money banked on ${m.vdate}`, error);
+      fail('could not record the money banked', error);
     }
-    if (!error) made.banked += 1;
-    step(`banked ${m.amount}`);
-   }
+    if (!error) made.banked += block.length;
+    block.forEach((m) => step(`banked ${m.amount}`));
   }
 
   // THE RUN IS CLOSED, with what it actually brought in written on it. That

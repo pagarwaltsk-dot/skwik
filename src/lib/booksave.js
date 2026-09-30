@@ -98,9 +98,25 @@ export async function saveBook({ supabase, put, onStep = () => {}, year = null }
     // round trips is a visible wait. A year of an empty table is empty too, so
     // this holds whether or not one was asked for.
     if (Number(many[table] || 0) === 0) { onStep({ table, done, total }); continue; }
-    for (let from = 0; ; from += PAGE) {
+
+    // START AFTER THE LAST ROW SENT, NOT BY COUNTING PAST IT.
+    //
+    // This asked for a page with "skip the first n". The database has no way
+    // to skip without walking, so page 87 of a table made it read the 172,000
+    // rows it had already sent in order to reach the ones it had not, and the
+    // last page of a table cost as much as the first eighty-six put together.
+    // Timed on a book of 173,022 bill lines: 15.2 seconds of database time,
+    // against 4.5 for the same 87 pages started from the last row sent.
+    //
+    // So each page hands back the id it ended on, and the next one starts
+    // after it. Two tables -- expense heads and the bill-number series -- have
+    // no id of their own; those hand back nothing and this goes on counting
+    // for them, which is what it always did. Both fit in one page anyway.
+    let from = 0;
+    let after = null;
+    for (;;) {
       const page = await call(supabase, 'book_slice',
-        { p_table: table, p_from: from, p_size: PAGE, p_year: year });
+        { p_table: table, p_from: from, p_size: PAGE, p_year: year, p_after: after });
       const rows = page?.rows || [];
       if (!rows.length) break;
       await put(JSON.stringify({ t: table, rows }) + '\n');
@@ -108,6 +124,9 @@ export async function saveBook({ supabase, put, onStep = () => {}, year = null }
       done += rows.length;
       onStep({ table, done, total });
       if (rows.length < PAGE) break;
+      // If the server said where this page ended, start after it; if it did
+      // not, count on as before. Never both, or a page would be skipped.
+      if (page.last) { after = page.last; from = 0; } else { from += PAGE; }
     }
   }
 
