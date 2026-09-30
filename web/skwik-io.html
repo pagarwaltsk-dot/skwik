@@ -329,7 +329,7 @@ $('file').onchange = async () => {
   $('writeMsg').innerHTML = '';
   $('writeBar').style.width = '0%';
   book = { vouchers: [], payments: [], transfers: [], counts: [],
-           cashMoves: [], skipped: [] };
+           cashMoves: [], journals: [], skipped: [] };
   const mItems = [], mParties = [];
   const openings = [];
   const openingAt = [];
@@ -341,7 +341,8 @@ $('file').onchange = async () => {
   for (let i = 0; i < texts.length; i++) {
     const one = vouchersFromTallyXml(texts[i]);
     const billed = one.vouchers.length + one.payments.length
-                 + (one.transfers || []).length + (one.cashMoves || []).length;
+                 + (one.transfers || []).length + (one.cashMoves || []).length
+                 + (one.journals || []).length;
 
     // ---------------------------------------------------------------
     //  WHAT WAS ON THE SHELF BEFORE THE FIRST BILL, out of any file.
@@ -394,6 +395,7 @@ $('file').onchange = async () => {
       // They did not even land in the passed-over list, so nothing on any
       // screen said a word about them.
       book.cashMoves.push(...(one.cashMoves || []));
+      book.journals.push(...(one.journals || []));
       book.skipped.push(...(one.skipped || []));
       perFile.push({ name: files[i].name, as: 'bills', bills: one.vouchers.length,
                      payments: one.payments.length });
@@ -437,6 +439,7 @@ $('file').onchange = async () => {
     // that said so, and the only way to find out was to bring the file in and
     // then go looking in the database for why nothing arrived.
     rows.push(['Cash paid into or taken from the bank', n((book.cashMoves || []).length)]);
+    rows.push(['Journal entries', n((book.journals || []).length)]);
   }
   if (book.masters) {
     rows.push(['Stock items in the masters', n((book.masters.items || []).length)]);
