@@ -139,8 +139,10 @@
       <div id="whyBox"></div>
       <div id="openBox"></div>
       <table id="planTable"></table>
+      <div id="levelBox"></div>
       <div id="perFile"></div>
       <div id="skipBox"></div>
+      <div id="reviewBox"></div>
       <div id="leaveOut"></div>
       <div id="stopBox"></div>
       <div class="row" style="margin-top:16px">
@@ -208,11 +210,24 @@ import { trialBalanceFromXml, compareMoney, compareParties, openingsToFill,
          openingsToPutRight, whichTallyFile }
   from '../src/lib/trialbal.js';
 import { itemsFromTallyXml, partiesFromTallyXml, moneyLedgersFromTallyXml,
-         openingByGodownFromTallyXml } from '../src/lib/transfer.js';
+         openingByGodownFromTallyXml,
+         priceLevelsInTally, applyPriceLevel } from '../src/lib/transfer.js';
 
 const $ = (id) => document.getElementById(id);
 const show = (el, on = true) => el.classList.toggle('hide', !on);
 const n = (x) => Number(x || 0).toLocaleString('en-IN');
+
+// A LEDGER NAME IS SOMEBODY ELSE'S TEXT, AND IT GOES INTO innerHTML.
+//
+// His own file has "Transport Freight Interstate &amp; R.Charge" in it. Dropped
+// into innerHTML raw, the &amp; is read as the start of an entity and the name
+// comes out mangled -- and a name with a < in it would take the rest of the
+// page with it. Nothing on this page escaped anything before, because until now
+// the only things shown were figures and Skwik's own words. The review table
+// shows the shop's own ledger names, so it needs this.
+const esc = (v) => String(v == null ? '' : v)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 let db = null, org = null, book = null, plan = null, report = null;
 let whyNothing = null, haveNow = null, left = [];
@@ -299,6 +314,7 @@ async function readWide(f, little, onAt) {
 // each ledger is. Both are kept here so the check that runs after the import can
 // use them without being handed anything.
 let tbFound = null;
+let levelsFound = [];
 let rolesFound = {};
 
 $('file').onchange = async () => {
@@ -406,6 +422,8 @@ $('file').onchange = async () => {
   let till = null;
   let closingSeen = null;
   const perFile = [];
+  const readings = [];
+  const levelsSeen = [];
 
   for (let i = 0; i < texts.length; i++) {
     const one = vouchersFromTallyXml(texts[i]);
@@ -466,9 +484,24 @@ $('file').onchange = async () => {
       book.cashMoves.push(...(one.cashMoves || []));
       book.journals.push(...(one.journals || []));
       book.skipped.push(...(one.skipped || []));
+      // AND WHAT THE READER MADE OF THIS FILE. Each file is read on its own, so
+      // each has its own report, and they are kept per file rather than merged
+      // -- a ledger judged by its name in the day book is a different fact from
+      // the same ledger placed by its group in the masters.
+      if (one.reading) readings.push({ file: files[i].name, reading: one.reading });
       perFile.push({ name: files[i].name, as: 'bills', bills: one.vouchers.length,
                      payments: one.payments.length });
     } else {
+      // WHICH PRICE LISTS THIS FILE OFFERS.
+      //
+      // Tally holds as many price levels as a shop cares to make -- his own
+      // masters carry ten -- and Skwik bills on two. The PHONE has asked which
+      // Tally level goes in which Skwik slot since the day that was fixed; this
+      // page never asked at all, so every item came in with its second price
+      // empty and nothing on the screen said a level even existed.
+      for (const lv of priceLevelsInTally(texts[i])) {
+        if (levelsSeen.indexOf(lv) < 0) levelsSeen.push(lv);
+      }
       const it = itemsFromTallyXml(texts[i]);
       const pa = partiesFromTallyXml(texts[i]);
       mItems.push(...(it.rows || []));
@@ -479,6 +512,7 @@ $('file').onchange = async () => {
     }
   }
   if (mItems.length || mParties.length) book.masters = { items: mItems, parties: mParties };
+  levelsFound = levelsSeen;
   book.openings = openings;
   book.openingAt = openingAt;
   book.money = { banks, cash: till };
@@ -571,6 +605,98 @@ $('file').onchange = async () => {
           .map(([k, c]) => { const [what, why] = k.split('|');
             return `<li>${n(c)} × <strong>${what}</strong> — ${why}</li>`; }).join('')
       + '</ul></div>'
+    : '';
+
+  // ---- WHICH TALLY PRICE LIST GOES IN WHICH SKWIK SLOT ----
+  //
+  // Skwik bills on two prices and every customer sits on one of them. Tally
+  // holds as many as a shop cares to make: his own masters carry ten, named
+  // things like "1 APRIL 2026", "OffSeason" and "Wholesale". Nothing can work
+  // out from those names which is the counter price and which is the trade
+  // price, so it is asked rather than guessed.
+  //
+  // LEAVING IT ALONE IS A REAL ANSWER. With no list named, the rate that wins
+  // is the one with the NEWEST DATE on it, because Tally dates every price
+  // change and bills on the latest -- on his file that is "1 APRIL 2026", and
+  // it lands on the same selling price as picking that list by hand. So the
+  // first slot is usually right untouched. The SECOND one cannot be: there is
+  // no second rate until somebody says which list it comes from, which is why
+  // 495 items came in with an empty second price and no way to tell.
+  const slotName = (n2x) => (n2x === 1 ? (org?.price1_name || 'Wholesale')
+                                       : (org?.price2_name || 'Retail'));
+  $('levelBox').innerHTML = !levelsFound.length ? '' :
+    `<div class="flag"><strong>Your Tally has ${n(levelsFound.length)} price list(s)</strong>
+       <p class="note">Skwik bills on two. Say which Tally list fills each, or leave
+       the first alone and it takes whichever rate is dated latest.</p>
+       ${[1, 2].map((slot) => `<div style="margin:6px 0">
+         <label>${esc(slotName(slot))} &nbsp;
+           <select id="lvl${slot}">
+             <option value="">${slot === 1 ? '(whichever is dated latest)' : '(none)'}</option>
+             ${levelsFound.map((lv) => `<option value="${esc(lv)}">${esc(lv)}</option>`).join('')}
+           </select>
+         </label></div>`).join('')}
+       <div id="lvlSaid" class="note"></div></div>`;
+
+  // Applied straight away so the count below is the truth, and again at the
+  // moment of writing -- applyPriceLevel re-derives from each row's own rates,
+  // so calling it twice cannot compound.
+  const useLevels = () => {
+    if (!levelsFound.length || !book || !book.masters) return;
+    const a = ($('lvl1') || {}).value || '';
+    const b = ($('lvl2') || {}).value || '';
+    book.masters.items = applyPriceLevel(book.masters.items, a, b);
+    const one = book.masters.items.filter((r) => Number(r.sale_price) > 0).length;
+    const two = book.masters.items.filter((r) => Number(r.price2) > 0).length;
+    const said = $('lvlSaid');
+    if (said) said.textContent = `${n(one)} item(s) get a ${slotName(1).toLowerCase()} price, `
+      + `${n(two)} get a ${slotName(2).toLowerCase()} price, of ${n(book.masters.items.length)}.`;
+  };
+  if (levelsFound.length) {
+    $('lvl1').onchange = useLevels;
+    $('lvl2').onchange = useLevels;
+    useLevels();
+  }
+
+  // ---- WHAT WAS DECIDED BY A NAME, PUT IN FRONT OF HIM ----
+  //
+  // Most of the reading is Tally's own structure: a voucher type by its PARENT,
+  // a ledger by the group it sits under, walked up until a group Tally itself
+  // defines is reached. That travels to anybody's book.
+  //
+  // A few things still fall back to reading a NAME, and a name is a guess about
+  // somebody else's vocabulary. One of those guesses was already wrong on his
+  // own book -- a transporter's bill on three legs all called "FREIGHT INTRA
+  // STATE", missed by a test looking for "R.Charge", so its reverse charge went
+  // unrecorded and box 3.1(d) would have been filed at nil.
+  //
+  // He cannot answer "what do you call your freight ledger?" in the abstract.
+  // Shown his own ledger names with a guess written beside each, he can spot a
+  // wrong one in seconds. So this asks nothing and shows everything doubtful.
+  const doubts = [];
+  for (const r of readings) {
+    for (const line of (r.reading.say || [])) doubts.push({ file: r.file, line });
+  }
+  const named = [];
+  for (const r of readings) {
+    for (const l of (r.reading.decidedByName || [])) named.push({ file: r.file, l });
+  }
+  $('reviewBox').innerHTML = (doubts.length || named.length)
+    ? `<div class="flag"><strong>What Skwik had to guess at</strong>
+         <p class="note">Everything else was taken from Tally's own groups and
+         voucher types. These were decided some other way — worth a glance
+         before you bring it in.</p>
+         <ul class="plain">`
+      + doubts.map((d) => `<li>${esc(d.line)}${readings.length > 1
+            ? ` <span class="note">(${esc(d.file)})</span>` : ''}</li>`).join('')
+      + '</ul>'
+      + (named.length
+          ? '<table><tr><th>Ledger</th><th>Its group in Tally</th><th>Read as</th></tr>'
+            + named.slice(0, 30).map(({ l }) => `<tr><td>${esc(l.name)}</td>`
+                + `<td>${esc(l.group || '—')}</td><td>${esc(l.role || '—')}</td></tr>`).join('')
+            + '</table>'
+            + (named.length > 30 ? `<p class="note">and ${n(named.length - 30)} more</p>` : '')
+          : '')
+      + '</div>'
     : '';
 
   const stop = report.stop || [], warn = report.warn || [];
@@ -709,6 +835,11 @@ $('write').onclick = async () => {
   if (!book || !plan) return;
   show($('writeBox')); $('write').disabled = true;
   try {
+    // once more, from whatever the two boxes say right now
+    if (levelsFound.length && book && book.masters) {
+      book.masters.items = applyPriceLevel(book.masters.items,
+        ($('lvl1') || {}).value || '', ($('lvl2') || {}).value || '');
+    }
     const have = await readMasters(db);
     const out = await loadBook({
       supabase: db, org, book, have,
