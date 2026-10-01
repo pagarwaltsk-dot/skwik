@@ -966,7 +966,20 @@ export default function TransferScreen({ navigation }) {
            && `${out.datesFailed} supplier bill date${out.datesFailed === 1 ? '' : 's'} not `
               + 'put right \u2014 bring the file in again',
          out.items && `${out.items} new items`,
-         out.parties && `${out.parties} new names`]
+         out.parties && `${out.parties} new names`,
+         // WHAT THE READER HAD TO GUESS AT, SAID OUT LOUD.
+         //
+         // Most of the reading comes from Tally's own structure -- a voucher
+         // type by its parent, a ledger by the group it sits under -- and that
+         // travels to anybody's book. A few things fall back to reading a NAME,
+         // and a name is a guess about what somebody else calls things. One of
+         // those guesses was already wrong on his own book: a transporter's
+         // bill on three legs all called "FREIGHT INTRA STATE", missed by a
+         // test looking for "R.Charge", so its reverse charge went unrecorded.
+         //
+         // The guess was not the fault. The SILENCE was. Nothing anywhere said
+         // "this one was decided by its name" until a GST return disagreed.
+         ...((out.reading && out.reading.say) || [])]
           .filter(Boolean).join('\n')
         + '\n\nLook at Past bills and Ledgers to check it against Tally.');
     } catch (e) {
