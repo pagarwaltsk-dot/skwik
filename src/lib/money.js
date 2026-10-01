@@ -405,6 +405,45 @@ function shareOut(discount, grosses) {
 // Skwik used to tick the box, print "Reverse charge: Yes", and still add CGST
 // and SGST to the total. It no longer does. Under reverse charge the bill
 // carries the taxable value and nothing else, and the declaration prints.
+// THE TAX ON A REVERSE-CHARGE BILL, WHICH THE BILL ITSELF DOES NOT CARRY.
+//
+// A transporter's bill under reverse charge has no tax ledger on it in Tally,
+// because the tax is the SHOP'S to pay rather than the transporter's to
+// collect. So it has to be worked out from the rate, and the import had no
+// way to do that: it read the tax off the voucher, read nothing, and GSTR-3B
+// box 3.1(d) showed 2,76,194.00 of freight with 0.00 of tax against Tally's
+// own 12,344.62 for the same month.
+//
+// WHY IT LIVES HERE RATHER THAN IN THE IMPORTER. It was written inline inside
+// tallyload.js, which cannot be loaded outside the app -- it reaches for
+// Supabase -- so the only guard on it was a rule reading the source for a
+// pattern. A pattern rule passes the moment someone renames a variable. Here
+// it is a plain function with no imports, so tools/reader-check.mjs can put
+// real figures through it and check the answer.
+//
+// THE ROUNDING FOLLOWS computeBill: the whole tax first, then halved. Taking
+// half the rate twice instead can land a paisa apart on an odd figure, and two
+// different answers to the same question is how a book stops adding up.
+//
+// It fills in a MISSING tax only. The caller decides that; this just does the
+// arithmetic, and refuses anything it cannot do honestly.
+export function reverseChargeTax(base, rate, mode) {
+  const b = n2(num(base));
+  const r = num(rate);
+  if (!(b > 0) || !(r > 0)) return { cgst: 0, sgst: 0, igst: 0, total: 0 };
+  const tax = n2((b * r) / 100);
+  if (mode === 'igst') return { cgst: 0, sgst: 0, igst: tax, total: tax };
+  if (mode === 'cgst_sgst') {
+    const half = n2(tax / 2);
+    // the second half is the remainder, so the two always add back to the whole
+    const other = n2(tax - half);
+    return { cgst: half, sgst: other, total: n2(half + other), igst: 0 };
+  }
+  // Neither -- nothing on the bill says whether it is one tax or two. A guess
+  // here files a return wrong, so it stays nought and the caller reports it.
+  return { cgst: 0, sgst: 0, igst: 0, total: 0 };
+}
+
 export function computeBill(lines, mode, extra = {}) {
   let taxable = 0, cgst = 0, sgst = 0, igst = 0;
   let nilRated = 0, exempt = 0, nonGst = 0;

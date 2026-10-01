@@ -149,15 +149,65 @@ const taxHead = (name) => {
 // Duties & Taxes. Those answer, without guessing, which leg of a receipt is
 // the money, whether a party is a customer or a supplier, and which ledgers
 // are tax rather than a customer who happens to have GST in his name.
-export function ledgersIn(xml) {
+// THE GROUPS, SO A LEDGER'S GROUP CAN BE FOLLOWED UP TO A KIND TALLY KNOWS.
+//
+// Nobody files a supplier straight under Sundry Creditors. They make a group
+// for a trade or a town and put him in that. On his own book:
+//
+//     Transport              -> Sundry Creditors
+//     Umarpur Plastic Party  -> Sundry Creditors
+//     STAFF                  -> Other Liabilities
+//
+// so Sbgc Express, SHREE SHYAM ROADWAYS, Inland Freight Express, M.S. Polymer
+// and the rest ARE suppliers, and this file read their group as "Transport",
+// shrugged, and called them 'other'.
+//
+// WHY THAT COSTS SOMETHING RATHER THAN BEING UNTIDY. Two lines below there is
+// a deliberate guard: a ledger the GROUP has placed is never put through the
+// tax-name test, because -- as the comment there says -- "a customer called
+// GST TRADERS is not a tax ledger". A role of 'other' switches that guard off.
+// So a supplier under a custom group whose name happens to carry a tax word
+// was read as tax. The guard was written; the shallow lookup disarmed it.
+//
+// transfer.js has walked this chain properly since it was written. This file
+// did not, and nothing pointed at the difference until the reading report put
+// eight of his own ledgers under "placed by neither".
+export function groupsIn(xml) {
   const out = {};
+  for (const b of blocksOf(xml, 'GROUP')) {
+    const name = nameAttr(b) || tagTop(b, 'NAME');
+    if (!name) continue;
+    out[name.toLowerCase()] = tagTop(b, 'PARENT') || '';
+  }
+  return out;
+}
+
+// Up the chain until a group Tally itself defines is reached. The first hop is
+// the ledger's own parent, so every file that worked before works the same.
+const roleUpTheChain = (groups, parent) => {
+  const seen = new Set();
+  let at = String(parent || '');
+  for (let hop = 0; at && hop < 12; hop++) {
+    const k = at.toLowerCase();
+    if (seen.has(k)) break;            // a group that is its own ancestor
+    seen.add(k);
+    const r = roleOfGroup(at);
+    if (r && r !== 'other') return r;
+    at = groups[k] || '';
+  }
+  return 'other';
+};
+
+export function ledgersIn(xml, groups) {
+  const out = {};
+  const grp = groups || groupsIn(xml);
   for (const b of blocksOf(xml, 'LEDGER')) {
     const name = nameAttr(b) || tagTop(b, 'NAME');
     if (!name) continue;
     const parent = tagTop(b, 'PARENT') || '';
     out[name.toLowerCase()] = {
       name, parent,
-      role: roleOfGroup(parent),
+      role: roleUpTheChain(grp, parent),
       gstin: tagOf(b, 'PARTYGSTIN') || tagOf(b, 'GSTIN') || '',
       state: tagTop(b, 'LEDSTATENAME') || '',
     };
@@ -175,10 +225,37 @@ const roleOfGroup = (group) => {
   if (/sundry\s*creditors/i.test(g)) return 'supplier';
   if (/sales\s*account/i.test(g)) return 'sales';
   if (/purchase\s*account/i.test(g)) return 'purchase';
+  // AN EXPENSE IS NOT GOODS, AND CALLING IT 'other' MADE IT GOODS.
+  //
+  // A bill with no inventory on it has its purchase ledger read AS the goods,
+  // which is right -- there is nothing else it could be. But the fallback for
+  // an unrecognised group was "anything not definitely something else is the
+  // goods", and Indirect Expenses came back 'other', so an insurance bill with
+  // no purchase ledger on it at all had the insurance made into a stock item:
+  //
+  //     Fire Insurance (Godown)   1 unit   14,846.00   in closing stock
+  //     Shop Insurance            1 unit    8,651.00   in closing stock
+  //
+  // The bill's total was right, its tax was right and GSTR-1 was right, so
+  // nothing complained -- and 23,497.00 of insurance sat in his stock as goods.
+  // These are Tally's own built-in groups, on every company file there is.
+  if (/(indirect|direct)\s*expenses?/i.test(g)) return 'expense';
+  if (/(indirect|direct)\s*incomes?/i.test(g)) return 'income';
   return 'other';
 };
 
 const isMoney = (role) => role === 'cash' || role === 'bank';
+
+// THE WORDS A LEDGER MIGHT USE FOR REVERSE CHARGE, IN ONE PLACE.
+//
+// This was written out three times in two different loops, and a fourth place
+// that needed it did not have it at all -- which is how an accounts-only book's
+// freight leg went unmarked. A shared regex cannot drift apart from itself.
+//
+// It is only ever a FALLBACK. Tally writes the answer on the entry itself
+// (GSTOVRDNISREVCHARGEAPPL), and that is what decides first, because a word in
+// a ledger's name is a guess about somebody else's vocabulary.
+const RCM_NAME = /\br\.?\s*charge\b|reverse\s*charge|\brcm\b/i;
 
 /* ===================== dates ===================== */
 
@@ -372,6 +449,16 @@ function readVoucher(block, types, leds) {
 }
 
 // A BILL: goods in one list, money in another.
+// tagOf returns the FIRST match only, and Tally writes the reverse-charge flag
+// once per ENTRY -- a bill with four legs carries four of them and only one may
+// say Applicable. So this sweeps the whole block rather than reading one.
+const anyTagSays = (chunk, tag, test) => {
+  const re = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'gi');
+  let m;
+  while ((m = re.exec(chunk))) { if (test(m[1])) return true; }
+  return false;
+};
+
 function readBill(block, v, vtype, leds) {
   // A CASH SALE HAS NO DEBTOR.
   //
@@ -403,6 +490,8 @@ function readBill(block, v, vtype, leds) {
   const loaded = entries.filter((e) => e.line.qty <= 0);
 
   let cgst = 0, sgst = 0, igst = 0, cess = 0, freight = 0, party = 0;
+  // set by the ledger-leg loop below; read where the reverse charge is decided
+  let rcmByName = false;
   // Kept SIGNED, because the sign is the only thing that says which side of
   // the bill these sit on. See the note under roundSign.
   let roundRaw = 0, taxRaw = 0, partyRaw = 0;
@@ -415,7 +504,23 @@ function readBill(block, v, vtype, leds) {
     // what a ledger is; the name only says what it is called. The name test
     // is kept for a file with no ledger masters in it.
     const role = (leds && leds[name.toLowerCase()] || {}).role;
-    const head = (role && role !== 'tax' && role !== 'other') ? null : taxHead(name);
+    // WHICH ROLES MAY SKIP THE NAME TEST, NAMED RATHER THAN GUESSED AT.
+    //
+    // The guard is about PARTIES and MONEY: a customer called "GST Traders" is
+    // not a tax ledger, and a bank called "Cash Credit" is not the till. It was
+    // written as "any role except tax and other", which quietly meant "anything
+    // Skwik has a word for" -- so the moment `expense` was added as a role, the
+    // Round Off ledger (Indirect Expenses) stopped being recognised as round
+    // off and its 0.28 went into the charge instead. The bill still added up,
+    // so nothing complained; the taxable was 28 paise light.
+    //
+    // I did that today, while fixing a fault of exactly this shape one screen
+    // above. So the list is now the roles that actually mean "this is a person
+    // or a bank account", written out, and a new role cannot disarm it by
+    // simply existing.
+    const isPartyOrMoney = role === 'customer' || role === 'supplier'
+                        || role === 'cash' || role === 'bank';
+    const head = isPartyOrMoney ? null : taxHead(name);
     if (head === 'cgst') { cgst += Math.abs(amt); if (!taxRaw) taxRaw = amt; continue; }
     if (head === 'sgst') { sgst += Math.abs(amt); if (!taxRaw) taxRaw = amt; continue; }
     if (head === 'igst') { igst += Math.abs(amt); if (!taxRaw) taxRaw = amt; continue; }
@@ -426,7 +531,26 @@ function readBill(block, v, vtype, leds) {
     if (v.party && name.toLowerCase() === v.party.toLowerCase()) {
       party += Math.abs(amt); if (!partyRaw) partyRaw = amt; continue;
     }
-    if (/freight|transport|cartage|coolie|loading/i.test(name)) { freight += Math.abs(amt); continue; }
+    if (/freight|transport|cartage|coolie|loading/i.test(name)) {
+      // AND THIS LEG CAN BE THE REVERSE-CHARGE ONE TOO.
+      //
+      // The name test for reverse charge ran over the charges that ride on a
+      // STOCK ITEM and over `others`, and a freight leg caught here goes into
+      // neither -- it is added to `freight` and the loop moves on. So a shop
+      // running Tally in accounts-only mode, which this file explicitly
+      // supports a few hundred lines down, had its reverse-charge freight
+      // missed by the name test entirely.
+      //
+      // His own bills all carry an inventory entry, so nothing in his book
+      // could ever have shown this. It came out of a made-up file with the
+      // freight as a plain ledger leg -- and it is on his live build today,
+      // which I checked before calling it mine.
+      //
+      // Tally's own flag already catches this case. This is the fallback for
+      // an older export that does not carry one.
+      if (RCM_NAME.test(name)) rcmByName = true;
+      freight += Math.abs(amt); continue;
+    }
     others.push({ name, amount: amt });
   }
 
@@ -484,15 +608,46 @@ function readBill(block, v, vtype, leds) {
   // party's leg equal to the bill and no tax ledger anywhere on it. That is
   // the tax he owes himself, so the bill is marked for it rather than read as
   // a bill with no tax.
-  let chargeRate = 0, rcm = false;
+  // AND TALLY ITSELF SAYS SO, WHICH IS BETTER THAN READING THE NAME.
+  //
+  // Reading the ledger's NAME for "R.Charge" is a guess about what other shops
+  // call their freight ledger, and it is already wrong on his own book. Tally
+  // writes the answer on the entry:
+  //
+  //     <GSTOVRDNISREVCHARGEAPPL>&#4; Applicable</GSTOVRDNISREVCHARGEAPPL>
+  //
+  // MEASURED ON ONE DAY OF HIS DAY BOOK:
+  //     the ledger name says reverse charge on   15 vouchers
+  //     Tally's own flag says it on              16
+  //     the one the name misses: 102-56419, SHREE SHYAM ROADWAYS, 1,430.00,
+  //     three legs all named "FREIGHT INTRA STATE" -- no tax ledger on it, and
+  //     nothing in the name for the word test to catch.
+  //
+  // A shop that names every freight ledger that way would have lost ALL of its
+  // reverse charge, silently, and filed 3.1(d) at nil.
+  //
+  // WHY THIS TAG AND NOT THE OTHER ONE. Tally writes two. On that very voucher
+  // <ISREVERSECHARGEAPPLICABLE> says "No" while GSTOVRDNISREVCHARGEAPPL says
+  // "Applicable", and across the file the first is set on 3 vouchers against
+  // the second's 16. So the Yes/No one is not the flag that means this, and
+  // trusting it would have missed thirteen.
+  //
+  // THE NAME TEST STAYS, as an OR rather than a replacement. The flag can only
+  // add; an export that does not carry it still behaves exactly as it did.
+  // Tally prefixes the value with a &#4; control character, so it is stripped
+  // before comparing -- matching on the raw string finds nothing at all, which
+  // is how I first measured this flag as absent from a file that has 27 of it.
+  const saysRcm = (t) => String(t || '').replace(/&#\d+;/g, '').trim().toLowerCase() === 'applicable';
+  let rcm = anyTagSays(block, 'GSTOVRDNISREVCHARGEAPPL', saysRcm) || rcmByName;
+  let chargeRate = 0;
   for (const e of loaded) {
     if (!chargeRate) chargeRate = e.line.gst_rate || 0;
-    if (/\br\.?\s*charge\b|reverse\s*charge|\brcm\b/i.test(e.ledger)) rcm = true;
+    if (RCM_NAME.test(e.ledger)) rcm = true;
     if (/freight|transport|cartage|coolie|loading/i.test(e.ledger)) freight += e.line.amount;
     else others.push({ name: e.ledger || e.line.item_name, amount: e.line.amount, on_item: e.line.item_name });
   }
   for (const o of others) {
-    if (/\br\.?\s*charge\b|reverse\s*charge|\brcm\b/i.test(o.name)) rcm = true;
+    if (RCM_NAME.test(o.name)) rcm = true;
   }
 
   // A TALLY KEPT WITHOUT INVENTORY STILL HAS BILLS ON IT.
@@ -539,9 +694,15 @@ function readBill(block, v, vtype, leds) {
       const r = roleOf(o);
       return r === 'purchase' || r === 'sales';
     });
+    // AND AN EXPENSE IS NEVER THE GOODS. The fallback below is deliberately
+    // permissive -- a shop may group its purchase ledger somewhere Skwik does
+    // not know, and refusing every unrecognised leg would leave the bill with
+    // no body, which is the fault this whole branch exists to fix. But an
+    // expense is not unrecognised: Tally itself says what it is, and making it
+    // the goods put 23,497.00 of insurance into his closing stock.
     const body = strong.length ? strong : others.filter((o) => {
       const r = roleOf(o);
-      return !r || r === 'other';
+      return (!r || r === 'other') && r !== 'expense' && r !== 'income';
     });
     if (body.length) {
       // whatever tax the named rates cannot account for belongs to the rest
@@ -945,6 +1106,137 @@ export function voucherTypesIn(xml) {
   return out;
 }
 
+// ===================== WHAT THE READER MADE OF THE FILE =====================
+//
+// WHY THIS EXISTS.
+//
+// Most of the reader decides things from Tally's own structure: a voucher type
+// by its PARENT, a ledger by the group it sits under. That part travels to
+// anybody's book, because those are Tally's words and not the shopkeeper's.
+//
+// But a few decisions fall back to reading a NAME, and a name is a guess about
+// what somebody else calls things. One of those guesses was already wrong on
+// his own book -- a transporter's bill on three legs all called "FREIGHT INTRA
+// STATE", missed by a test looking for "R.Charge", so its reverse charge went
+// unrecorded and 3.1(d) would have been filed short.
+//
+// The lesson is not that the guesses are bad. It is that they were INVISIBLE.
+// Nothing on any screen said "I decided this one by its name, have a look."
+//
+// So this reports what was made of the file BEFORE anything is written, and
+// marks the decisions that rested on a name rather than on Tally's structure.
+// It changes no figure and imports nothing. It is a thing to read.
+//
+// It deliberately does NOT ask the shopkeeper what he calls his freight ledger.
+// He cannot answer that in the abstract -- but shown his own ledger names with
+// a guess beside each, he can spot a wrong one in seconds.
+export function readingReport(xml, typesIn, ledsIn) {
+  // The caller usually has these already. Taking them rather than reading the
+  // file again is not only cheaper -- it means the report describes THE reading
+  // that happened, and cannot drift from it.
+  const types = typesIn || voucherTypesIn(xml);
+  const leds  = ledsIn  || ledgersIn(xml);
+  const haveTypeMasters   = Object.keys(types).length > 0;
+  const haveLedgerMasters = Object.keys(leds).length > 0;
+
+  // ---- the voucher types actually used, and whether each one maps ----
+  const used = new Map();
+  for (const b of blocksOf(xml, 'VOUCHER')) {
+    const name = tagTop(b, 'VOUCHERTYPENAME') || '(no type named)';
+    const k = name.toLowerCase();
+    // the SAME expression readVoucher uses, or this would report on a rule
+    // nothing follows
+    const parent = (types[k] || name).toLowerCase();
+    const row = used.get(k) || {
+      name, parent,
+      becomes: FROM_PARENT[parent] ? (FROM_PARENT[parent].vtype || FROM_PARENT[parent].kind) : null,
+      known: !!FROM_PARENT[parent],
+      // KNOWN AND THROWN AWAY IS AS INVISIBLE AS UNKNOWN. A delivery note, an
+      // order, a memorandum -- Skwik places all of these and then drops them,
+      // for good reasons written beside each. But a shop whose stock moves on
+      // delivery notes would hand over a year and be told nothing about the
+      // half of it that never arrived. So `skipped` is reported too, with
+      // Tally's own count and the reason.
+      skipped: !!FROM_PARENT[parent] && FROM_PARENT[parent].kind === 'skip',
+      why: (FROM_PARENT[parent] || {}).why || null,
+      // the parent came from the masters, or we are falling back to the name
+      fromMasters: !!types[k],
+      count: 0,
+    };
+    row.count += 1;
+    used.set(k, row);
+  }
+  const voucherTypes = [...used.values()].sort((a, b) => b.count - a.count);
+  const unknownTypes = voucherTypes.filter((t) => !t.known);
+  const skippedTypes = voucherTypes.filter((t) => t.skipped);
+
+  // ---- which ledgers are used on a voucher, and how their role was decided --
+  const seen = new Map();
+  for (const b of blocksOf(xml, 'VOUCHER')) {
+    for (const m of String(b).matchAll(/<LEDGERNAME>([\s\S]*?)<\/LEDGERNAME>/gi)) {
+      const nm = unesc(String(m[1]).trim());
+      if (!nm) continue;
+      const k = nm.toLowerCase();
+      seen.set(k, (seen.get(k) || 0) + 1);
+    }
+  }
+
+  // the name tests the reader falls back on, kept HERE in one place so the
+  // report cannot drift from what the reader actually does
+  const NAME_TESTS = [
+    { as: 'freight or charges on a bill', re: /freight|transport|cartage|coolie|loading/i },
+    { as: 'reverse charge',               re: /\br\.?\s*charge\b|reverse\s*charge|\brcm\b/i },
+  ];
+
+  const ledgers = [];
+  for (const [k, count] of seen) {
+    const led = leds[k];
+    const group = led ? (led.parent || '') : '';
+    const byGroup = led && led.role && led.role !== 'other' ? led.role : null;
+    const byName = NAME_TESTS.filter((t) => t.re.test(k)).map((t) => t.as);
+    ledgers.push({
+      name: led ? led.name : k,
+      group,
+      count,
+      role: byGroup || (byName.length ? byName[0] : null),
+      // 'group'   Tally's own structure said so -- travels to any book
+      // 'name'    a word in the ledger's name said so -- a guess
+      // 'nothing' neither; the reader works it out from the voucher instead
+      decidedBy: byGroup ? 'group' : (byName.length ? 'name' : 'nothing'),
+      alsoByName: byName,
+    });
+  }
+  ledgers.sort((a, b) => b.count - a.count);
+
+  const byName  = ledgers.filter((l) => l.decidedBy === 'name');
+  const unknown = ledgers.filter((l) => l.decidedBy === 'nothing');
+
+  return {
+    haveTypeMasters, haveLedgerMasters,
+    voucherTypes, unknownTypes,
+    skippedTypes,
+    ledgers, decidedByName: byName, notPlaced: unknown,
+    // the short version, for a screen that has room for one line
+    worthALook: (!haveTypeMasters && unknownTypes.length > 0)
+      || unknownTypes.length > 0 || byName.length > 0 || skippedTypes.length > 0,
+    say: [
+      !haveTypeMasters && unknownTypes.length
+        ? `${unknownTypes.length} voucher type(s) could not be placed, and the file carries no voucher-type masters -- export those too and they will be understood`
+        : null,
+      haveTypeMasters && unknownTypes.length
+        ? `${unknownTypes.length} voucher type(s) Skwik has no place for: ${unknownTypes.map((t) => t.name).join(', ')}`
+        : null,
+      !haveLedgerMasters
+        ? 'the file carries no ledger masters, so every ledger had to be judged by its name'
+        : null,
+      byName.length
+        ? `${byName.length} ledger(s) were judged by their name rather than by the group they sit under -- worth a look`
+        : null,
+      ...skippedTypes.map((t) => `${t.count} ${t.name} voucher(s) were left out: ${t.why}`),
+    ].filter(Boolean),
+  };
+}
+
 export function vouchersFromTallyXml(xml) {
   const types = voucherTypesIn(xml);
   const leds = ledgersIn(xml);
@@ -963,6 +1255,15 @@ export function vouchersFromTallyXml(xml) {
     else if (v.kind === 'count')    book.counts.push(v);
     else if (v.kind === 'journal')  book.journals.push(v);
   }
+  // WHAT WAS MADE OF THE FILE, carried along with it.
+  //
+  // Not a list of vouchers, so it is set after the book is built rather than
+  // declared with the lists -- the house check that makes sure the browser page
+  // carries over every list reads that literal, and a non-list in it would be
+  // asked for a .push that cannot exist.
+  //
+  // Costs +10% on his 9.4 MB day book (860 ms to read it, 83 ms for this).
+  book.reading = readingReport(xml, types, leds);
   return book;
 }
 
