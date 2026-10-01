@@ -33,6 +33,7 @@
 import { guessUqc } from './uqc.js';
 import { STATES, codeForState } from './states.js';
 import { roleForJournal } from './tallybook.js';
+import { reverseChargeTax } from './money.js';
 
 /* ============== WHERE A NAME IS, AND WHETHER HE IS REGISTERED ==============
  *
@@ -260,32 +261,53 @@ export function planLoad(book, have = {}) {
   // not, and he was asked to type it in by hand after importing his whole
   // book. The ledgers were in the file all along -- only the customers and
   // suppliers were being read out of them.
+  // THE ACCOUNT, YES. THE FIGURE IT OPENED AT, NO.
+  //
+  // The masters carry an OPENINGBALANCE and a CLOSINGBALANCE per ledger, and
+  // this took one of them as the account's opening. It is the wrong figure, and
+  // trialbal.js has said so in writing since the day it was written:
+  //
+  //     Cash                             masters 3,30,041.45   trial balance 2,00,000.00
+  //     Cash Credit Account Fedral Bank  masters 21,08,459.58  trial balance 23,50,069.58
+  //     Bank Of Baroda                   masters 10,51,278.38  trial balance 10,51,278.38
+  //
+  // The masters figure is the balance at the start of the COMPANY's books, not
+  // the start of the year being imported. Baroda agrees only because it has
+  // never had a transaction.
+  //
+  // MEASURED ON HIS OWN BOOK, from the trial balance he sent on 30 September:
+  //     Cash    Tally 37,32,211.26   Skwik 38,62,252.71   out by 1,30,041.45
+  //     Fedral  Tally -17,65,621.42  Skwik -15,24,011.42  out by 2,41,610.00
+  // and 1,30,041.45 is exactly 3,30,041.45 less 2,00,000, and 2,41,610.00 is
+  // exactly 23,50,069.58 less 21,08,459.58. Both differences ARE this line.
+  //
+  // So the account is still made -- he should not have to type six bank names
+  // in by hand -- and it is made opening at NOUGHT. A nought is visible and the
+  // reconciliation page offers to fill it from the trial balance, which is the
+  // only file that states the year's opening. A wrong figure is invisible and
+  // sits in the cash book for ever, which is what happened.
+  //
+  // This is a deliberate trade: a shop that imports masters and never brings a
+  // trial balance now sees its banks open at nothing. That is worse to look at
+  // and better to have, because it is the truth about what Skwik knows.
   for (const b of (book.money?.banks || [])) {
     const k = norm(b.name);
     if (!k || accounts.has(k) || newAccounts.has(k)) continue;
-    newAccounts.set(k, { name: b.name, opening: Number(b.opening) || 0 });
+    newAccounts.set(k, { name: b.name, opening: 0 });
   }
 
-  // AN ACCOUNT THAT IS ALREADY THERE, SITTING AT NOUGHT.
+  // AND THE SAME FOR AN ACCOUNT ALREADY THERE: THE FIGURE IS NOT TAKEN EITHER.
   //
-  // The opening figure used to be written only on an account the import MADE.
-  // But "empty my books" keeps the accounts and zeroes their openings, so after
-  // one of those every account exists, every opening is nought, and no import
-  // could ever put them back -- his six accounts all read 0.00 with no date
-  // while the file had the real figures all along.
+  // This filled in the opening of an account that was sitting at nought, from
+  // the same masters figure -- so "empty my books" followed by an import put the
+  // wrong opening back on every account, which is how his cash came to be out
+  // by 1,30,041.45 twice over. See the note above: the masters cannot state the
+  // opening of the year being imported, only the trial balance can.
   //
-  // Same rule as the opening cash: only ever FILLED IN, never written over. A
-  // figure he has typed himself is his, and an account already dated is left
-  // alone.
+  // Left here as an empty list rather than deleted, because the shape is read
+  // further down and by the screen that reports what an import did. Nothing is
+  // put in it.
   const openAccounts = [];
-  for (const b of (book.money?.banks || [])) {
-    const had = accounts.get(norm(b.name));
-    if (!had) continue;                              // being made: born with it
-    if (Number(had.opening || 0) !== 0) continue;     // his own figure stands
-    if (had.opening_on) continue;                    // already dated
-    if (!Number(b.opening)) continue;                // nothing to fill in
-    openAccounts.push({ id: had.id, name: b.name, opening: Number(b.opening) });
-  }
 
   // and any account a deposit went into that the ledgers did not name
   for (const v of (book.cashMoves || [])) {
@@ -495,7 +517,12 @@ export function planLoad(book, have = {}) {
     openingAt: book.openingAt || [],
     mendItems,
     // and what was in the till on the day the year opened
-    openingCash: book.money?.cash ? Number(book.money.cash.opening) || 0 : null,
+    // THE TILL'S OPENING IS NOT IN THE MASTERS EITHER. This was
+    // book.money.cash.opening -- the same company-start figure as the banks, and
+    // the one that made his cash book read 3,30,041.45 where Tally says
+    // 2,00,000. Left as null so the till opens at nought and the trial balance
+    // fills it, which is the only file that knows the year's opening.
+    openingCash: null,
     bills: book.vouchers.length,
     payments: book.payments.length,
     transfers: book.transfers.length,
@@ -975,6 +1002,67 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       };
     });
 
+    // THE TAX ON A REVERSE-CHARGE BILL IS NOT WRITTEN ON THE BILL.
+    //
+    // A transporter's bill under reverse charge carries no tax ledger, because
+    // the tax is HIS to pay rather than the transporter's to collect. This read
+    // the tax straight off the voucher -- `cgst: v.cgst` and so on -- so it read
+    // nothing, and rcm_summary, which reads what was stored, reported nothing:
+    //
+    //     GSTR-3B 3.1(d) on reverse charge   2,76,194.00  +  0.00
+    //     To pay in cash                                     0.00
+    //
+    // against Tally's own 3B for the same month, which said 12,344.62. Over
+    // April to August his Tally carries 49,848.83 of this tax and Skwik carried
+    // nought. It is not a rounding: section 49(4) says reverse-charge tax must
+    // be paid in CASH and cannot come out of the credit balance, so a nil here
+    // is a return filed short on the one figure that has to be paid over.
+    //
+    // MEASURED, NOT ASSUMED. His own day book, run through this very function:
+    //
+    //     59-3405   3,340.00   rate 5%   tax stored 0.00   should be 167.00
+    //     59-3399   2,426.00   rate 5%   tax stored 0.00   should be 121.30
+    //     15 of 15 bills: value exact, rate present, tax nought
+    //
+    // The rate is already here. Tally writes it on the freight ledger's own
+    // leg -- <GSTRATE>5</GSTRATE> with <GSTRATEDUTYHEAD>IGST</GSTRATEDUTYHEAD>
+    // -- and the reader already carries it through as `charge_rate`. So this
+    // does the multiplication the import was not doing.
+    //
+    // IT ONLY EVER FILLS IN A MISSING TAX. The first version of the diagnostic
+    // I wrote for this multiplied every reverse-charge bill by its rate, and on
+    // a test book that turned a bill legitimately carrying 120.00 of tax into
+    // 0.00, because that bill had a tax and no rate. A bill that states its own
+    // tax is left exactly as it is.
+    //
+    // `total` is NOT touched. What he handed the transporter does not change --
+    // the tax is owed to the government, not to the transporter, and 1.9.8 says
+    // so where the column was added.
+    const inState = stateOf(cleanGstin(v.party_gstin, v.own_gstin, org), v.party_state, org)
+                    === String(org.state_code || '');
+    const taxMode = v.igst > 0 ? 'igst'
+                  : (v.cgst || v.sgst) ? 'cgst_sgst'
+                  : v.reverse_charge ? (inState ? 'cgst_sgst' : 'igst')
+                  : 'none';
+    let vCgst = Number(v.cgst) || 0;
+    let vSgst = Number(v.sgst) || 0;
+    let vIgst = Number(v.igst) || 0;
+    const rcmBase = round2(Number(v.taxable || 0) + Number(v.charge || 0));
+    const rcmRate = Number(v.charge_rate) || 0;
+    if (v.reverse_charge && !(vCgst || vSgst || vIgst) && rcmRate > 0 && rcmBase > 0) {
+      // `charge_rate` is the WHOLE rate on the supply, not the half Tally prints
+      // against each duty head -- the reader takes it off the line's gst_rate,
+      // and his freight comes through as 5, not 2.5.
+      //
+      // The arithmetic itself is in money.js, next to computeBill, so it rounds
+      // the same way the rest of the book does and so it can be tested with
+      // real figures -- this file cannot be loaded outside the app, and a rule
+      // that reads the source for a pattern passes the moment somebody renames
+      // a variable.
+      const t = reverseChargeTax(rcmBase, rcmRate, taxMode);
+      vCgst = t.cgst; vSgst = t.sgst; vIgst = t.igst;
+    }
+
     const payload = {
       id: idFor(v.ref || `${v.vtype}|${v.no}|${v.vdate}|${v.party}`, `voucher|${org.id}`),
       vtype: v.vtype,
@@ -992,7 +1080,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       // And any other charge loaded onto a stock item was counted in `total`
       // and stored nowhere at all, so the bill did not add up to itself.
       taxable: round2(Number(v.taxable || 0) + Number(v.charge || 0)),
-      cgst: v.cgst, sgst: v.sgst, igst: v.igst,
+      cgst: vCgst, sgst: vSgst, igst: vIgst,
       round_off: v.round_off, total: v.total,
       extra_amount: v.charge || 0,
       extra_gst_rate: v.charge_rate || 0,
@@ -1003,10 +1091,7 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       // own to pay. Read as an ordinary bill it looked untaxed; marked here, it
       // reaches GSTR-3B where it belongs.
       reverse_charge: !!v.reverse_charge,
-      tax_mode: v.igst > 0 ? 'igst' : (v.cgst || v.sgst) ? 'cgst_sgst'
-              : v.reverse_charge ? (stateOf(cleanGstin(v.party_gstin, v.own_gstin, org), v.party_state, org) === String(org.state_code || '')
-                                     ? 'cgst_sgst' : 'igst')
-              : 'none',
+      tax_mode: taxMode,
       // Place of supply, which no imported bill had.
       place_of_supply_code: codeFor(v.place_of_supply)
         || (v.vtype === 'purchase' ? String(org.state_code || '')
@@ -1289,7 +1374,13 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
       accounts: made.accounts, opened: made.opened } }).catch(() => {});
   }
 
-  return { ...made, total, done };
+  // WHAT THE READER MADE OF THE FILE, carried out to whoever called.
+  //
+  // Not a count of anything written -- a note on how the file was understood,
+  // so the screen can say "two ledgers were judged by their name, have a look"
+  // instead of leaving it to be discovered months later in a return. Absent on
+  // a book built some other way, so the screen must cope with it missing.
+  return { ...made, total, done, reading: book.reading || null };
 }
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
