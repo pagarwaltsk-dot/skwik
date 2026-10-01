@@ -568,6 +568,144 @@ rule('the version on the phone can tell one build from the next', (() => {
   return bad;
 })());
 
+rule('the import works out the tax on a reverse-charge bill', (() => {
+  // WHY THIS IS A RULE.
+  //
+  // A transporter's bill under reverse charge carries NO TAX LEDGER in Tally,
+  // because the tax is his to pay rather than the transporter's to collect. The
+  // import read the tax off the voucher, so it read nothing, and GSTR-3B box
+  // 3.1(d) showed 2,76,194.00 of freight with 0.00 of tax on it against Tally's
+  // own 12,344.62 for the same month. Section 49(4) says that tax must be paid
+  // in CASH and cannot come out of the credit balance, so a nil there is a
+  // return filed short on the one amount that has to be handed over.
+  //
+  // WHAT THIS RULE USED TO DO, AND WHY IT WAS WEAK. It looked for the forbidden
+  // line `cgst: v.cgst, sgst: v.sgst, igst: v.igst` and for the words
+  // `v.reverse_charge &&`. Rename that variable and the rule goes quiet on code
+  // that no longer works -- a tripwire on one mistake in one shape.
+  //
+  // So the arithmetic was moved into money.js as a named export, where it can
+  // be loaded outside the app and put to real figures by
+  // tools/reader-check.mjs. This rule now only checks the wiring, which is the
+  // part a text search CAN see honestly, and the answer itself is checked by
+  // running it.
+  const bad = [];
+  const mFile = path.join(ROOT, 'src', 'lib', 'money.js');
+  const lFile = path.join(ROOT, 'src', 'lib', 'tallyload.js');
+  const rFile = path.join(ROOT, 'src', 'lib', 'tallybook.js');
+  if (!fs.existsSync(mFile) || !fs.existsSync(lFile) || !fs.existsSync(rFile)) {
+    return ['one of money.js, tallyload.js or tallybook.js is missing'];
+  }
+  const m = fs.readFileSync(mFile, 'utf8');
+  const l = fs.readFileSync(lFile, 'utf8');
+  const r = fs.readFileSync(rFile, 'utf8');
+  if (!/export function reverseChargeTax/.test(m)) {
+    bad.push('money.js does not export reverseChargeTax, so nothing can test the arithmetic');
+  }
+  if (!/reverseChargeTax\s*\(/.test(l)) {
+    bad.push('the import never calls reverseChargeTax, so a reverse-charge bill gets no tax');
+  }
+  // AND THE READER MUST TAKE TALLY'S OWN WORD FOR IT, not the ledger's name.
+  //
+  // Reading the name for "R.Charge" is a guess about other people's wording,
+  // and on one day of his own book it already missed a bill: 102-56419, SHREE
+  // SHYAM ROADWAYS, three legs all called "FREIGHT INTRA STATE".
+  if (!/GSTOVRDNISREVCHARGEAPPL/.test(r)) {
+    bad.push('the reader decides reverse charge from the ledger name alone, '
+           + "not from Tally's own flag on the entry");
+  }
+  return bad;
+})());
+
+rule('the reader can be loaded and tested outside the app', (() => {
+  // WHY THIS IS A RULE.
+  //
+  // The tax on a reverse-charge bill was worked out inside tallyload.js, which
+  // reaches for Supabase -- so it could not be loaded by anything but the app,
+  // and the only guard on it was a rule reading the source for a pattern. That
+  // is how a figure that decides what he pays the government ended up with no
+  // test that ran it.
+  //
+  // tools/reader-check.mjs loads the reader with plain node and puts invented
+  // books through it. That only keeps working while the reader's imports stay
+  // clean. One `import { supabase }` anywhere in the chain and the whole suite
+  // goes dark -- so the chain is walked here.
+  const LIB = path.join(ROOT, 'src', 'lib');
+  const start = 'tallybook.js';
+  if (!fs.existsSync(path.join(LIB, start))) return ['there is no src/lib/tallybook.js'];
+  const seen = new Set();
+  const bad = [];
+  const walk = (file, from) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const f = path.join(LIB, file);
+    if (!fs.existsSync(f)) { bad.push(`${from} imports ${file}, which is not there`); return; }
+    const t = fs.readFileSync(f, 'utf8');
+    for (const m of t.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
+      const spec = m[1];
+      if (spec.startsWith('./')) { walk(spec.replace('./', ''), file); continue; }
+      // anything that is not a sibling file is a package, and a package means
+      // the reader cannot be loaded without the app around it
+      bad.push(`${file} imports "${spec}", so the reader can no longer be run on its own`);
+    }
+  };
+  walk(start, '(the reader)');
+  if (!fs.existsSync(path.join(ROOT, 'tools', 'reader-check.mjs'))) {
+    bad.push('tools/reader-check.mjs is gone, so nothing puts real figures through the reader');
+  }
+  return bad;
+})());
+
+rule("a ledger's group is followed up, not read one hop and given up on", (() => {
+  // WHY THIS IS A RULE.
+  //
+  // Nobody files a supplier straight under Sundry Creditors. They make a group
+  // for a trade or a town. On his own book: Transport -> Sundry Creditors, and
+  // Umarpur Plastic Party -> Sundry Creditors. This file read the immediate
+  // parent only, found "Transport", shrugged, and called six suppliers 'other'.
+  //
+  // That is not untidiness. Two lines below roleOfGroup there is a deliberate
+  // guard -- a ledger the GROUP has placed is never put through the tax-name
+  // test, because "a customer called GST TRADERS is not a tax ledger". A role
+  // of 'other' switches that guard off. So the shallow read disarmed a guard
+  // the code had already written.
+  //
+  // transfer.js walked the chain from the day it was written. tallybook.js did
+  // not, and nothing pointed at the difference for months.
+  const f = path.join(ROOT, 'src', 'lib', 'tallybook.js');
+  if (!fs.existsSync(f)) return ['there is no src/lib/tallybook.js'];
+  const t = fs.readFileSync(f, 'utf8');
+  const bad = [];
+  if (!/export function groupsIn/.test(t)) {
+    bad.push('the reader never reads the GROUP blocks, so it cannot follow a group up');
+  }
+  if (/role:\s*roleOfGroup\(parent\)/.test(t)) {
+    bad.push("a ledger's role is taken from its immediate parent group only");
+  }
+  return bad;
+})());
+
+rule('the browser page asks which price list is which, as the phone does', (() => {
+  // WHY THIS IS A RULE.
+  //
+  // Skwik bills on two prices. Tally holds as many as a shop cares to make --
+  // his own masters carry ten, named "1 APRIL 2026", "OffSeason", "Wholesale"
+  // and so on, and no rule on earth can work out from those names which is the
+  // counter price and which the trade price. The phone asks. This page did not
+  // ask at all, and did not even say a level existed: 495 items came in, 489
+  // with a selling price and NOT ONE with a second price.
+  //
+  // The page is now the main way a year comes in, so a fix that lives only on
+  // the phone is not a fix.
+  const f = path.join(ROOT, 'web', 'skwik-io.html');
+  if (!fs.existsSync(f)) return [];
+  const t = fs.readFileSync(f, 'utf8');
+  const bad = [];
+  if (!/priceLevelsInTally/.test(t)) bad.push('the page never reads the price levels a file offers');
+  if (!/applyPriceLevel/.test(t)) bad.push('the page never puts a chosen level onto the items');
+  return bad;
+})());
+
 rule('the browser page carries over everything the reader found', (() => {
   // WHY THIS EXISTS.
   //
