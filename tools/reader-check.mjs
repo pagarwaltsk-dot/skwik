@@ -24,7 +24,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NEED = ['money.js', 'states.js', 'uqc.js', 'transfer.js', 'tallybook.js'];
@@ -38,8 +38,16 @@ for (const f of NEED) {
     .replace(/(from\s+['"]\.\/[a-zA-Z0-9_-]+)\.js(['"])/g, '$1.mjs$2');
   fs.writeFileSync(path.join(shim, f.replace(/\.js$/, '.mjs')), code);
 }
-const tb = await import(path.join(shim, 'tallybook.mjs'));
-const mo = await import(path.join(shim, 'money.mjs'));
+// A FILE URL, NOT A PATH.
+//
+// On Windows the shim folder is C:\Users\...\skwik-reader-xxxx, and node reads
+// the leading "C:" as a URL scheme -- import() then refuses it outright with
+// ERR_UNSUPPORTED_ESM_URL_SCHEME. A posix path happens to work, which is the
+// only reason this passed where it was written. He develops on Windows, so it
+// would have failed on his very first run of npm run check.
+const load = (f) => import(pathToFileURL(path.join(shim, f)).href);
+const tb = await load('tallybook.mjs');
+const mo = await load('money.mjs');
 
 let pass = 0; const bad = [];
 const ok = (label, got, want) => {
