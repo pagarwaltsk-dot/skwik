@@ -1,0 +1,56 @@
+# ===========================================================================
+#  CHECK THE CODE -- press a button on the GitHub website, read green or red.
+#
+#  WHY THIS EXISTS.
+#
+#  The checks used to need a laptop: install Node, clone the repository, open
+#  a command prompt in the right folder, type a command. He uploads files on
+#  the GitHub website and has never used a terminal, so every one of those
+#  steps was a place to get stuck -- and the first one he would have reached
+#  failed on Windows anyway.
+#
+#  This runs the same two checks on GitHub's own machine. Nothing to install,
+#  nothing to download, nothing to type.
+#
+#  HOW TO RUN IT
+#    1. Open the repository on github.com
+#    2. Click the "Actions" tab along the top
+#    3. Click "Check the code" in the list down the left
+#    4. Click the grey "Run workflow" button on the right, then the green
+#       "Run workflow" button that drops down
+#    5. Wait about a minute. A green tick means everything passed. A red
+#       cross means something failed -- click into it to see what.
+#
+#  WHEN TO RUN IT. After changing any code, before making an APK. Not
+#  needed after a change that only touches SQL.
+# ===========================================================================
+name: Check the code
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # NO npm install. Both checks are plain Node and use no packages at
+      # all, which was deliberate -- nothing to download means nothing to go
+      # wrong, and it runs in seconds rather than minutes.
+
+      - name: The house rules
+        run: node tools/check.mjs
+
+      - name: What the reader actually does
+        run: node tools/reader-check.mjs
+
+      - name: Say so plainly
+        run: echo "Both checks passed. Nothing that was ever found has come back."
