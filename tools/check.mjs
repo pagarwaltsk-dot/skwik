@@ -706,6 +706,48 @@ rule('the browser page asks which price list is which, as the phone does', (() =
   return bad;
 })());
 
+rule('emptying a firm is done in batches, and is told the tables by the database', (() => {
+  // WHY THIS IS A RULE, AND IT IS THE WHOLE POINT OF HAVING RULES.
+  //
+  // wipe_org deleted every row of a firm in ONE call and worked from a list of
+  // tables somebody typed out by hand. Both halves failed, and both failed
+  // SILENTLY on a real book:
+  //
+  //   it never finished -- 4,655 bills and 34,066 stock movements is far past
+  //   what Supabase lets one statement take, so it died every time and the
+  //   phone blamed the wifi. It worked on every book small enough to test with
+  //   and no book in an actual shop.
+  //
+  //   it left half the book behind -- the hand-written list named ten tables
+  //   and walked past eleven, including cash_moves and journals, because five
+  //   later migrations added tables and nobody came back here. A list of
+  //   tables written by hand rots the day it is written.
+  //
+  // So: batched, and told by the database which tables belong to a firm. This
+  // rule is what stops either half coming back.
+  const sql = fs.readdirSync(path.join(ROOT, 'supabase', 'migrations'))
+    .filter((f) => f.endsWith('.sql'))
+    .map((f) => fs.readFileSync(path.join(ROOT, 'supabase', 'migrations', f), 'utf8'))
+    .join('\n');
+  const bad = [];
+  if (!/function\s+public\.wipe_org_step/i.test(sql)) {
+    bad.push('there is no wipe_org_step, so a firm is still emptied in one request');
+  }
+  // told by the database, not by a list
+  if (!/information_schema\.columns[\s\S]{0,400}org_id/i.test(sql)) {
+    bad.push('nothing asks the database which tables belong to a firm');
+  }
+  // and the screen must call it over and over rather than once
+  const w = path.join(ROOT, 'src', 'screens', 'WipeScreen.js');
+  if (fs.existsSync(w)) {
+    const t = fs.readFileSync(w, 'utf8');
+    if (!/wipe_org_step/.test(t)) {
+      bad.push('WipeScreen still asks for the whole firm in one call');
+    }
+  }
+  return bad;
+})());
+
 rule('the browser page carries over everything the reader found', (() => {
   // WHY THIS EXISTS.
   //
