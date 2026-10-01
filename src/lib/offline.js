@@ -116,12 +116,32 @@ const PLAIN = [
 ];
 
 export function sayPlainly(e) {
+  const raw = String(e?.message || e?.error_description || e || '');
+
+  // THE PARTICULAR ANSWER BEFORE THE GENERAL ONE.
+  //
+  // looksOffline matches on the word "timeout" among others, and it used to be
+  // asked FIRST. So "canceling statement due to statement timeout" -- the
+  // server giving up on a long job -- was reported as
+  //
+  //     Skwik could not reach the internet. Check your wifi or mobile data.
+  //
+  // The right message for it is four lines down in PLAIN and could never be
+  // reached. He pressed ERASE on a firm with 4,655 bills and 34,066 stock
+  // movements, Supabase cut the request off after a few seconds, and Skwik
+  // told him to check his wifi. He checked his wifi. It was fine.
+  //
+  // Every pattern in PLAIN names a thing the SERVER said -- a constraint, a
+  // policy, a timeout. None of them can match "Network request failed" or
+  // "Failed to fetch", which is what a phone with no way out produces. So
+  // asking the particular questions first takes nothing away from the general
+  // one; it only stops the general one from answering in its place.
+  for (const [re, say] of PLAIN) if (re.test(raw)) return say;
+
   if (looksOffline(e)) {
     return 'Skwik could not reach the internet. Check your wifi or mobile data '
          + 'and try once more. Nothing you typed has been lost.';
   }
-  const raw = String(e?.message || e?.error_description || e || '');
-  for (const [re, say] of PLAIN) if (re.test(raw)) return say;
   if (!raw.trim()) return 'Something went wrong. Try once more.';
 
   // WHAT IS LEFT IS EITHER A SENTENCE OR IT IS NOT.
