@@ -36,6 +36,9 @@ export default function WipeScreen({ navigation }) {
   const [pw, setPw] = useState('');
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
+  // how far the emptying has got, so a book with a year in it does not sit
+  // under a spinner saying nothing for half a minute
+  const [gone, setGone] = useState(0);
 
   if (!isOwner) {
     return (
@@ -76,14 +79,40 @@ export default function WipeScreen({ navigation }) {
     if (typed.trim().toUpperCase() !== 'ERASE') {
       return Alert.alert('Type it exactly', 'Type ERASE in capitals to go ahead.');
     }
-    setBusy(true); setStep('doing');
+    setBusy(true); setStep('doing'); setGone(0);
     try {
-      const { data, error } = await supabase.rpc('wipe_org', { p_keep_masters: keepMasters });
-      if (error) throw error;
-      const d = data || {};
+      // A BOOK WITH A YEAR IN IT CANNOT BE EMPTIED IN ONE REQUEST.
+      //
+      // This asked the server to delete every row at once. On his own book
+      // that is 4,655 bills, 26,196 bill lines and 34,066 stock movements;
+      // Supabase cuts a statement off after a few seconds, so it never
+      // finished, and the phone told him to check his wifi. It worked only on
+      // a book small enough not to need it -- which is every book in testing
+      // and no book in a real shop.
+      //
+      // wipe_org_step takes a batch and says how much is left. So this calls
+      // it until there is nothing left, and counts up on the screen while it
+      // goes. A book of any size finishes.
+      const before = { vouchers: 0, payments: 0, expenses: 0, items: 0, parties: 0 };
+      let out = null, guard = 0;
+      for (;;) {
+        const { data: d2, error: e2 } = await supabase.rpc('wipe_org_step', {
+          p_keep_masters: keepMasters, p_limit: 4000,
+        });
+        if (e2) throw e2;
+        out = d2 || {};
+        setGone((n) => n + (Number(out.deleted) || 0));
+        // 500 x 4,000 is two million rows; past that something is wrong and
+        // going round for ever would be worse than stopping.
+        if (out.done || ++guard > 500) break;
+      }
+      const d = { ...before, ...(out || {}), kept_masters: keepMasters };
       Alert.alert('The books are empty',
-        `${fmt0(d.vouchers || 0)} bills, ${fmt0(d.payments || 0)} money entries and `
-        + `${fmt0(d.expenses || 0)} expenses are gone.`
+        // The step function counts ROWS, not bills -- it is told by the
+        // database which tables there are and does not know what each one
+        // means. A row count is the honest thing to show, and it is the
+        // figure that was actually moved.
+        `${fmt0(gone + (Number((out || {}).deleted) || 0))} row(s) of your books are gone.`
         + (keepMasters
             ? '\n\nYour items and your customers are still there, with their '
               + 'opening figures set back to nil.'
@@ -238,6 +267,18 @@ export default function WipeScreen({ navigation }) {
             <ActivityIndicator size="large" color={C.danger} />
             <Text style={{ fontSize: 14, color: C.muted, marginTop: 16 }}>
               Emptying the books…
+            </Text>
+            {/* A YEAR OF BOOKS TAKES A WHILE, AND SILENCE LOOKS LIKE A HANG.
+                It goes a batch at a time now, so the count climbs instead of
+                a spinner sitting there saying nothing for half a minute. */}
+            {gone > 0 && (
+              <Text style={{ fontSize: 13, color: C.muted, marginTop: 6 }}>
+                {fmt0(gone)} row(s) so far
+              </Text>
+            )}
+            <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 10,
+                           textAlign: 'center', paddingHorizontal: 30 }}>
+              Keep Skwik open until it finishes.
             </Text>
           </View>
         )}
