@@ -33,7 +33,8 @@
 import { guessUqc } from './uqc.js';
 import { STATES, codeForState } from './states.js';
 import { roleForJournal } from './tallybook.js';
-import { reverseChargeTax } from './money.js';
+import { reverseChargeTax, headPointsTo,
+} from './money.js';
 
 /* ============== WHERE A NAME IS, AND WHETHER HE IS REGISTERED ==============
  *
@@ -1040,9 +1041,26 @@ export async function loadBook({ supabase, org, book, have = {}, onStep = () => 
     // so where the column was added.
     const inState = stateOf(cleanGstin(v.party_gstin, v.own_gstin, org), v.party_state, org)
                     === String(org.state_code || '');
+    // THE LEDGER'S NAME, ONLY WHEN THERE IS NOTHING BETTER.
+    //
+    // Where a reverse-charge bill names neither a GST number nor a state,
+    // `stateOf` falls back to the shop's own and the bill becomes local by
+    // default. The freight ledger's own name is a better guess than that --
+    // "FREIGHT INTRA STATE", "Transport Freight Interstate & R.Charge".
+    //
+    // A GUESS, AND NEVER MORE. Measured over his April, May and August books,
+    // 87 reverse-charge bills carried such a name: it agreed with the
+    // supplier's real state on 80 and was WRONG on 7, every one of them an
+    // Assam supplier booked under the "Interstate" ledger. So it is used only
+    // where the state is genuinely unknown -- 0 of his 66 bills -- and where
+    // the two disagree the reading report names the bills instead.
+    const headHint = (v.reverse_charge && !cleanGstin(v.party_gstin, v.own_gstin, org)
+                      && !codeFor(v.party_state))
+      ? (v.charge_names || []).map(headPointsTo).find(Boolean) || null
+      : null;
     const taxMode = v.igst > 0 ? 'igst'
                   : (v.cgst || v.sgst) ? 'cgst_sgst'
-                  : v.reverse_charge ? (inState ? 'cgst_sgst' : 'igst')
+                  : v.reverse_charge ? (headHint || (inState ? 'cgst_sgst' : 'igst'))
                   : 'none';
     let vCgst = Number(v.cgst) || 0;
     let vSgst = Number(v.sgst) || 0;

@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase, allRows } from '../lib/supabase';
 import { useApp } from '../AppContext';
 import {
+  compositionCannotSupply,
   computeBill, fmt, fmt0, hsnApplies, num, pct, placeOfSupply, purchaseTaxMode,
   parseDate, qty, rateIsGuessed, rcmTaxMode, saleRate, settle, showDate, taxIsCost,
   taxModeFor, today, topRate,
@@ -119,6 +120,12 @@ export default function BillScreen({ route, navigation }) {
   const [cust, setCust]   = useState(null);          // {id?, name, phone, state_code…}
   const [isCash, setIsCash] = useState(false);
   const [rcharge, setRcharge] = useState(false);
+  // WHERE THE TRANSPORTER IS, IN HIS OWN WORDS.
+  //
+  // null means "work it out from the party", which is what every bill did
+  // before this existed. 'cgst_sgst' or 'igst' is his own answer, and it wins.
+  // The reasoning is written out beside rcmTaxMode in money.js.
+  const [rcmHead, setRcmHead] = useState(null);
   const [less, setLess] = useState('');        // one discount, on the whole bill
 
   const [q, setQ]         = useState('');
@@ -198,7 +205,7 @@ export default function BillScreen({ route, navigation }) {
   const fingerprint = () => JSON.stringify({
     c: cust?.id || cust?.name || '', k: !!isCash, g: godown || '',
     d: String(less || ''), x: String(extra || ''), xg: String(extraGst || ''),
-    xn: String(extraNote || ''), r: !!rcharge,
+    xn: String(extraNote || ''), r: !!rcharge, rh: rcmHead || '',
     sn: String(supNo || ''), sd: String(supDateText || ''), v: String(vdate || ''),
     l: (lines || []).map((l) => [l.item_id || l.name || '', String(l.qty), String(l.rate),
                                  String(l.disc || ''), l.batch || '', l.godown_id || '']),
@@ -476,6 +483,11 @@ export default function BillScreen({ route, navigation }) {
       setCust(v.parties || { name: v.printed_name || 'CASH', walkIn: !v.party_id });
       setIsCash(!!v.is_cash);
       setRcharge(!!v.reverse_charge);
+      // THE HEAD IT WAS SAVED WITH, not one worked out again now. The party's
+      // state can have moved since -- Greatx's did, on 1 April 2026 -- and a
+      // bill already in a filed return must read the same today as it did then.
+      setRcmHead(v.reverse_charge && (v.tax_mode === 'igst' || v.tax_mode === 'cgst_sgst')
+        ? v.tax_mode : null);
       setLess(Number(v.discount) ? String(v.discount) : '');
       setExtra(Number(v.extra_amount) ? String(v.extra_amount) : '');
       setExtraGst(Number(v.extra_gst_rate) ? String(v.extra_gst_rate) : '');
@@ -1231,12 +1243,20 @@ export default function BillScreen({ route, navigation }) {
 
   // A purchase on reverse charge still carries tax — his own.
   const mode = isBuy
-      ? (rcharge ? rcmTaxMode(org, cust) : purchaseTaxMode(org, cust))
+      ? (rcharge ? rcmTaxMode(org, cust, rcmHead) : purchaseTaxMode(org, cust))
     : estimateMode ? 'none' : taxModeFor(org, cust, isCash);
   const good = lines.filter((l) => l.item_name.trim() && num(l.qty) > 0);
   const extraAmt  = num(extra);
   // Freight carries the dearest rate on the bill unless he says otherwise.
-  const extraRate = extraGst === '' ? topRate(good) : num(extraGst);
+  // FREIGHT CARRIES THE DEAREST RATE ON THE BILL unless he says otherwise --
+  // and on a bill with no goods at all there is nothing to copy from, so
+  // topRate([]) answered 0 and a reverse-charge freight bill would have saved
+  // with no tax on it. 5% is the goods transport agency rate and what all 66
+  // of his April and May freight bills carry; he can still type over it.
+  const extraRate = extraGst !== '' ? num(extraGst)
+                  : good.length ? topRate(good)
+                  : (rcharge && isBuy) ? 5
+                  : 0;
   const discAsked = num(less);
   // `discount` is passed even when the box is empty — 0 is how a discount is
   // TAKEN OFF a bill that already had one, and leaving it out was why it could
@@ -1364,8 +1384,48 @@ export default function BillScreen({ route, navigation }) {
   // asked once per save, like the quantity-looks-like-a-price question
   const shortOk = useRef(false);
   const save = async (holdOnly) => {
-    if (!good.length) return Alert.alert('Nothing to save', 'Add at least one item with a quantity.');
+    // A BILL CAN BE A CHARGE AND NOTHING ELSE.
+    //
+    // This refused any bill with no item carrying a quantity, which is most of
+    // what a shop buys that is not goods: the transporter's bill, the
+    // electricity, the consumables. His plastic company's own Tally book has
+    // 26 such purchases out of 48, worth 20,77,739.94 -- Consumable Exp and
+    // Transportation -- and the freight bill he sat down to enter could not be
+    // saved at all.
+    //
+    // A SALE still needs goods on it. Nobody sells a charge across a counter,
+    // and a sale with no lines is a mistake every time.
+    const chargeOnly = isBuy && !good.length && extraAmt > 0;
+    if (!good.length && !chargeOnly) {
+      return Alert.alert('Nothing to save', isBuy
+        ? 'Add an item with a quantity, or put the amount in the charge box below '
+          + 'if this bill is only freight or an expense.'
+        : 'Add at least one item with a quantity.');
+    }
     if (!cust?.name) return Alert.alert('Who is it for?', 'Choose a customer first.');
+
+    // SECTION 10(2)(c): A COMPOSITION DEALER MAY NOT SELL OUTSIDE HIS STATE.
+    //
+    // Not a tax question with a right answer -- the sale is not open to him,
+    // and making one puts his composition out of order from that date. So it
+    // is stopped here rather than priced. The reasoning is beside
+    // compositionCannotSupply in money.js.
+    //
+    // AN ESTIMATE IS THIS SHOP'S SALE, so it cannot be let through.
+    //
+    // The gate read `vtype !== 'estimate'`, and a shop that charges no GST
+    // bills in estimate mode -- which is the mode every firm is created in,
+    // composition included. cmp08()'s own note says so, and counts vtype
+    // 'estimate' as turnover for exactly that reason; gstr1.js treats an
+    // estimate with counts_as_sale unset as the outward supply it is. So the
+    // one check written for composition dealers was switched off for every
+    // composition dealer. It asks the question of anything going out of the
+    // shop, and leaves sale returns alone -- goods coming back are how a sale
+    // that should never have been made is undone.
+    if (isOut) {
+      const no = compositionCannotSupply(org, cust?.id ? cust : null);
+      if (no) return Alert.alert('Not allowed on composition', no);
+    }
 
     // NOTHING LEAVES THE SHOP AT NOTHING. A rate of zero on a sale is not a
     // discount, it is a giveaway, and it prints as 0.00 on the customer's copy.
@@ -1491,7 +1551,7 @@ export default function BillScreen({ route, navigation }) {
                 : cust.id ? cust
                 : await findOrCreateParty(cust.name);
       const m = isBuy
-          ? (rcharge ? rcmTaxMode(org, pty) : purchaseTaxMode(org, pty))
+          ? (rcharge ? rcmTaxMode(org, pty, rcmHead) : purchaseTaxMode(org, pty))
         : estimateMode ? 'none' : taxModeFor(org, pty, isCash);
       const c = computeBill(good, m,
         { amount: extraAmt, gst_rate: extraRate, discount: discAsked,
@@ -2937,6 +2997,59 @@ export default function BillScreen({ route, navigation }) {
                   </Text>
                 </View>
               </TouchableOpacity>
+            )}
+
+            {/* WHERE THE TRANSPORTER IS -- ASKED, NOT GUESSED.
+              *
+              * This decides whether the GST he owes is CGST+SGST or IGST, which
+              * is two different cash ledgers for the same rupees. It used to be
+              * worked out from the party's state_code, with a comment admitting
+              * a transporter with no state was "treated as local, which is what
+              * a small shop's transporter almost always is".
+              *
+              * A reverse-charge party is the one party most likely to have NO
+              * GST NUMBER, so state_code is the only input -- and until the
+              * dated-rows fix, 578 of his 607 names had no state at all and
+              * fell back to his own. April's 33,780 Greatx bill came out right
+              * only because the voucher carried a GSTIN Tally had already
+              * withdrawn.
+              *
+              * NO POPUP AND NO KEYPAD. Two taps in a row, the same shape as the
+              * tick above it, with the worked-out answer already chosen so a man
+              * entering sixty freight bills a month need not touch it.
+              */}
+            {isBuy && showRcmIn(org) && rcharge && (
+              <View style={{ marginTop: 12, paddingLeft: 30 }}>
+                <Text style={{ fontSize: 12.5, color: C.muted, marginBottom: 6 }}>
+                  Where is he?
+                  {cust?.state_name ? `  ${'—'}  on file: ${cust.state_name}` : ''}
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {[['cgst_sgst', 'Same state'], ['igst', 'Other state']].map(([mode, label]) => {
+                    // The one in force -- his answer if he gave one, otherwise
+                    // whatever the party's state works out to, so the screen
+                    // always shows what will actually be saved.
+                    const on = rcmTaxMode(org, cust, rcmHead) === mode;
+                    return (
+                      <TouchableOpacity key={mode}
+                        onPress={() => setRcmHead(rcmHead === mode ? null : mode)}
+                        style={{ paddingVertical: 7, paddingHorizontal: 14, borderRadius: 8,
+                                 borderWidth: 1.5,
+                                 borderColor: on ? C.accent : C.greyB,
+                                 backgroundColor: on ? C.accent : 'transparent' }}>
+                        <Text style={{ fontSize: 13, fontWeight: on ? '700' : '500',
+                                       color: on ? '#fff' : C.ink }}>{label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <Text style={{ fontSize: 12, color: C.muted, marginTop: 6, lineHeight: 17 }}>
+                  {rcmHead
+                    ? 'Your answer. It is saved on this bill, so it stays put even '
+                      + 'if his state changes later.'
+                    : 'Worked out from his state. Tap to set it yourself.'}
+                </Text>
+              </View>
             )}
 
             <View style={[S.tline, { borderTopWidth: 2, borderTopColor: C.ink, marginTop: 8, paddingTop: 10 }]}>

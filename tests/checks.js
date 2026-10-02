@@ -16,7 +16,8 @@
 // on the spot. Nothing is added to what the app ships.)
 
 import { computeBill, n2, amountInWords, fmt, qty, pct, taxModeFor,
-         purchaseTaxMode, saleRate, itemsGross } from '../src/lib/money.js';
+         purchaseTaxMode, saleRate, itemsGross,
+         compositionCannotSupply } from '../src/lib/money.js';
 import { buildGstr1 } from '../src/lib/gstr1.js';
 import { reconcile, parse2b, normNo } from '../src/lib/gstr2b.js';
 import { parseCsv, itemsFromCsv, partiesFromCsv } from '../src/lib/transfer.js';
@@ -230,6 +231,26 @@ eq('nothing asked of an unregistered shop', checkHsn('',{is_gst_registered:false
 /* ---------------- states ---------------- */
 eq('orissa', codeForState('Orissa'), '21');
 eq('other territory is on the list', STATES['97'], 'Other Territory');
+
+/* ------- section 10(2)(c): a composition dealer sells in his own state -----
+ *
+ * The answer is a refusal or nothing, and the refusal has to come out for the
+ * one case it is written for: a composition shop billing a buyer whose state
+ * is not its own. A walk-in with no state on file is local under section
+ * 10(1)(c), and refusing him would stop the shop trading.
+ */
+const comp = { is_gst_registered: true, is_composition: true, state_code: '18' };
+ok('an out-of-state buyer is refused',
+   /inter-state/.test(compositionCannotSupply(comp, { state_code: '27' }) || ''));
+eq('a buyer in the same state is fine',
+   compositionCannotSupply(comp, { state_code: '18' }), null);
+eq('a buyer with no state on file is treated as local',
+   compositionCannotSupply(comp, { state_code: '' }), null);
+eq('a walk-in nobody named is treated as local',
+   compositionCannotSupply(comp, null), null);
+eq('a regular dealer may sell anywhere',
+   compositionCannotSupply({ is_gst_registered: true, state_code: '18' },
+                           { state_code: '27' }), null);
 
 
 console.log(`\n${pass} passed, ${fail} failed`);

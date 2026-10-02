@@ -50,7 +50,10 @@
 
 import {
   blocksOf, nameAttr, numOf, qtyOf, tagOf, tagTop, unesc,
+  regOn, registrationNow, COMPOSITION, UNREGISTERED,
 } from './transfer.js';
+import { codeForState } from './states.js';
+import { headPointsTo } from './money.js';
 
 /* ===================== what each Tally kind becomes ===================== */
 
@@ -205,11 +208,20 @@ export function ledgersIn(xml, groups) {
     const name = nameAttr(b) || tagTop(b, 'NAME');
     if (!name) continue;
     const parent = tagTop(b, 'PARENT') || '';
+    // THE DATED ROWS, NOT THE LEGACY TAGS. Read by the one helper the party
+    // masters use as well, so the two readings of the same ledger cannot
+    // disagree -- the reasoning is written out beside it in transfer.js.
+    const reg = registrationNow(b);
     out[name.toLowerCase()] = {
       name, parent,
       role: roleUpTheChain(grp, parent),
-      gstin: tagOf(b, 'PARTYGSTIN') || tagOf(b, 'GSTIN') || '',
-      state: tagTop(b, 'LEDSTATENAME') || '',
+      gstin: reg.gstin,
+      state: reg.state,
+      reg_type: reg.type,
+      composition: reg.composition,
+      // kept so a bill can be read against the row in force the day it was
+      // written, and so the report can say what changed
+      regs: reg.regs, addrs: reg.addrs,
     };
   }
   return out;
@@ -495,6 +507,10 @@ function readBill(block, v, vtype, leds) {
   // Kept SIGNED, because the sign is the only thing that says which side of
   // the bill these sit on. See the note under roundSign.
   let roundRaw = 0, taxRaw = 0, partyRaw = 0;
+  // THE NAMES THE CHARGE CAME OFF. Only ever a hint about inter vs intra
+  // state, and only where the supplier's state is unknown -- on his own books
+  // these names are wrong on 7 of 87 reverse-charge bills. See headPointsTo.
+  const chargeNames = [];
   const others = [];
   for (const b of legsOf(block)) {
     const name = top(b, 'LEDGERNAME');
@@ -549,6 +565,7 @@ function readBill(block, v, vtype, leds) {
       // Tally's own flag already catches this case. This is the fallback for
       // an older export that does not carry one.
       if (RCM_NAME.test(name)) rcmByName = true;
+      chargeNames.push(name);
       freight += Math.abs(amt); continue;
     }
     others.push({ name, amount: amt });
@@ -643,7 +660,9 @@ function readBill(block, v, vtype, leds) {
   for (const e of loaded) {
     if (!chargeRate) chargeRate = e.line.gst_rate || 0;
     if (RCM_NAME.test(e.ledger)) rcm = true;
-    if (/freight|transport|cartage|coolie|loading/i.test(e.ledger)) freight += e.line.amount;
+    if (/freight|transport|cartage|coolie|loading/i.test(e.ledger)) {
+      chargeNames.push(e.ledger); freight += e.line.amount;
+    }
     else others.push({ name: e.ledger || e.line.item_name, amount: e.line.amount, on_item: e.line.item_name });
   }
   for (const o of others) {
@@ -770,6 +789,7 @@ function readBill(block, v, vtype, leds) {
     // second one, so a bill carrying one did not add up to itself.
     charge: round2(freight + carried),
     charge_rate: chargeRate,
+    charge_names: chargeNames,
     reverse_charge: rcm,
     // What Tally says the bill came to, kept beside what the pieces add up
     // to, so the check can tell him when they disagree instead of quietly
@@ -1130,7 +1150,15 @@ export function voucherTypesIn(xml) {
 // It deliberately does NOT ask the shopkeeper what he calls his freight ledger.
 // He cannot answer that in the abstract -- but shown his own ledger names with
 // a guess beside each, he can spot a wrong one in seconds.
-export function readingReport(xml, typesIn, ledsIn) {
+const said = (ymd) => {
+  const t = String(ymd || '').replace(/\D/g, '');
+  if (t.length !== 8) return t;
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${Number(t.slice(6, 8))} ${MON[Number(t.slice(4, 6)) - 1] || '?'} ${t.slice(0, 4)}`;
+};
+
+export function readingReport(xml, typesIn, ledsIn, book) {
   // The caller usually has these already. Taking them rather than reading the
   // file again is not only cheaper -- it means the report describes THE reading
   // that happened, and cannot drift from it.
@@ -1208,6 +1236,214 @@ export function readingReport(xml, typesIn, ledsIn) {
   }
   ledgers.sort((a, b) => b.count - a.count);
 
+  // ---- WHAT TALLY CHANGED ITS MIND ABOUT, AND WHEN ----
+  //
+  // His own masters hold 49 ledgers with more than one dated registration
+  // row -- 21 changed number, 16 changed state, 22 went unregistered, 11 are
+  // Composition. Reading the row in force is now done (see registrationNow in
+  // transfer.js), but three of those cases cannot be settled by a reader and
+  // have to be put in front of him.
+  const partyish = (r) => r === 'customer' || r === 'supplier';
+  let dated = 0;
+
+  // 1. A NUMBER TALLY HAS WITHDRAWN. Skwik never deletes a GST number that is
+  //    already in his books -- he may have typed it himself. So when Tally has
+  //    retired one, the import stops copying it and says so instead.
+  const withdrawn = [];
+  // 2. A PARTY WHOSE REGISTRATION REALLY CHANGED -- not one whose details were
+  //    simply filled in later.
+  //
+  //    This first said "moved from X to Y" for every ledger whose state
+  //    differed between its first and last row, and on his book that was 16
+  //    names. Fourteen of them had not moved anywhere: he had made the ledger
+  //    with Tally's default state and no number, then typed the real number
+  //    and state in afterwards. Telling him Gaurav Traders "moved from Assam
+  //    to Gujarat" would send him looking for a relocation that never
+  //    happened -- and his bills before that date were worked out against
+  //    Assam by Tally too, so Skwik agrees with Tally on every one of them
+  //    and there is nothing to look at.
+  //
+  //    A number in the earlier row is what separates the two. Two names on his
+  //    book qualify: Bansal Udhyog, whose state was corrected under the same
+  //    number, and Greatx, whose number was withdrawn.
+  const changed = [];
+  // 3. A COMPOSITION SUPPLIER, AND ONLY A SUPPLIER.
+  //
+  //    A composition dealer you BUY from charges no GST, so there is no input
+  //    tax to claim and a purchase booked with tax is wrong. Worth saying.
+  //
+  //    A composition dealer you SELL to changes nothing for you. You bill him
+  //    with GST exactly as you would anybody registered, it is a B2B invoice
+  //    because he has a number, and whether he can claim it back is his
+  //    problem and not yours. There is nothing for the shopkeeper to do, so
+  //    there is nothing to say.
+  //
+  //    The first version of this did not look at the role. It collected all
+  //    eleven of his and told him "none of their tax can be claimed back" --
+  //    and every one of the eleven was a CUSTOMER, sitting under Sundry
+  //    Debtors, which the reader had placed correctly all along. The line was
+  //    false about eleven names on the one screen meant to be trustworthy.
+  const composition = [];
+  for (const led of Object.values(leds)) {
+    const rows = led.regs || [];
+    if (!partyish(led.role)) continue;
+    if (led.composition && led.role === 'supplier') composition.push(led.name);
+    if (rows.length < 2) continue;
+    dated += 1;
+    const first = rows[0] || {}, now = rows[rows.length - 1] || {};
+    if (!led.gstin && (first.gstin || '')) {
+      withdrawn.push({ name: led.name, was: first.gstin, from: now.from || '' });
+    }
+    const hadNumber = !!(first.gstin || '');
+    if (hadNumber && now.state && first.state && now.state !== first.state) {
+      changed.push({ name: led.name, was: first.state, now: now.state, from: now.from || '' });
+    }
+  }
+
+  // 4. THE BILL SAYS ONE STATE, THE LEDGER SAYS ANOTHER.
+  //
+  //    A Tally voucher FREEZES the party's details as they stood the day it was
+  //    typed. His April freight bill from Greatx still says Delhi, because he
+  //    corrected that ledger to Assam on 1 April 2026 -- after the bill was
+  //    entered. Tally's own 3B left the bill out altogether; Skwik reads the
+  //    frozen Delhi and makes it inter-state.
+  //
+  //    THERE IS NO WAY TO TELL FROM THE FILE WHICH OF THE TWO IS MEANT. A bill
+  //    entered while the ledger was right should keep its own state; a bill
+  //    entered before he fixed the ledger should take the ledger's. So the
+  //    reader does not pick -- it leaves the bill as Tally wrote it and names
+  //    the bills where the two disagree.
+  const frozen = [];
+  for (const b of blocksOf(xml, 'VOUCHER')) {
+    const party = unesc(tagTop(b, 'PARTYLEDGERNAME') || tagTop(b, 'PARTYNAME') || '');
+    if (!party) continue;
+    const led = leds[party.toLowerCase()];
+    if (!led || !(led.regs || []).length) continue;
+    const onBill = unesc(tagTop(b, 'STATENAME') || '');
+    if (!onBill) continue;
+    const row = regOn(led.regs, tagTop(b, 'DATE') || '') || {};
+    if (!row.state || row.state === onBill) continue;
+    frozen.push({
+      name: led.name,
+      bill: unesc(tagTop(b, 'VOUCHERNUMBER') || '(no number)'),
+      dated: tagTop(b, 'DATE') || '',
+      onBill, inLedger: row.state,
+    });
+  }
+
+  // ---- ONE PARTY, THE FLAG SET BOTH WAYS ----
+  //
+  // Tally's reverse-charge mark is set BY HAND on each bill, and a hand slips.
+  // In his April and May day books, five transporter bills worth 45,450.00 have
+  // the mark off while OTHER BILLS FROM THE SAME TRANSPORTER have it on:
+  //
+  //     Greatx                  919270       23 Apr    6,935.00
+  //     Greatx                  919549       27 Apr    3,395.00
+  //     Gayatri Goods Carriers  513X1537X27  23 Apr   25,990.00
+  //     Gayatri Goods Carriers  513X1572X7   15 May    7,360.00
+  //     S.B. Logistics          175-3632     19 May    1,770.00
+  //
+  // At 5% that is 2,272.50 of tax his return does not carry, and nothing in
+  // Tally shows it to him -- the bills sit under the same ledger, the same
+  // party, the same rate, and only the one hidden flag differs.
+  //
+  // NO WORDS ARE GUESSED AT. This does not look for "transport" or "freight"
+  // anywhere; it was the first thing tried and it is exactly what he is right
+  // to distrust. The rule is only: THIS PARTY'S OTHER BILLS ARE REVERSE CHARGE
+  // AND THIS ONE IS NOT. That found all five on its own, and it travels to a
+  // book full of names nobody has ever seen.
+  //
+  // IT ONLY SEES WHAT IS IN THE FILE. April alone catches four of the five --
+  // Gayatri has no marked bill in April, so there is nothing for its unmarked
+  // one to disagree with. Both months together catch all five. So the wider the
+  // range he exports, the more it finds, which is worth saying to him.
+  const oddFlag = [];
+  let oddValue = 0;
+  if (book && Array.isArray(book.vouchers)) {
+    const by = new Map();
+    for (const v of book.vouchers) {
+      if (v.vtype !== 'purchase' || !v.party) continue;
+      const k = String(v.party).toLowerCase();
+      const o = by.get(k) || { name: v.party, on: 0, off: [] };
+      if (v.reverse_charge) { o.on += 1; by.set(k, o); continue; }
+      // A BILL THAT CARRIES ITS OWN TAX IS NOT A MISSED MARK.
+      //
+      // A man who sells him goods AND bills him the lorry would show up here
+      // with the goods bill flagged as a slip, which it is not -- the supplier
+      // charged the tax on it himself. A reverse-charge bill carries no
+      // supplier tax at all, by definition: that is what reverse charge means.
+      // All five of his real ones carry nought, while 94 of his 167 purchases
+      // carry tax and are spared by this one line.
+      if ((Number(v.cgst) || 0) + (Number(v.sgst) || 0) + (Number(v.igst) || 0) > 0) {
+        by.set(k, o); continue;
+      }
+      o.off.push(v);
+      by.set(k, o);
+    }
+    for (const o of by.values()) {
+      if (!o.on || !o.off.length) continue;
+      const value = o.off.reduce((t, v) => t + (Number(v.taxable) || 0) + (Number(v.charge) || 0), 0);
+      oddValue += value;
+      oddFlag.push({
+        name: o.name, marked: o.on, value: Math.round(value * 100) / 100,
+        bills: o.off.map((v) => ({ no: v.no, vdate: v.vdate,
+          value: Math.round(((Number(v.taxable) || 0) + (Number(v.charge) || 0)) * 100) / 100 })),
+      });
+    }
+    oddFlag.sort((a, b) => b.value - a.value);
+    oddValue = Math.round(oddValue * 100) / 100;
+  }
+
+  // ---- THE FREIGHT LEDGER'S NAME AGAINST WHERE THE MAN ACTUALLY IS ----
+  //
+  // He asked whether Skwik should read the heading -- "FREIGHT INTRA STATE",
+  // "Transport Freight Interstate & R.Charge" -- and decide inter or intra from
+  // it. Measured on his own April, May and August books, over 87 reverse-charge
+  // bills carrying such a name:
+  //
+  //     the name agrees with the supplier's real state ....  80
+  //     the name is WRONG ................................   7
+  //
+  // All seven are ASSAM suppliers booked under the "Interstate" ledger -- six
+  // Greatx bills and one S.B. Logistics. So the name is a fallback only (see
+  // tallyload), and where it disagrees with a state we actually know, the bills
+  // are named here. Nothing in Tally shows him this.
+  // THE SHOP'S OWN STATE, OUT OF THE FILE ITSELF.
+  //
+  // "Inter state" means nothing without knowing where the shop is, and the
+  // reader is not handed the shop's record. Tally writes the company's own
+  // registration into the export -- <GSTREGNUMBER>18AHXPA8555E1ZX</> on his --
+  // and the first two digits are the state. A voucher's own CMPGSTIN says the
+  // same thing and is the fallback.
+  //
+  // The first version of this compared against `v.own_state`, a field no
+  // voucher carries. It was undefined on every bill, so every local supplier
+  // under an "intra state" ledger would have been reported as a disagreement --
+  // a report that cries wolf on the very screen meant to be trusted.
+  const ownGstin = String(tagOf(xml, 'GSTREGNUMBER') || tagOf(xml, 'CMPGSTIN') || '')
+    .toUpperCase().replace(/\s/g, '');
+  const homeState = /^\d\d/.test(ownGstin) ? ownGstin.slice(0, 2) : '';
+
+  const headClash = [];
+  if (homeState && book && Array.isArray(book.vouchers)) {
+    for (const v of book.vouchers) {
+      if (!v.reverse_charge) continue;
+      const hint = (v.charge_names || []).map(headPointsTo).find(Boolean);
+      if (!hint) continue;
+      // Only where the supplier's state is genuinely known. With nothing to
+      // compare against there is no disagreement -- and that is the one case
+      // where the name is allowed to decide, in tallyload.
+      const st = String(v.party_state || '').trim();
+      const fromState = st ? codeForState(st) : '';
+      if (!fromState) continue;
+      const real = fromState === homeState ? 'cgst_sgst' : 'igst';
+      if (hint !== real) {
+        headClash.push({ name: v.party, bill: v.no, vdate: v.vdate,
+                         state: st, ledger: (v.charge_names || [])[0] || '', hint, real });
+      }
+    }
+  }
+
   const byName  = ledgers.filter((l) => l.decidedBy === 'name');
   const unknown = ledgers.filter((l) => l.decidedBy === 'nothing');
 
@@ -1216,9 +1452,15 @@ export function readingReport(xml, typesIn, ledsIn) {
     voucherTypes, unknownTypes,
     skippedTypes,
     ledgers, decidedByName: byName, notPlaced: unknown,
+    withdrawn, changed, composition, frozen,
+    oddFlag, oddValue,
+    headClash,
+    datedLedgers: dated,
     // the short version, for a screen that has room for one line
     worthALook: (!haveTypeMasters && unknownTypes.length > 0)
-      || unknownTypes.length > 0 || byName.length > 0 || skippedTypes.length > 0,
+      || unknownTypes.length > 0 || byName.length > 0 || skippedTypes.length > 0
+      || withdrawn.length > 0 || changed.length > 0 || frozen.length > 0
+      || oddFlag.length > 0 || headClash.length > 0,
     say: [
       !haveTypeMasters && unknownTypes.length
         ? `${unknownTypes.length} voucher type(s) could not be placed, and the file carries no voucher-type masters -- export those too and they will be understood`
@@ -1233,6 +1475,48 @@ export function readingReport(xml, typesIn, ledsIn) {
         ? `${byName.length} ledger(s) were judged by their name rather than by the group they sit under -- worth a look`
         : null,
       ...skippedTypes.map((t) => `${t.count} ${t.name} voucher(s) were left out: ${t.why}`),
+      // A DATE IN THE SENTENCE, because "Tally changed its mind" is no use
+      // without saying when it changed it.
+      ...withdrawn.map((w) => `${w.name} had GST number ${w.was}, and Tally withdrew it`
+        + `${w.from ? ` on ${said(w.from)}` : ''} -- a number already in your books is left alone, so check that name`),
+      // THREE NAMES, THEN A COUNT. His book has two of these, but a bigger one
+      // could have twenty, and this list is read inside an Alert on a phone --
+      // the first version of the line below it printed one line per name and
+      // filled the screen with sixteen of them.
+      ...changed.slice(0, 3).map((m) => `${m.name} was ${m.was} and is ${m.now}`
+        + `${m.from ? ` from ${said(m.from)}` : ''} -- bills before that were worked out against ${m.was}`),
+      changed.length > 3
+        ? `and ${changed.length - 3} more name(s) whose registration changed the same way`
+        : null,
+      // ONE LINE, NOT ONE PER NAME. Forty-nine of his ledgers carry more than
+      // one dated row; a line each would bury everything else on the screen.
+      // What he needs to know is that the dates are being honoured.
+      dated > 0
+        ? `${dated} name(s) have more than one dated GST record in Tally -- each bill was read against the one in force on its own date`
+        : null,
+      frozen.length
+        ? `${frozen.length} bill(s) carry a state that is not the one the ledger holds for that date`
+          + ` (${frozen.slice(0, 3).map((f) => `${f.name} ${f.bill}: ${f.onBill} on the bill, ${f.inLedger} in the ledger`).join('; ')}`
+          + `${frozen.length > 3 ? ', and more' : ''}) -- the bill was left as Tally wrote it`
+        : null,
+      headClash.length
+        ? `${headClash.length} reverse-charge bill(s) sit under a freight ledger whose name `
+          + `disagrees with where the supplier actually is -- `
+          + headClash.slice(0, 3).map((h) => `${h.name} ${h.bill} (${h.state}, booked under "${h.ledger}")`).join('; ')
+          + `${headClash.length > 3 ? `, and ${headClash.length - 3} more` : ''}`
+          + '. Skwik went by the state, not the name, which is the safer of the two'
+        : null,
+      oddFlag.length
+        ? `${oddFlag.reduce((t, o) => t + o.bills.length, 0)} bill(s) worth ${oddValue.toFixed(2)} are NOT marked reverse charge, `
+          + `though other bills from the same name are -- `
+          + oddFlag.slice(0, 3).map((o) => `${o.name} (${o.bills.map((b) => b.no).join(', ')})`).join('; ')
+          + `${oddFlag.length > 3 ? `, and ${oddFlag.length - 3} more name(s)` : ''}`
+          + '. Tally\'s mark is set by hand on each bill, so check these in Tally -- '
+          + 'and exporting a wider date range finds more of them'
+        : null,
+      composition.length
+        ? `${composition.length} supplier(s) are Composition in Tally, so they charge no GST and there is no input tax to claim on them: ${composition.slice(0, 6).join(', ')}${composition.length > 6 ? ', and more' : ''}`
+        : null,
     ].filter(Boolean),
   };
 }
@@ -1263,7 +1547,7 @@ export function vouchersFromTallyXml(xml) {
   // asked for a .push that cannot exist.
   //
   // Costs +10% on his 9.4 MB day book (860 ms to read it, 83 ms for this).
-  book.reading = readingReport(xml, types, leds);
+  book.reading = readingReport(xml, types, leds, book);
   return book;
 }
 

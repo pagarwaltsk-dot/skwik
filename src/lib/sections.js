@@ -130,6 +130,14 @@ export function groupsFor(org, isOwner) {
           && { id: 'gstr1',  label: 'GSTR-1',  route: 'Reports', params: { view: 'gstr1' } },
         showReports(org) && regular(org)
           && { id: 'gstr3b', label: 'GSTR-3B', route: 'Reports', params: { view: 'gstr3b' } },
+        // THE ONE RETURN A COMPOSITION DEALER ACTUALLY FILES.
+        //
+        // He files no GSTR-1 and no 3B, and Skwik said so correctly -- then
+        // offered nothing in their place, which was the whole of what he has
+        // to do. It stands where 1 and 3B stand for everybody else, because
+        // for him it is the same job.
+        showReports(org) && org?.is_gst_registered && org?.is_composition
+          && { id: 'cmp08', label: 'CMP-08', route: 'Reports', params: { view: 'cmp08' } },
         showRecon(org) && regular(org)
           && { id: 'recon',  label: 'GSTR-2B', route: 'Recon' },
       ]),
