@@ -507,8 +507,17 @@ export default function MoneyScreen({ route, navigation }) {
   // chip. So the finger moves between chips while the form is untouched, which
   // is when he is looking rather than writing, and stops the moment he starts
   // filling it in. The chips above never stop working.
+  //
+  // `batch !== null` STOOD FOR "THE REGISTER IS OPEN" and meant it until the
+  // register became the screen itself. From that moment it was true before he
+  // had touched anything, so `started` was always true and the finger could
+  // never move between chips at all -- the swipe was switched off on this
+  // screen rather than deferred until he began writing. The question it was
+  // always asking is whether any line has anything in it yet.
+  const written = (batch || []).some(
+    (r) => String(r.name || '').trim() || String(r.amount || '').trim());
   const started = !!party || !!String(amount).trim() || !!String(note).trim()
-    || !!String(text).trim() || batch !== null || !!editing;
+    || !!String(text).trim() || written || !!editing;
   const sec = useSectionSwipe(navigation, org, isOwner, received ? 'in' : 'out');
   const swipe = started ? {} : sec;
 

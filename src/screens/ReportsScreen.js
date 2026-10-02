@@ -147,9 +147,15 @@ const quarterOf = (d) => QUARTERS[Math.floor(((d.getMonth() + 9) % 12) / 3)].key
 const ymd = (y, m, day) => {
   // The last day of the month, so a quarter never runs into the next one --
   // written as day 0 of the following month, which is what Date does with it.
-  const t = new Date(y, m, day);
+  //
+  // THE CLAMP HAS TO HAPPEN BEFORE THE DATE IS BUILT, not after. `new Date(y,
+  // m, 31)` for a thirty-day month has already rolled into the next one, and
+  // setDate() on that only moves the day inside the wrong month -- 31 June
+  // came out as 30 July. No quarter above asks for a day its month has not
+  // got, so nothing was wrong on screen; a fifth row in that table would have
+  // been.
   const last = new Date(y, m + 1, 0).getDate();
-  if (day > last) t.setDate(last);
+  const t = new Date(y, m, Math.min(day, last));
   const p = (n) => String(n).padStart(2, '0');
   return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
 };
@@ -262,10 +268,6 @@ export default function ReportsScreen({ route, navigation }) {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   /* ---------------- the sums ---------------- */
-
-  // Is there anything in this range at all? Either road can answer it.
-  const anything = vouchers.length > 0
-    || (!!summary && (((summary.heads || []).length > 0) || ((summary.days || []).length > 0)));
 
   const sums = useMemo(() => {
     const blank = () => ({ n: 0, taxable: 0, cgst: 0, sgst: 0, igst: 0, total: 0 });
@@ -418,6 +420,26 @@ export default function ReportsScreen({ route, navigation }) {
   }, [cmpQ, cmpFy]);
 
   const label = rangeOf(range)[2];
+
+  // IS THERE ANYTHING IN THIS PERIOD AT ALL?
+  //
+  // This used to be `vouchers.length`, and the fast road above deliberately
+  // empties `vouchers` — report_summary does the adding up on the server and
+  // sends back the totals, not the bills. So on every phone whose database
+  // has the summary function, the whole of this screen was hidden behind a
+  // test that could never be true and the shopkeeper was told "Nothing in
+  // this month" over a month of trade. The question has to be asked of
+  // whichever road was taken.
+  //
+  // The last two terms are main's answer to the same fault, kept alongside:
+  // they ask the server's reply directly, so a month holding only heads this
+  // screen draws no card for still counts as a month with something in it.
+  const anything = summary
+    ? !!(sums.sales.n || sums.purchases.n || sums.estimates.n
+         || sums.rates.length || sums.items.length || sums.days.length
+         || sums.returns.total
+         || (summary.heads || []).length || (summary.days || []).length)
+    : vouchers.length > 0;
 
   // WHICH OF THE FOUR HE IS ON. The fourth, GSTR-2B, is a screen of its own —
   // it reads a file off the portal — so it is not one of these.
@@ -874,15 +896,24 @@ export default function ReportsScreen({ route, navigation }) {
                       {/* REVERSE CHARGE IS NOT AT THE COMPOSITION RATE and is
                         * not set off against anything. Shown apart for that
                         * reason, and only when there is any. */}
-                      {Number(cmp.rcm_tax) > 0 && (
-                        <Card title="Reverse charge, paid separately">
-                          <Line k="Value of those bills" v={fmt((cmp.rcm || {}).value || 0)} />
-                          <Line k="Tax on them, at the normal rate" v={fmt(cmp.rcm_tax)} strong />
-                          <Line k="Central (CGST)" v={fmt((cmp.rcm || {}).cgst || 0)} />
-                          <Line k="State (SGST)" v={fmt((cmp.rcm || {}).sgst || 0)} />
-                          <Line k="Integrated (IGST)" v={fmt((cmp.rcm || {}).igst || 0)} />
-                        </Card>
-                      )}
+                      {Number(cmp.rcm_tax) > 0 && (() => {
+                        /* THE BREAKDOWN LIVES IN table_3_1_d. `rcm` is
+                         * rcm_summary()'s own answer, which keeps the
+                         * reverse-charge tax in GSTR-3B's boxes under that
+                         * key. Read flat off `rcm` these five lines were all
+                         * undefined, so every one of them printed nought
+                         * beside a total that was not nought. */
+                        const rd = (cmp.rcm || {}).table_3_1_d || {};
+                        return (
+                          <Card title="Reverse charge, paid separately">
+                            <Line k="Value of those bills" v={fmt(rd.taxable_value || 0)} />
+                            <Line k="Tax on them, at the normal rate" v={fmt(cmp.rcm_tax)} strong />
+                            <Line k="Central (CGST)" v={fmt(rd.central_tax || 0)} />
+                            <Line k="State (SGST)" v={fmt(rd.state_tax || 0)} />
+                            <Line k="Integrated (IGST)" v={fmt(rd.integrated_tax || 0)} />
+                          </Card>
+                        );
+                      })()}
 
                       <Text style={[S.hint, { marginTop: 14, lineHeight: 19 }]}>
                         {cmp.bills} bill(s) in this quarter

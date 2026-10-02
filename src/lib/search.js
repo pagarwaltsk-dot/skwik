@@ -27,6 +27,20 @@ export function parseQuery(raw) {
   if (!q) return out;
   let m;
 
+  // ONE AND A HALF KILOS, NOT HALF A KILO.
+  //
+  // calc() already knows that "1 1/2" is one and a half, and says in its own
+  // comment why that matters. It never saw it: this splitter ran first, took
+  // "rice 1 1/2" apart as the product "rice 1" and the sum "1/2", and handed
+  // back half a kilo. A third of what he asked for, on the scales, with a
+  // product name that does not exist — and nothing on screen to say so.
+  // A mixed fraction at the end is one quantity, so it is read as one.
+  m = q.match(/^(.*?)\s+(\d+\s+\d+\s*\/\s*\d+)$/);
+  if (m && m[1]) {
+    const v = calc(m[2]);
+    if (v > 0) { out.base = m[1].trim(); out.qty = v; return out; }
+  }
+
   // thali 45x2  /  cooker 12+8  —  a sum at the end, worked out as he types,
   // so the count he does on paper can be typed exactly as he does it.
   const N = '(?:\\d+(?:\\.\\d+)?|\\.\\d+)';

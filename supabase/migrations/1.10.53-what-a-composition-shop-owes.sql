@@ -109,10 +109,17 @@ begin
 
   -- REVERSE CHARGE, AT THE NORMAL RATE AND IN CASH. Not at 1%, and not set
   -- off against anything.
+  --
+  -- THE FIGURES ARE IN table_3_1_d, NOT AT THE TOP LEVEL. rcm_summary returns
+  -- the reverse-charge tax in GSTR-3B's own boxes -- taxable_value,
+  -- central_tax, state_tax, integrated_tax, total_tax -- under that key, which
+  -- is how gstr3b() reads it. Asking it for 'cgst', 'sgst' and 'igst' got NULL
+  -- three times, coalesced to nought, and 'pay' came out as the turnover tax
+  -- alone: a composition dealer who had paid a transporter was told to pay
+  -- less than he owes, which is the one thing the note at the top of this file
+  -- says must not happen.
   v_rcm := rcm_summary(p_from, p_to);
-  v_rcmtax := round(coalesce((v_rcm->>'cgst')::numeric,0)
-                  + coalesce((v_rcm->>'sgst')::numeric,0)
-                  + coalesce((v_rcm->>'igst')::numeric,0), 2);
+  v_rcmtax := round(coalesce((v_rcm->'table_3_1_d'->>'total_tax')::numeric, 0), 2);
 
   return jsonb_build_object(
     'ok',        true,

@@ -57,7 +57,10 @@ export default function ExpensesScreen({ navigation }) {
     const [{ data: xs }, { data: hs }, { data: bs }, { data: ms }] = await Promise.all([
       supabase.from('expenses').select('*').order('edate', { ascending: false })
         .order('created_at', { ascending: false }).limit(60),
-      supabase.from('expense_heads').select('*').order('used', { ascending: false }).limit(12),
+      // `used` is not a counter — see the note by the upsert below — so the
+      // name is the tie-break rather than whatever order the rows arrive in.
+      supabase.from('expense_heads').select('*')
+        .order('used', { ascending: false }).order('head').limit(12),
       supabase.from('bank_accounts').select('id, name, is_default, active')
         .order('is_default', { ascending: false }).order('name'),
       // THIS MONTH'S TOTAL CAME OFF THE LIST, AND THE LIST IS SIXTY ROWS.
@@ -111,9 +114,16 @@ export default function ExpensesScreen({ navigation }) {
         : await supabase.from('expenses').insert({ ...body, edate: today() });
       if (error) throw error;
 
-      // remember the head, so next time it is one tap
+      // Remember the head, so next time it is one tap.
+      //
+      // This used to upsert `used: 1`, which does not count anything — it
+      // writes 1 back over whatever was there, every single time. The list
+      // below is ordered by that column, so "the ones you use most" was in
+      // no order at all. Nothing is written over an existing head now, and
+      // the order falls back to the name, which at least does not lie.
       await supabase.from('expense_heads')
-        .upsert({ org_id: org.id, head: h, used: 1 }, { onConflict: 'org_id,head' });
+        .upsert({ org_id: org.id, head: h, used: 1 },
+                { onConflict: 'org_id,head', ignoreDuplicates: true });
 
       clear();
       load();

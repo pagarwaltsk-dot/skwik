@@ -200,15 +200,24 @@ export default function HomeScreen({ navigation }) {
 
   useEffect(() => () => { if (lookTimer.current) clearTimeout(lookTimer.current); }, []);
 
+  // A % OR AN UNDERSCORE IS A LETTER IN A NAME AND A WILDCARD IN A QUERY.
+  //
+  // The text went straight into ilike, so a shopkeeper typing % was shown
+  // everything in his book as though it all matched, and one typing _ got
+  // every three-letter name. Escaped, they match themselves, which is what
+  // he meant.
+  const forIlike = (t) => String(t).replace(/[\\%_]/g, (c) => `\\${c}`);
+
   const lookNow = async (t) => {
     const mine = ++lookSeq.current;
+    const like = `%${forIlike(t)}%`;
     try {
       const [{ data: parties }, { data: items },
              { data: byNo }, { data: byName }] = await Promise.all([
         supabase.from('parties').select('id, name, kind, area, phone')
-          .ilike('name', `%${t}%`).limit(LOOK),
+          .ilike('name', like).limit(LOOK),
         supabase.from('items').select('id, name, unit, sale_price').eq('is_active', true)
-          .ilike('name', `%${t}%`).limit(LOOK),
+          .ilike('name', like).limit(LOOK),
         // TWO QUESTIONS, NOT ONE WITH A COMMA IN IT.
         //
         // .or() takes its conditions as one string with commas between them,
@@ -217,10 +226,10 @@ export default function HomeScreen({ navigation }) {
         // came back broken. Asking twice and joining the answers here has no
         // such trap in it.
         supabase.from('vouchers').select('id, vtype, voucher_no, printed_name, total, vdate')
-          .is('cancelled_at', null).ilike('voucher_no', `%${t}%`)
+          .is('cancelled_at', null).ilike('voucher_no', like)
           .order('vdate', { ascending: false }).limit(LOOK),
         supabase.from('vouchers').select('id, vtype, voucher_no, printed_name, total, vdate')
-          .is('cancelled_at', null).ilike('printed_name', `%${t}%`)
+          .is('cancelled_at', null).ilike('printed_name', like)
           .order('vdate', { ascending: false }).limit(LOOK),
       ]);
 

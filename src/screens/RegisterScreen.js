@@ -8,6 +8,7 @@ import { useApp } from '../AppContext';
 import { sayPlainly } from '../lib/offline';
 import { STATES } from '../lib/states';
 import { Box, KeyForm, Screen } from '../components/Chrome';
+import { StateField } from '../components/Pickers';
 import { C, S } from '../theme';
 
 // REGISTERING, AS A SERIES OF SINGLE QUESTIONS.
@@ -40,7 +41,7 @@ export default function RegisterScreen({ navigation }) {
   const fShop  = useRef(null), fAddr  = useRef(null);
   const [d, setD] = useState({
     gstin: '', scheme: null, aboveFiveCr: null,
-    phone: '', password: '', shopName: '', address: '',
+    phone: '', password: '', shopName: '', address: '', state_code: '',
   });
   const set = (k) => (v) => setD((x) => ({ ...x, [k]: v }));
 
@@ -85,6 +86,13 @@ export default function RegisterScreen({ navigation }) {
   const finish = async () => {
     if (!d.shopName.trim()) {
       return Alert.alert('Shop name', 'Type the name that should print on your bills.');
+    }
+    // Asked only of a shop with no GST number, and then it must be answered:
+    // guessing it wrong puts the wrong tax on every bill the shop ever writes.
+    if (d.scheme === null && !String(d.state_code || '').trim()) {
+      return Alert.alert('Which state?',
+        'Choose the state your shop is in. It decides whether your bills carry '
+        + 'CGST and SGST or IGST.');
     }
     try {
       await register(d);
@@ -203,6 +211,27 @@ export default function RegisterScreen({ navigation }) {
             <Text style={S.label}>Address (optional)</Text>
             <Box ref={fAddr} placeholder="M. G. Road, Jorhat"
               value={d.address} onChangeText={set('address')} />
+
+            {/* AND THE STATE, WHEN THERE IS NO GST NUMBER TO READ IT OFF.
+                *
+                * `register()` takes the state from the first two digits of a
+                * GSTIN, and falls back on `d.state_code` when there is none —
+                * but this screen never asked, so that fallback had nothing to
+                * fall back to and every unregistered shop was saved as Assam.
+                * state_code decides CGST-and-SGST against IGST on every bill
+                * the shop writes afterwards, so a shop in Bihar saved as Assam
+                * charges the wrong tax from its first bill.
+                *
+                * Only asked when it cannot be worked out. With a GST number
+                * the digits are the answer and a second question would only
+                * invite a contradiction. */}
+            {d.scheme === null && (
+              <>
+                <Text style={[S.label, { marginTop: 14 }]}>Which state is the shop in?</Text>
+                <StateField value={d.state_code}
+                  onChange={(code) => set('state_code')(code)} />
+              </>
+            )}
 
             <View style={{ marginTop: 18, padding: 14, backgroundColor: C.surface, borderWidth: 1,
                            borderColor: C.line, borderRadius: 12 }}>

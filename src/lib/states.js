@@ -7,6 +7,10 @@ export const STATES = {
   '24':'Gujarat','25':'Daman and Diu','26':'Dadra and Nagar Haveli','27':'Maharashtra','29':'Karnataka',
   '30':'Goa','31':'Lakshadweep','32':'Kerala','33':'Tamil Nadu','34':'Puducherry','35':'Andaman and Nicobar',
   '36':'Telangana','37':'Andhra Pradesh','38':'Ladakh',
+  // Not a State, but a code the portal issues and a GSTIN can carry. A
+  // customer registered under it used to come back with no state name at
+  // all, which reads on a bill as a field nobody filled in.
+  '97':'Other Territory',
 };
 export const stateOf = (gstin) => STATES[String(gstin || '').slice(0, 2)] || '';
 

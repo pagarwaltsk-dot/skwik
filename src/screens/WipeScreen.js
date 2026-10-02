@@ -4,7 +4,7 @@ import {
 } from 'react-native';
 
 import { supabase } from '../lib/supabase';
-import { sayPlainly } from '../lib/offline';
+import { sayPlainly, forgetLocal } from '../lib/offline';
 import { useApp } from '../AppContext';
 import { fmt0 } from '../lib/money';
 import { Box, goHome, Head, KeyForm, Screen } from '../components/Chrome';
@@ -106,6 +106,12 @@ export default function WipeScreen({ navigation }) {
         // going round for ever would be worse than stopping.
         if (out.done || ++guard > 500) break;
       }
+      // AND THE COPY ON THE PHONE, once the server is actually empty — not
+      // before, because a wipe that stops half way should leave him what he
+      // had. The copy kept for billing with no signal has just become a copy
+      // of books that no longer exist, the bill counter among it, which would
+      // otherwise carry on from the old numbers.
+      await forgetLocal();
       const d = { ...before, ...(out || {}), kept_masters: keepMasters };
       Alert.alert('The books are empty',
         // The step function counts ROWS, not bills -- it is told by the

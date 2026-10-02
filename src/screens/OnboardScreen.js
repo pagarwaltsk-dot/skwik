@@ -2,9 +2,9 @@ import React, { useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../AppContext';
-import { STATES } from '../lib/states';
 import { Box, KeyForm } from '../components/Chrome';
 import { StateField } from '../components/Pickers';
+import { STATES } from '../lib/states';
 import { C, S } from '../theme';
 import { sayPlainly } from '../lib/offline';
 
@@ -65,71 +65,92 @@ export default function OnboardScreen() {
   const start = async () => {
     if (!name.trim()) return Alert.alert('Shop name', 'Type the name that should print on your bills.');
     setBusy(true);
-    const { data: { user } } = await supabase.auth.getUser();
-
-    // THIRTY DAYS, NOT SEVEN.
+    // THE BUTTON MUST ALWAYS COME BACK.
     //
-    // A shopkeeper decides this is worth paying for when he closes a month, or
-    // files a CMP-08 and it comes out right. A seven-day trial never reaches
-    // either, so it asked him to buy before he had seen the thing work.
-    const trialEnds = new Date();
-    trialEnds.setDate(trialEnds.getDate() + 30);
+    // This read `user.id` straight off getUser(). With no signal, or a login
+    // that had gone stale, there is no user — so the line threw, the throw
+    // went nowhere, setBusy(false) was never reached, and the button sat on
+    // "One moment…" for as long as he was willing to look at it, with no
+    // message and no way forward. Every road out of here now ends in finally.
+    try {
+      const { data: who, error: whoErr } = await supabase.auth.getUser();
+      const user = who?.user;
+      if (whoErr || !user) {
+        return Alert.alert('Could not check your login',
+          'Skwik could not confirm who is signed in. Check your internet and '
+          + 'try again, or log out and log in once more.');
+      }
 
-    const comp = grade === 'comp';
+      // THIRTY DAYS, NOT SEVEN.
+      //
+      // A shopkeeper decides this is worth paying for when he closes a month, or
+      // files a CMP-08 and it comes out right. A seven-day trial never reaches
+      // either, so it asked him to buy before he had seen the thing work.
+      const trialEnds = new Date();
+      trialEnds.setDate(trialEnds.getDate() + 30);
 
-    // WHAT HE SEES ON HIS FIRST SCREEN, decided by the kind of shop he just
-    // said he has.
-    //
-    // features.js reads every one of these off the firm row, and a column that
-    // is missing counts as ON -- so a firm created without them showed Returns,
-    // Reports, Transfer, Expenses and Reconcile from the first minute. Five
-    // things a man who does not charge GST will never use, on the screen he is
-    // trying to learn.
-    //
-    // Nothing is removed from Skwik. Each of these is a switch in Settings, and
-    // the shop that wants one turns it on.
-    const firstScreen = {
-      show_purchase: true,         // everybody buys
-      show_returns:  false,
-      // A composition dealer needs Reports: his CMP-08 is in there. A shop with
-      // no registration files nothing at all.
-      show_reports:  comp,
-      show_transfer: false,        // until he says he has a second godown
-      show_expenses: false,
-      // NEITHER GRADE HAS INPUT CREDIT, so there is nothing to reconcile
-      // against 2B. This one is not merely hidden -- the screen could only
-      // mislead him.
-      show_recon:    false,
-      stock_enabled:    false,
-      godowns_enabled:  false,
-      batch_enabled:    false,
-      expiry_enabled:   false,
-      variants_enabled: false,
-    };
+      const comp = grade === 'comp';
 
-    const { data: org, error } = await supabase.from('orgs').insert({
-      name: name.trim(),
-      phone: phone.trim(),
-      mode: 'estimate',
-      // A composition dealer IS registered -- he simply may not collect the
-      // tax. Marking him unregistered would fold his purchase tax into cost
-      // correctly by luck and get his returns wrong on purpose.
-      is_gst_registered: comp,
-      is_composition: comp,
-      state_code: stateCode || '18',
-      state_name: STATES[stateCode || '18'] || '',
-      plan: 'trial',
-      trial_ends_at: trialEnds.toISOString(),
-      ...firstScreen,
-    }).select().single();
+      // WHAT HE SEES ON HIS FIRST SCREEN, decided by the kind of shop he just
+      // said he has.
+      //
+      // features.js reads every one of these off the firm row, and a column that
+      // is missing counts as ON -- so a firm created without them showed Returns,
+      // Reports, Transfer, Expenses and Reconcile from the first minute. Five
+      // things a man who does not charge GST will never use, on the screen he is
+      // trying to learn.
+      //
+      // Nothing is removed from Skwik. Each of these is a switch in Settings, and
+      // the shop that wants one turns it on.
+      const firstScreen = {
+        show_purchase: true,         // everybody buys
+        show_returns:  false,
+        // A composition dealer needs Reports: his CMP-08 is in there. A shop with
+        // no registration files nothing at all.
+        show_reports:  comp,
+        show_transfer: false,        // until he says he has a second godown
+        show_expenses: false,
+        // NEITHER GRADE HAS INPUT CREDIT, so there is nothing to reconcile
+        // against 2B. This one is not merely hidden -- the screen could only
+        // mislead him.
+        show_recon:    false,
+        stock_enabled:    false,
+        godowns_enabled:  false,
+        batch_enabled:    false,
+        expiry_enabled:   false,
+        variants_enabled: false,
+      };
 
-    if (error) { setBusy(false); return Alert.alert('Could not save', sayPlainly(error)); }
+      const { data: org, error } = await supabase.from('orgs').insert({
+        name: name.trim(),
+        phone: phone.trim(),
+        mode: 'estimate',
+        // A composition dealer IS registered -- he simply may not collect the
+        // tax. Marking him unregistered would fold his purchase tax into cost
+        // correctly by luck and get his returns wrong on purpose.
+        is_gst_registered: comp,
+        is_composition: comp,
+        state_code: stateCode || '18',
+        state_name: STATES[stateCode || '18'] || '',
+        plan: 'trial',
+        trial_ends_at: trialEnds.toISOString(),
+        ...firstScreen,
+      }).select().single();
 
-    const { error: e2 } = await supabase.from('profiles')
-      .upsert({ id: user.id, org_id: org.id, phone: phone.trim() });
-    setBusy(false);
-    if (e2) return Alert.alert('Could not save', sayPlainly(e2));
-    await reloadOrg();
+      if (error || !org) return Alert.alert('Could not save', sayPlainly(error));
+
+      const { error: e2 } = await supabase.from('profiles')
+        .upsert({ id: user.id, org_id: org.id, phone: phone.trim() });
+      if (e2) {
+        // A firm nothing points at is unreachable for ever, so it is taken
+        // back out rather than left behind.
+        try { await supabase.from('orgs').delete().eq('id', org.id); } catch (_) {}
+        return Alert.alert('Could not save', sayPlainly(e2));
+      }
+      await reloadOrg();
+    } catch (e) {
+      Alert.alert('Could not save', sayPlainly(e));
+    } finally { setBusy(false); }
   };
 
   if (!who) {
@@ -279,5 +300,3 @@ export default function OnboardScreen() {
     </KeyForm>
   );
 }
-
-export { STATES };
