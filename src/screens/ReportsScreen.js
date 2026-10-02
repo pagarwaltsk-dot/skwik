@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, ActivityIndicator, Alert,
 } from 'react-native';
@@ -124,7 +124,46 @@ const VIEWS = {
   gstr3b:  { title: 'GSTR-3B',
              blurb: 'What you owe and what you can claim back, box by box, '
                   + 'for your accountant to type in.' },
+  cmp08:   { title: 'CMP-08',
+             blurb: 'What you owe for the quarter under the composition scheme. '
+                  + 'One figure, and the reverse charge beside it.' },
 };
+
+// THE FOUR QUARTERS A COMPOSITION RETURN IS FILED FOR, by the financial year
+// the shop keeps -- April to March, not January to December.
+const QUARTERS = [
+  { key: 'q1', label: 'Apr\u2013Jun', from: [3, 1],  to: [5, 30] },
+  { key: 'q2', label: 'Jul\u2013Sep', from: [6, 1],  to: [8, 30] },
+  { key: 'q3', label: 'Oct\u2013Dec', from: [9, 1],  to: [11, 31] },
+  { key: 'q4', label: 'Jan\u2013Mar', from: [0, 1],  to: [2, 31] },
+];
+
+// The financial year a date falls in: April decides it.
+const fyOf = (d) => (d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1);
+
+// The quarter a date is in, so the screen opens on the one he is likely to file.
+const quarterOf = (d) => QUARTERS[Math.floor(((d.getMonth() + 9) % 12) / 3)].key;
+
+const ymd = (y, m, day) => {
+  // The last day of the month, so a quarter never runs into the next one --
+  // written as day 0 of the following month, which is what Date does with it.
+  const t = new Date(y, m, day);
+  const last = new Date(y, m + 1, 0).getDate();
+  if (day > last) t.setDate(last);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
+};
+
+// A quarter's two dates, in the financial year that starts in `fy`.
+export function quarterDates(qKey, fy) {
+  const q = QUARTERS.find((x) => x.key === qKey) || QUARTERS[0];
+  // Jan to March belongs to the year AFTER the one the April quarter started.
+  const yr = q.key === 'q4' ? fy + 1 : fy;
+  return [ymd(yr, q.from[0], q.from[1]), ymd(yr, q.to[0], q.to[1])];
+}
+
+const NO_CMP = 'Your Skwik database has not been updated for CMP-08 yet. '
+  + 'Run the latest SQL and open this again.';
 
 export default function ReportsScreen({ route, navigation }) {
   const { org, isOwner } = useApp();
@@ -136,6 +175,16 @@ export default function ReportsScreen({ route, navigation }) {
   const [summary, setSummary] = useState(null);
   const [rcm, setRcm] = useState(null);         // the reverse-charge figures
   const [b3, setB3] = useState(null);           // the GSTR-3B boxes
+  // CMP-08 ASKS FOR A QUARTER, NOT THE MONTH THE REST OF THIS SCREEN IS ON.
+  //
+  // Every other tab here follows the range chips -- this month, last month, the
+  // year. A composition return has one shape and it is the quarter, so it keeps
+  // its own choice and ignores those chips entirely. It opens on the quarter
+  // today sits in, which is the one he is most likely to be filing.
+  const [cmpQ, setCmpQ] = useState(() => quarterOf(new Date()));
+  const [cmpFy, setCmpFy] = useState(() => fyOf(new Date()));
+  const [cmp, setCmp] = useState(null);
+  const [cmpBusy, setCmpBusy] = useState(false);
 
   // THE WHOLE YEAR USED TO COME DOWN THE WIRE.
   //
@@ -353,6 +402,20 @@ export default function ReportsScreen({ route, navigation }) {
       itc: n2(purchases.cgst + purchases.sgst + purchases.igst),
     };
   }, [vouchers, lines, summary]);
+
+  // ASKED FOR ON ITS OWN, and forgivingly: a phone that has the new app but
+  // whose database has not had 1.10.53 run yet gets a plain sentence rather
+  // than an error across the screen.
+  useEffect(() => {
+    let gone = false;
+    const [from, to] = quarterDates(cmpQ, cmpFy);
+    setCmpBusy(true);
+    supabase.rpc('cmp08', { p_from: from, p_to: to })
+      .then((r) => { if (!gone) setCmp(r.error ? { ok: false, why: NO_CMP } : r.data); })
+      .catch(() => { if (!gone) setCmp({ ok: false, why: NO_CMP }); })
+      .finally(() => { if (!gone) setCmpBusy(false); });
+    return () => { gone = true; };
+  }, [cmpQ, cmpFy]);
 
   const label = rangeOf(range)[2];
 
@@ -732,6 +795,104 @@ export default function ReportsScreen({ route, navigation }) {
                 </Card>
               )}
 
+                </>
+              )}
+
+              {view === 'cmp08' && (
+                <>
+                  {/* HIS OWN QUARTER PICKER. The range chips above belong to
+                    * the other tabs; a composition return is filed by quarter
+                    * and nothing else, so it says so and keeps its own. */}
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                    {QUARTERS.map((q) => {
+                      const on = cmpQ === q.key;
+                      return (
+                        <TouchableOpacity key={q.key} onPress={() => setCmpQ(q.key)}
+                          style={{ paddingVertical: 7, paddingHorizontal: 14, borderRadius: 8,
+                                   borderWidth: 1.5,
+                                   borderColor: on ? C.accent : C.line,
+                                   backgroundColor: on ? C.accent : 'transparent' }}>
+                          <Text style={{ fontSize: 13, fontWeight: on ? '700' : '500',
+                                         color: on ? '#fff' : C.ink }}>{q.label}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                  <Text style={[S.hint, { marginTop: 0, marginBottom: 2 }]}>
+                    {quarterDates(cmpQ, cmpFy)[0]} to {quarterDates(cmpQ, cmpFy)[1]}
+                    {'  ·  '}
+                    <Text onPress={() => setCmpFy(cmpFy - 1)} style={{ color: C.accent, fontWeight: '700' }}>
+                      last year
+                    </Text>
+                    {cmpFy !== fyOf(new Date()) ? (
+                      <>
+                        {'  ·  '}
+                        <Text onPress={() => setCmpFy(fyOf(new Date()))}
+                              style={{ color: C.accent, fontWeight: '700' }}>this year</Text>
+                      </>
+                    ) : null}
+                  </Text>
+
+                  {cmpBusy && !cmp ? (
+                    <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+                      <ActivityIndicator size="small" color={C.accent} />
+                    </View>
+                  ) : !cmp ? null : !cmp.ok ? (
+                    <View style={S.card}>
+                      <Text style={{ fontSize: 13.5, color: C.ink, lineHeight: 20 }}>
+                        {cmp.why}
+                      </Text>
+                    </View>
+                  ) : (
+                    <>
+                      {/* THE FIGURE HE PAYS, FIRST AND ON ITS OWN. Everything
+                        * under it is how it was arrived at. */}
+                      <View style={[S.card, { borderColor: C.accent, borderWidth: 1.5 }]}>
+                        <Text style={S.eyebrow}>What to pay for this quarter</Text>
+                        <Text style={[{ fontSize: 34, fontWeight: '700', color: C.accent,
+                                        marginTop: 4 }, S.num]}>
+                          {'₹'}{fmt(cmp.pay)}
+                        </Text>
+                        <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 6, lineHeight: 18 }}>
+                          In cash. A composition dealer claims nothing back, so there is
+                          nothing to set against this. You file it yourself on the portal —
+                          read these figures first.
+                        </Text>
+                      </View>
+
+                      <Card title="Turnover">
+                        <Line k="What you billed" v={fmt(cmp.billed)} />
+                        {Number(cmp.returned) > 0 && (
+                          <Line k="Less what came back" v={fmt(cmp.returned)} />
+                        )}
+                        <Line k="Turnover for the quarter" v={fmt(cmp.turnover)} strong />
+                        <Line k={`Tax at ${cmp.rate}%`} v={fmt(cmp.tax)} />
+                        <Line k="Central (CGST)" v={fmt(cmp.cgst)} />
+                        <Line k="State (SGST)" v={fmt(cmp.sgst)} />
+                      </Card>
+
+                      {/* REVERSE CHARGE IS NOT AT THE COMPOSITION RATE and is
+                        * not set off against anything. Shown apart for that
+                        * reason, and only when there is any. */}
+                      {Number(cmp.rcm_tax) > 0 && (
+                        <Card title="Reverse charge, paid separately">
+                          <Line k="Value of those bills" v={fmt((cmp.rcm || {}).value || 0)} />
+                          <Line k="Tax on them, at the normal rate" v={fmt(cmp.rcm_tax)} strong />
+                          <Line k="Central (CGST)" v={fmt((cmp.rcm || {}).cgst || 0)} />
+                          <Line k="State (SGST)" v={fmt((cmp.rcm || {}).sgst || 0)} />
+                          <Line k="Integrated (IGST)" v={fmt((cmp.rcm || {}).igst || 0)} />
+                        </Card>
+                      )}
+
+                      <Text style={[S.hint, { marginTop: 14, lineHeight: 19 }]}>
+                        {cmp.bills} bill(s) in this quarter
+                        {Number(cmp.returns) > 0 ? `, ${cmp.returns} return(s)` : ''}.
+                        Cancelled bills are left out. CMP-08 is filed every quarter and
+                        GSTR-4 once a year — your accountant files the yearly one.
+                        Check the due date with him; it has been extended more than once.
+                      </Text>
+                    </>
+                  )}
                 </>
               )}
 

@@ -53,6 +53,13 @@ export default function OnboardScreen() {
     } finally { setBusy(false); }
   };
   const [phone, setPhone] = useState('');
+  // WHICH KIND OF SHOP, asked once, because it decides the whole screen he
+  // gets. 'plain' = no GST registration at all; 'comp' = registered under the
+  // composition scheme, which may not collect GST either. A regular dealer
+  // turns GST on in Settings afterwards -- it is not what v1 is sold for, and
+  // asking three questions where two will do makes onboarding heavier for
+  // everybody to serve the rarer case.
+  const [grade, setGrade] = useState('plain');
   const [busy, setBusy] = useState(false);
 
   const start = async () => {
@@ -60,18 +67,60 @@ export default function OnboardScreen() {
     setBusy(true);
     const { data: { user } } = await supabase.auth.getUser();
 
+    // THIRTY DAYS, NOT SEVEN.
+    //
+    // A shopkeeper decides this is worth paying for when he closes a month, or
+    // files a CMP-08 and it comes out right. A seven-day trial never reaches
+    // either, so it asked him to buy before he had seen the thing work.
     const trialEnds = new Date();
-    trialEnds.setDate(trialEnds.getDate() + 7);
+    trialEnds.setDate(trialEnds.getDate() + 30);
+
+    const comp = grade === 'comp';
+
+    // WHAT HE SEES ON HIS FIRST SCREEN, decided by the kind of shop he just
+    // said he has.
+    //
+    // features.js reads every one of these off the firm row, and a column that
+    // is missing counts as ON -- so a firm created without them showed Returns,
+    // Reports, Transfer, Expenses and Reconcile from the first minute. Five
+    // things a man who does not charge GST will never use, on the screen he is
+    // trying to learn.
+    //
+    // Nothing is removed from Skwik. Each of these is a switch in Settings, and
+    // the shop that wants one turns it on.
+    const firstScreen = {
+      show_purchase: true,         // everybody buys
+      show_returns:  false,
+      // A composition dealer needs Reports: his CMP-08 is in there. A shop with
+      // no registration files nothing at all.
+      show_reports:  comp,
+      show_transfer: false,        // until he says he has a second godown
+      show_expenses: false,
+      // NEITHER GRADE HAS INPUT CREDIT, so there is nothing to reconcile
+      // against 2B. This one is not merely hidden -- the screen could only
+      // mislead him.
+      show_recon:    false,
+      stock_enabled:    false,
+      godowns_enabled:  false,
+      batch_enabled:    false,
+      expiry_enabled:   false,
+      variants_enabled: false,
+    };
 
     const { data: org, error } = await supabase.from('orgs').insert({
       name: name.trim(),
       phone: phone.trim(),
       mode: 'estimate',
-      is_gst_registered: false,
+      // A composition dealer IS registered -- he simply may not collect the
+      // tax. Marking him unregistered would fold his purchase tax into cost
+      // correctly by luck and get his returns wrong on purpose.
+      is_gst_registered: comp,
+      is_composition: comp,
       state_code: stateCode || '18',
       state_name: STATES[stateCode || '18'] || '',
       plan: 'trial',
       trial_ends_at: trialEnds.toISOString(),
+      ...firstScreen,
     }).select().single();
 
     if (error) { setBusy(false); return Alert.alert('Could not save', sayPlainly(error)); }
@@ -166,8 +215,41 @@ export default function OnboardScreen() {
       </View>
 
       <Text style={S.label}>Phone (optional)</Text>
-      <Box ref={fPhone} onSubmit={start} style={{ marginTop: 6, marginBottom: 26 }}
+      <Box ref={fPhone} onSubmit={start} style={{ marginTop: 6, marginBottom: 22 }}
         keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
+
+      {/* ONE MORE QUESTION, AND IT DECIDES THE WHOLE APP.
+        *
+        * Whether he charges GST settles what prints on his bills, which
+        * returns are his, and what is on his screen at all. Asked here in his
+        * own words rather than as "registration status", and changeable in
+        * Settings if he picks wrong. */}
+      <Text style={S.label}>Do you charge GST on your bills?</Text>
+      <View style={{ marginTop: 8, marginBottom: 26, gap: 10 }}>
+        {[['plain', 'No, I don\u2019t charge GST',
+           'Your bills carry no tax and you file no returns.'],
+          ['comp', 'I am on the composition scheme',
+           'You pay a small tax on turnover every quarter and cannot charge GST to '
+           + 'customers. Skwik works out your CMP-08.']].map(([key, title, why]) => {
+          const on = grade === key;
+          return (
+            <TouchableOpacity key={key} onPress={() => setGrade(key)}
+              style={{ borderWidth: 1.5, borderRadius: 12, padding: 14,
+                       borderColor: on ? C.accent : C.line,
+                       backgroundColor: on ? C.accentSoft : C.surface }}>
+              <Text style={{ fontSize: 15.5, fontWeight: '700',
+                             color: on ? C.accent : C.ink }}>{title}</Text>
+              <Text style={{ fontSize: 12.5, color: C.muted, marginTop: 4, lineHeight: 18 }}>
+                {why}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+        <Text style={{ fontSize: 11.5, color: C.muted, lineHeight: 16 }}>
+          Charging GST as a regular dealer? Start here and turn it on in
+          Settings once you are in.
+        </Text>
+      </View>
 
       <TouchableOpacity style={[S.btn, busy && { opacity: 0.6 }]} onPress={start} disabled={busy}>
         <Text style={S.btnText}>{busy ? 'One moment…' : 'Start billing'}</Text>

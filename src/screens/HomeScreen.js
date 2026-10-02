@@ -342,7 +342,30 @@ export default function HomeScreen({ navigation }) {
       key: 'comp', tone: fyTotal >= 15000000 ? 'bad' : 'flag',
       title: `This year's sale is ₹${fmt0(fyTotal)}. The composition limit is ₹1.5 crore.`,
       body: 'Speak to your accountant. Your billing carries on as normal.' },
-  ].filter(Boolean), [pending, sending, trialLeft, paidLeft, lapsed, fyTotal, org?.is_composition]);
+    // A SHOP WITH NO REGISTRATION HAS A LINE IT MUST NOT CROSS UNNOTICED.
+    //
+    // Registration stops being a choice above a turnover limit, and the shop
+    // that crosses it quietly is the one that gets a notice later for the tax
+    // it should have been collecting all along. Nobody tells a counter shop
+    // this. Skwik already knows the figure -- fy_sales_total -- so it can.
+    //
+    // NO LIMIT IS PRINTED AT THE FIRST LEVEL, on purpose. It depends on the
+    // state and on whether he sells goods or services, and a wrong number here
+    // is worse than none: it would either frighten him early or settle him
+    // late. So the first warning gives him his own figure and sends him to his
+    // accountant, and only the second says what is true of most shops.
+    !org?.is_gst_registered && fyTotal >= 1600000 && {
+      key: 'reg', tone: fyTotal >= 4000000 ? 'bad' : 'flag',
+      title: `This year's sale is ₹${fmt0(fyTotal)}.`,
+      body: fyTotal >= 4000000
+        ? 'That is above the limit for most shops selling goods. Ask your '
+          + 'accountant whether you have to register for GST now. Your billing '
+          + 'carries on as normal.'
+        : 'Registration becomes compulsory above a turnover limit, and the limit '
+          + 'depends on your state and on what you sell. Worth asking your '
+          + 'accountant whether you are near it.' },
+  ].filter(Boolean), [pending, sending, trialLeft, paidLeft, lapsed, fyTotal,
+                      org?.is_composition, org?.is_gst_registered]);
 
   // Bills written with no signal. Tapping tries them again there and then.
   async function pushNow() {

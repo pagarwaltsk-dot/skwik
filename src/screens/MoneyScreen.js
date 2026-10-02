@@ -53,7 +53,22 @@ export default function MoneyScreen({ route, navigation }) {
   // once and then write name, amount, name, amount down the page — which is
   // exactly what a receipts register is. Each line is held here until he
   // saves the lot, and they go in as one batch.
-  const [batch, setBatch] = useState(null);   // null = one entry at a time
+  // ONE WAY OF WRITING MONEY DOWN, NOT TWO.
+  //
+  // This opened on a single entry with "Write several at once" underneath, so
+  // the commoner job -- an evening's slips, name and figure down the page --
+  // cost a tap to reach every time. The register is now the screen itself, and
+  // a single payment is one line typed on it: the same two boxes, one tap
+  // fewer, and one screen to learn instead of two.
+  //
+  // The single form is still here and still reached: `editing` shows it when
+  // he taps an entry already written, which is a different job from writing a
+  // new one and wants the whole screen to itself.
+  //
+  // blankRow() is declared further down this component, so the first row is
+  // written out here rather than called -- a lazy initialiser still runs
+  // inside this render, before that line.
+  const [batch, setBatch] = useState([{ key: Date.now() + Math.random(), name: '', amount: '' }]);
   const [dateOpen, setDateOpen] = useState(false);
   const gridRef = useRef({});        // every box in the grid, so tab can walk it
   const [onRow, setOnRow] = useState(null);   // which line's name box is being typed in
@@ -92,18 +107,15 @@ export default function MoneyScreen({ route, navigation }) {
 
   useFocusEffect(useCallback(() => { load().catch(() => {}); }, [load]));
 
-  // BACK OUT OF THE REGISTER, NOT OUT OF THE SCREEN.
+  // BACK LEAVES THE SCREEN, as it does on any other form.
   //
-  // "Write several at once" opens a page of its own inside this screen, but
-  // the phone's back button knew nothing about it and threw him all the way
-  // home — losing whatever he had written down the page. Back now closes the
-  // register first and leaves him on the single entry, which is where he came
-  // from; a second press goes home, as it always did.
-  const leaveBatch = useCallback(() => {
-    if (batch === null) return false;
-    setBatch(null);
-    return true;
-  }, [batch]);
+  // The register used to be a page inside this screen, reached from the single
+  // entry, and back had to close it first or the phone threw him all the way
+  // home and lost the lines he had written. The register is the screen now, so
+  // there is nothing behind it to step back to and nothing to intercept.
+  // Back leaves the screen, as it does on any other form. There is no longer a
+  // single-entry page behind the register to step back to.
+  const leaveBatch = useCallback(() => false, []);
 
   useFocusEffect(useCallback(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', leaveBatch);
@@ -336,10 +348,6 @@ export default function MoneyScreen({ route, navigation }) {
 
   const blankRow = () => ({ key: Date.now() + Math.random(), name: '', amount: '' });
 
-  const startBatch = () => {
-    setBatch([blankRow()]);
-    setDateOpen(false);
-  };
 
   const setRow = (key, patch) => setBatch((b) => {
     const next = (b || []).map((r) => (r.key === key ? { ...r, ...patch } : r));
@@ -507,7 +515,7 @@ export default function MoneyScreen({ route, navigation }) {
   return (
     <Screen>
       <Head navigation={navigation} title={received ? 'Money received' : 'Money paid'}
-        onBack={batch === null ? undefined : () => setBatch(null)} />
+        />
       <Sections navigation={navigation} org={org} isOwner={isOwner}
                 id={received ? 'in' : 'out'} />
       <Swipe {...swipe} style={{ flex: 1 }}>
@@ -528,7 +536,7 @@ export default function MoneyScreen({ route, navigation }) {
         </View>
       )}
 
-      {batch === null || editing ? (
+      {editing ? (
         <>
           <View style={{ height: 18 }} />
           <Text style={S.label}>{received ? 'Received from' : 'Paid to'}</Text>
@@ -660,7 +668,7 @@ export default function MoneyScreen({ route, navigation }) {
         </>
       )}
 
-      {batch === null || editing ? (
+      {editing ? (
         <>
           <View style={{ height: 18 }} />
           <Text style={S.label}>How much?</Text>
@@ -681,7 +689,7 @@ export default function MoneyScreen({ route, navigation }) {
         </>
       ) : null}
 
-      {batch === null || editing ? (
+      {editing ? (
         <>
           <TouchableOpacity style={[S.btn, { marginTop: 22 }, busy && { backgroundColor: C.faint }]}
             onPress={save} disabled={busy}>
@@ -691,19 +699,6 @@ export default function MoneyScreen({ route, navigation }) {
             </Text>
           </TouchableOpacity>
 
-          {!editing && (
-            <TouchableOpacity onPress={startBatch}
-              style={{ marginTop: 14, alignItems: 'center', paddingVertical: 8 }}>
-              <Text style={{ fontSize: 14, fontWeight: '700', color: C.accent }}>
-                Write several at once ›
-              </Text>
-              <Text style={{ fontSize: 11.5, color: C.muted, marginTop: 3, textAlign: 'center',
-                             lineHeight: 16, paddingHorizontal: 20 }}>
-                Say cash or bank and the date once, then run down the page
-                name by name — the way a receipts register is written up.
-              </Text>
-            </TouchableOpacity>
-          )}
         </>
       ) : (
         <>
