@@ -1123,6 +1123,105 @@ export function ledgerRolesFromTallyXml(xml) {
   return out;
 }
 
+// WHAT TALLY KNOWS ABOUT A PARTY, AND WHEN IT STARTED KNOWING IT.
+//
+// Tally does not hold a party's GST details once. It holds them as a DATED
+// LIST and keeps every old row, because a bill written last year has to keep
+// being read the way it was written. A man who moved from Assam to West
+// Bengal in July has two rows and both are in the file:
+//
+//     <LEDGSTREGDETAILS.LIST>
+//       <APPLICABLEFROM>20240401</APPLICABLEFROM>
+//       <GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE>
+//       <GSTIN>18ADUPG0561F1ZI</GSTIN>
+//       <PLACEOFSUPPLY>Delhi</PLACEOFSUPPLY>
+//     </LEDGSTREGDETAILS.LIST>
+//     <LEDGSTREGDETAILS.LIST>
+//       <APPLICABLEFROM>20260401</APPLICABLEFROM>
+//       <GSTREGISTRATIONTYPE>Unregistered/Consumer</GSTREGISTRATIONTYPE>
+//       <PLACEOFSUPPLY>Assam</PLACEOFSUPPLY>
+//     </LEDGSTREGDETAILS.LIST>
+//
+// THIS WAS READ OFF TWO LEGACY TOP-LEVEL TAGS INSTEAD, and tagTop strips the
+// .LIST blocks, so neither tag could ever see any of it. Counted on his own
+// masters -- 607 parties built:
+//
+//     carried a GST number ......  29      Tally knows  94
+//     carried a state at all ....  29      the other 578 fell back to the
+//                                          SHOP'S OWN state, because a blank
+//                                          state has nowhere else to go
+//
+// What that does to a bill. Gaurav Traders is in Gujarat and A. Rahman in
+// Arunachal Pradesh; both came in as Assam, so a sale to either is worked out
+// as CGST+SGST when it is IGST, and lands in the wrong state's B2C line. Sbgc
+// Express is registered in Delhi and came in as an unregistered Assam name.
+// Greatx is the one that goes the other way: it came in carrying
+// 18ADUPG0561F1ZI, a number Tally WITHDREW on 1 April 2026.
+//
+// Every Tally book has this structure, so this was never about his book.
+const datedRows = (block, listTag, pick) => {
+  const rows = blocksOf(block, listTag).map((r) => ({
+    from: (tagOf(r, 'APPLICABLEFROM') || '').replace(/\D/g, ''),
+    ...pick(r),
+  }));
+  // oldest first. An undated row sorts first, so any dated row beats it.
+  rows.sort((a, b) => String(a.from).localeCompare(String(b.from)));
+  return rows;
+};
+
+export const regRowsIn = (block) => datedRows(block, 'LEDGSTREGDETAILS.LIST', (r) => ({
+  type:  tagOf(r, 'GSTREGISTRATIONTYPE') || '',
+  gstin: (tagOf(r, 'GSTIN') || '').toUpperCase().replace(/\s/g, ''),
+  // PLACEOFSUPPLY is the one Tally fills in on every row; STATE only sometimes.
+  state: tagOf(r, 'PLACEOFSUPPLY') || tagOf(r, 'STATE') || '',
+}));
+
+export const addrRowsIn = (block) => datedRows(block, 'LEDMAILINGDETAILS.LIST', (r) => ({
+  state: tagOf(r, 'STATE') || '',
+}));
+
+export const UNREGISTERED = /unregist|consumer/i;
+export const COMPOSITION  = /composit/i;
+
+// THE ROW IN FORCE ON A DATE -- or, with no date, the latest Tally holds.
+//
+// A bill dated before the earliest row still gets that earliest row. There is
+// nothing before it to use, and answering "nothing" would send the party to
+// the shop's own state, which is the whole fault this exists to fix.
+export function regOn(rows, ymd) {
+  if (!rows || !rows.length) return null;
+  const on = String(ymd || '').replace(/\D/g, '');
+  if (!on) return rows[rows.length - 1];
+  let at = null;
+  for (const r of rows) if (!r.from || String(r.from) <= on) at = r;
+  return at || rows[0];
+}
+
+// The number and the state a ledger block says a party has NOW, read off the
+// dated rows when they are there and off the legacy tags when they are not.
+// One place, so the two readers that need it cannot drift apart.
+export function registrationNow(b) {
+  const regs  = regRowsIn(b);
+  const addrs = addrRowsIn(b);
+  const now     = regOn(regs, '')  || {};
+  const nowAddr = regOn(addrs, '') || {};
+  const legacyGstin = (tagTop(b, 'PARTYGSTIN') || tagTop(b, 'GSTIN') || '')
+    .toUpperCase().replace(/\s/g, '');
+  const legacyState = tagTop(b, 'LEDSTATENAME') || tagTop(b, 'STATENAME') || '';
+  // A PARTY TALLY CALLS UNREGISTERED HAS NO NUMBER, whatever a retired row or
+  // a legacy tag still says. Keeping one would make him look registered, put
+  // him on a B2B invoice, and have the return rejected on a dead number.
+  const gstin = UNREGISTERED.test(now.type || '') ? ''
+              : (regs.length ? (now.gstin || '') : legacyGstin);
+  return {
+    gstin: gstin.length === 15 ? gstin : '',
+    state: now.state || nowAddr.state || legacyState,
+    type: now.type || '',
+    composition: COMPOSITION.test(now.type || ''),
+    regs, addrs,
+  };
+}
+
 export function partiesFromTallyXml(xml) {
   xml = cleanText(xml);
   const out = [];
@@ -1140,8 +1239,12 @@ export function partiesFromTallyXml(xml) {
     const side = sideOf(groups, tagTop(b, 'PRIMARYGROUP')) || sideOf(groups, parent);
     if (!side) { skipped++; continue; }
 
-    const gstin = (tagTop(b, 'PARTYGSTIN') || tagTop(b, 'GSTIN')).toUpperCase().replace(/\s/g, '');
-    const code  = gstin.slice(0, 2);
+    const reg   = registrationNow(b);
+    const gstin = reg.gstin;
+    // The number carries the state in its first two digits and is the better
+    // answer when it is there; the dated row is the answer when it is not.
+    const code  = STATES[gstin.slice(0, 2)] ? gstin.slice(0, 2)
+                                            : codeForState(reg.state);
     const b2    = balanceOf(b);
     const bal   = b2.value;
     if (b2.basis === 'closing') sawClosing = true; else sawOpening = true;
@@ -1149,11 +1252,15 @@ export function partiesFromTallyXml(xml) {
     out.push({
       name,
       kind: side,
-      gstin: gstin.length === 15 ? gstin : '',
+      gstin,
+      // Tally's own word for what he is, so a composition supplier is not
+      // taken for one whose tax can be claimed back.
+      reg_type: reg.type || '',
+      composition: reg.composition,
       phone: String(tagTop(b, 'LEDGERPHONE') || tagTop(b, 'LEDGERMOBILE')).replace(/[^0-9]/g, '').slice(-10),
       address: tagOf(b, 'ADDRESS'),
       state_code: STATES[code] ? code : '',
-      state_name: STATES[code] || tagTop(b, 'LEDSTATENAME') || tagTop(b, 'STATENAME'),
+      state_name: STATES[code] || reg.state,
       // Tally writes what a customer owes you as a negative opening balance
       opening_balance: Math.abs(bal),
       opening_type: bal > 0 ? 'you_owe' : 'owes_you',
@@ -1164,12 +1271,11 @@ export function partiesFromTallyXml(xml) {
       _has: {
         kind:            true,
         gstin:           gstin.length === 15,
-        is_registered:   gstin.length === 15,
+        is_registered:   !!gstin,
         phone:           !!tagTop(b, 'LEDGERPHONE') || !!tagTop(b, 'LEDGERMOBILE'),
         address:         !!tagOf(b, 'ADDRESS'),
         state_code:      !!(STATES && STATES[code]),
-        state_name:      !!(tagTop(b, 'LEDSTATENAME') || tagTop(b, 'STATENAME')
-                            || (STATES && STATES[code])),
+        state_name:      !!(reg.state || (STATES && STATES[code])),
         opening_balance: true,
         opening_type:    true,
       },

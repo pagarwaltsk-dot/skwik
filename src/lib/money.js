@@ -329,13 +329,92 @@ export function purchaseTaxMode(org, party) {
 // decided the way it always is, by where the supplier is: his own state means
 // central and state tax, anywhere else means integrated.
 //
-// A transporter with no state on file is treated as local, which is what a
-// small shop's transporter almost always is.
-export function rcmTaxMode(org, party) {
+// WHAT HE SAYS BEATS WHAT WE WORK OUT.
+//
+// `said` is the shopkeeper's own answer -- 'cgst_sgst' for a transporter in his
+// own state, 'igst' for one outside it -- and nothing overrules it.
+//
+// WHY IT HAD TO BE ASKED. The line this replaced read:
+//
+//     const there = String(party?.state_code || '').trim() || here;
+//     // A transporter with no state on file is treated as local, which is
+//     // what a small shop's transporter almost always is.
+//
+// "Almost always" decided which cash ledger 1,689.00 of tax went into. And a
+// reverse-charge party is the one party most likely to carry NO GST NUMBER --
+// an unregistered goods transport agency -- so the party's state_code is the
+// only input left, and that is the least reliable field in the book: until the
+// dated-rows fix, 578 of his 607 names had no state at all and fell back to
+// his own.
+//
+// Greatx is the proof. April's 33,780 freight bill came out CGST+SGST, which is
+// right -- but only because the voucher carried 18ADUPG0561F1ZI, a GSTIN Tally
+// had ALREADY WITHDRAWN. Strip that number, as Tally's own dated record says to,
+// and the stale "Delhi" on the bill is all that is left: IGST, 1,689.00 into the
+// wrong ledger. The right answer arrived by accident.
+//
+// So it is asked, on the bill, and stored on the bill. Stored matters as much as
+// asked: a party's state can change later -- Greatx's did, on 1 April 2026 --
+// and a return already filed must not quietly re-decide itself.
+//
+// WITH NO ANSWER it falls back to where the supplier is, and then to local,
+// exactly as before. Every existing call passes two arguments and is unchanged.
+export function rcmTaxMode(org, party, said) {
+  if (said === 'cgst_sgst' || said === 'igst') return said;
   const here  = String(org?.state_code || '').trim();
   const there = String(party?.state_code || '').trim() || here;
   if (!here) return 'cgst_sgst';
   return there === here ? 'cgst_sgst' : 'igst';
+}
+
+// WHICH WAY A FREIGHT LEDGER'S NAME POINTS -- A HINT, NEVER A VERDICT.
+//
+// Tally books freight through ledgers people name themselves, and his are
+// called "FREIGHT INTRA STATE" and "Transport Freight Interstate & R.Charge".
+// Measured over 87 reverse-charge bills in his April, May and August books:
+//
+//     the name agrees with the supplier's real state ....  80
+//     the name is WRONG ................................   7
+//
+// All seven are ASSAM suppliers booked under the "Interstate" ledger -- six
+// Greatx bills and one S.B. Logistics. Deciding from the name would put IGST on
+// a local supply every time.
+//
+// So the name is used ONLY where the supplier's state is unknown, where it beats
+// assuming local, and the disagreements are reported rather than acted on.
+export function headPointsTo(name) {
+  const t = String(name || '');
+  // intra first: "Transport Freight Interstate" contains neither as a
+  // substring of the other, but a book naming one ledger for both would.
+  if (/intra[\s-]?state/i.test(t)) return 'cgst_sgst';
+  if (/inter[\s-]?state/i.test(t)) return 'igst';
+  return null;
+}
+
+// A COMPOSITION DEALER CANNOT SELL OUTSIDE HIS STATE.
+//
+// Section 10(2)(c): a shop that has opted for composition "shall not be
+// engaged in making any inter-State outward supplies of goods". It is not a
+// tax-rate question with a right answer -- the sale is simply not allowed to
+// him, and making one puts his whole composition out of order from that date.
+//
+// So this does not pick a tax head. It answers "may he raise this bill at
+// all", and the screen stops him with the sentence it returns. Nothing is
+// said when the shop is not on composition, when either state is unknown, or
+// when the buyer is in his own state.
+//
+// A buyer with no state on file is treated as local. That is the right way to
+// be wrong here: a counter sale to somebody passing through is local under
+// section 10(1)(c), and refusing every unnamed walk-in would stop the shop
+// trading.
+export function compositionCannotSupply(org, party) {
+  if (!org?.is_composition) return null;
+  const here  = String(org?.state_code || '').trim();
+  const there = String(party?.state_code || '').trim();
+  if (!here || !there || there === here) return null;
+  return 'A composition dealer may not make an inter-state sale. '
+       + 'This buyer is in another state, so this bill cannot be raised '
+       + 'under the composition scheme.';
 }
 
 // Does the tax on a purchase go into the cost of the goods?
