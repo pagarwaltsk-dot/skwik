@@ -984,6 +984,305 @@ rule('nothing counts a bill by its kind without asking if it was cancelled', (()
   return bad;
 })());
 
+rule("a party's GST details are read from Tally's dated rows, not a legacy tag", (() => {
+  // WHY THIS IS A RULE.
+  //
+  // Tally keeps a party's GST details as a DATED LIST and keeps every old row.
+  // Both readers took them off two legacy top-level tags instead, and tagTop
+  // strips .LIST blocks, so neither tag could ever see the dated rows. On his
+  // own masters, 607 parties built:
+  //
+  //     carried a GST number ......  29      Tally knows  94
+  //     carried a state at all ....  29      the other 578 fell back to the
+  //                                          SHOP'S OWN state
+  //
+  // Gaurav Traders is in Gujarat and A. Rahman in Arunachal Pradesh; both came
+  // in as Assam, so a sale to either would have been worked out as CGST+SGST
+  // when it is IGST. Greatx came in carrying a number Tally withdrew.
+  //
+  // TWO READERS, ONE HELPER. partiesFromTallyXml writes the names into the
+  // shop's book; ledgersIn decides each bill. They read the same ledger block
+  // and must not disagree about it, so both go through registrationNow and
+  // neither may reach for the legacy tag itself. Fixing one and not the other
+  // is how this got through the first time.
+  const bad = [];
+  const T = path.join(ROOT, 'src', 'lib', 'transfer.js');
+  const B = path.join(ROOT, 'src', 'lib', 'tallybook.js');
+  if (!fs.existsSync(T) || !fs.existsSync(B)) return ['transfer.js or tallybook.js is missing'];
+  const tx = fs.readFileSync(T, 'utf8');
+  const bx = fs.readFileSync(B, 'utf8');
+
+  // the helper exists, and actually reads the dated rows
+  if (!/export function registrationNow\s*\(/.test(tx)) {
+    bad.push('src/lib/transfer.js has no registrationNow -- the dated rows are read in one place');
+  }
+  if (!/LEDGSTREGDETAILS\.LIST/.test(tx)) {
+    bad.push("src/lib/transfer.js never mentions LEDGSTREGDETAILS.LIST, so Tally's dated rows are not being read at all");
+  }
+  if (!/APPLICABLEFROM/.test(tx)) {
+    bad.push('the dated rows are read but APPLICABLEFROM is not, so there is no way to know which row applies');
+  }
+
+  // the two readers both go through it
+  const bodyOf = (text, name) => {
+    const at = text.indexOf(`export function ${name}(`);
+    if (at < 0) return null;
+    // to the next top-level export, which is where the function ends
+    const next = text.indexOf('\nexport ', at + 10);
+    return text.slice(at, next < 0 ? text.length : next);
+  };
+  for (const [file, text, fn] of [['src/lib/transfer.js', tx, 'partiesFromTallyXml'],
+                                  ['src/lib/tallybook.js', bx, 'ledgersIn']]) {
+    const body = bodyOf(text, fn);
+    if (body === null) { bad.push(`${file} has no ${fn}`); continue; }
+    if (!/registrationNow\s*\(/.test(body)) {
+      bad.push(`${fn} in ${file} does not call registrationNow -- it is reading a `
+        + "party's GST details some other way, and the two readers will disagree");
+    }
+    if (/tagTop\([^)]*['"](?:PARTYGSTIN|LEDSTATENAME)['"]/.test(body)) {
+      bad.push(`${fn} in ${file} still reads the legacy ${/PARTYGSTIN/.test(body) ? 'PARTYGSTIN' : 'LEDSTATENAME'} `
+        + 'tag directly -- that tag cannot see the dated rows, which is the whole fault');
+    }
+  }
+
+  // and an unregistered party keeps no number
+  if (!/UNREGISTERED|unregist/i.test(tx)) {
+    bad.push('nothing in transfer.js tests for an Unregistered party, so a withdrawn '
+      + 'GST number would still be copied onto the name');
+  }
+  return bad;
+})());
+
+rule('the shopkeeper is asked which state a reverse-charge supplier is in', (() => {
+  // WHY THIS IS A RULE.
+  //
+  // Whether the GST he owes on a freight bill is CGST+SGST or IGST was worked
+  // out from the party's state_code, under a comment that admitted the guess:
+  //
+  //     // A transporter with no state on file is treated as local, which is
+  //     // what a small shop's transporter almost always is.
+  //
+  // A reverse-charge party is the one party most likely to carry NO GST NUMBER,
+  // so state_code is the only input -- and until the dated-rows fix, 578 of his
+  // 607 names had no state at all and fell back to the shop's own. April's
+  // 33,780 Greatx bill came out right only because the voucher carried a GSTIN
+  // Tally had already WITHDRAWN.
+  //
+  // THREE THINGS HAVE TO HOLD TOGETHER, and two of them are easy to ship on
+  // their own: a row he can tap, an answer that reaches the arithmetic, and a
+  // reopened bill that shows what it was SAVED with rather than deciding again.
+  // The third is the one that matters most -- a party's state can change later,
+  // Greatx's did, and a bill inside a filed return must read the same today.
+  const bad = [];
+  const f = path.join(ROOT, 'src', 'screens', 'BillScreen.js');
+  if (!fs.existsSync(f)) return ['there is no src/screens/BillScreen.js'];
+  const t = fs.readFileSync(f, 'utf8');
+
+  if (!/const \[rcmHead, setRcmHead\]/.test(t)) {
+    bad.push('BillScreen holds no answer about the supplier\'s state (no rcmHead)');
+  }
+  // the answer reaches the arithmetic -- a two-argument call is the old guess
+  const calls = [...t.matchAll(/rcmTaxMode\(([^)]*)\)/g)].map((m) => m[1]);
+  if (!calls.length) bad.push('BillScreen never calls rcmTaxMode');
+  const paid = calls.filter((a) => a.split(',').length >= 3);
+  if (calls.length && !paid.length) {
+    bad.push('every rcmTaxMode call in BillScreen passes two arguments, so his '
+      + 'answer is collected and then thrown away');
+  }
+  // the row is actually drawn, and both ways round
+  if (!/Same state/.test(t) || !/Other state/.test(t)) {
+    bad.push('BillScreen draws no Same state / Other state choice, so there is '
+      + 'no way for him to answer');
+  }
+  // NO POPUP AND NO KEYPAD on that row -- his standing rule for this screen.
+  //
+  // Only when the row is actually there. Slicing around an index of -1 reads
+  // some unrelated corner of the file and finds a keypad in it, which is how
+  // this rule first reported a popup on a screen that had no such row at all.
+  const at = t.indexOf('Same state');
+  if (at >= 0) {
+    const row = t.slice(Math.max(0, at - 2500), at + 1500);
+    if (/\bAlert\.alert|\bModal\b|keyboardType=/.test(row)) {
+      bad.push('the Same state / Other state choice reaches for a popup, a modal '
+        + 'or a keypad -- it is two taps in a row, like the tick above it');
+    }
+  }
+  // a reopened bill shows what it was saved with
+  if (!/setRcmHead\(\s*v\.reverse_charge/.test(t) || !/v\.tax_mode/.test(t)) {
+    bad.push('reopening a bill does not take its head from the saved tax_mode, '
+      + 'so a bill already in a filed return can re-decide itself when the '
+      + "party's state changes");
+  }
+  // and the answer is part of what counts as an edit
+  if (!/rh:\s*rcmHead/.test(t)) {
+    bad.push('the answer is not in the fingerprint, so changing it and walking '
+      + 'away would not count as an unsaved change');
+  }
+
+  // THE DEFAULT MUST STILL BE THERE. Taking the fallback out would make every
+  // bill demand an answer, which for sixty freight bills a month is a tax on
+  // entry he would learn to click past.
+  const m = path.join(ROOT, 'src', 'lib', 'money.js');
+  if (fs.existsSync(m)) {
+    const mt = fs.readFileSync(m, 'utf8');
+    const body = mt.slice(mt.indexOf('export function rcmTaxMode'),
+                          mt.indexOf('export function rcmTaxMode') + 700);
+    if (!/said === 'cgst_sgst' \|\| said === 'igst'/.test(body)) {
+      bad.push("rcmTaxMode does not let his own answer win, or no longer checks "
+        + 'it is a real head');
+    }
+    if (!/party\?\.state_code/.test(body)) {
+      bad.push('rcmTaxMode no longer falls back to the party\'s state, so every '
+        + 'reverse-charge bill would have to be answered by hand');
+    }
+  }
+  return bad;
+})());
+
+rule('a bill that is only a charge can be entered', (() => {
+  // WHY THIS IS A RULE.
+  //
+  // The purchase screen refused to save anything with no item carrying a
+  // quantity -- which is most of what a shop buys that is not goods. He sat
+  // down to enter a transporter's bill and could not. His plastic company's own
+  // Tally book holds 26 such purchases out of 48, worth 20,77,739.94, booked to
+  // Consumable Exp and Transportation.
+  //
+  // TWO HALVES, AND THE SECOND IS EASY TO LOSE. Letting the bill save is no use
+  // if the tax on it comes out nought: the charge's rate copies the dearest rate
+  // on the bill, and a bill with no goods has none to copy, so topRate([])
+  // answered 0 and a reverse-charge freight bill saved with no tax on it.
+  const bad = [];
+  const f = path.join(ROOT, 'src', 'screens', 'BillScreen.js');
+  if (!fs.existsSync(f)) return ['there is no src/screens/BillScreen.js'];
+  const t = fs.readFileSync(f, 'utf8');
+
+  // the refusal must know about a charge
+  const guard = t.match(/if \(!good\.length[^)]*\)[^;]*;/s);
+  if (guard && !/chargeOnly|extraAmt/.test(guard[0])) {
+    bad.push('BillScreen still refuses every bill with no goods on it, without '
+      + 'asking whether it carries a charge -- a freight or expense bill cannot '
+      + 'be entered at all');
+  }
+  if (!/chargeOnly/.test(t)) {
+    bad.push('nothing in BillScreen recognises a bill that is only a charge');
+  }
+  // A SALE still needs goods. Nobody sells a charge across a counter.
+  if (/chargeOnly/.test(t) && !/chargeOnly\s*=\s*isBuy/.test(t)) {
+    bad.push('a charge-only bill is allowed on a SALE as well as a purchase -- a '
+      + 'sale with no goods on it is a mistake every time');
+  }
+  // and the rate must not fall back to nought on a bill with no goods
+  const rate = t.match(/const extraRate\s*=[\s\S]{0,300}?;/);
+  if (!rate) bad.push('BillScreen no longer works out the charge\'s GST rate');
+  else if (!/good\.length/.test(rate[0])) {
+    bad.push('the charge\'s rate is taken from topRate() without asking whether '
+      + 'there are any goods to take it from -- on a freight bill that is 0%, '
+      + 'and the reverse-charge tax saves as nothing');
+  }
+  return bad;
+})());
+
+rule('a composition dealer is given the one return he files', (() => {
+  // WHY THIS IS A RULE.
+  //
+  // Skwik told a composition dealer, correctly, that GSTR-1 and 3B were not
+  // his -- and then offered nothing in their place, which was the whole of what
+  // he actually has to file. CMP-08 every quarter is his entire GST life, and
+  // it is the reason he would pay for this over Tally.
+  //
+  // THREE PIECES, each useless alone: the figure (SQL), the way to reach it
+  // (the chip), and the screen that draws it.
+  const bad = [];
+  const sqlDir = path.join(ROOT, 'supabase');
+  const allSql = fs.existsSync(sqlDir)
+    ? list('supabase', '.sql').map((f) => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n')
+    : '';
+  if (!/create or replace function public\.cmp08/.test(allSql)) {
+    bad.push('no cmp08 function in any SQL file, so there is no figure to show');
+  }
+  // it must not be at the composition rate on reverse charge -- that tax is
+  // paid in cash at the normal rate and cannot be set against anything
+  if (/function public\.cmp08/.test(allSql) && !/rcm_summary/.test(allSql.slice(allSql.indexOf('function public.cmp08')))) {
+    bad.push('cmp08 never reads rcm_summary, so a composition dealer is not told '
+      + 'about the reverse charge he must pay in cash');
+  }
+  const sec = path.join(ROOT, 'src', 'lib', 'sections.js');
+  if (fs.existsSync(sec) && !/cmp08/.test(fs.readFileSync(sec, 'utf8'))) {
+    bad.push('sections.js offers no CMP-08 chip, so there is no way to reach it');
+  }
+  const rep = path.join(ROOT, 'src', 'screens', 'ReportsScreen.js');
+  if (fs.existsSync(rep)) {
+    const rt = fs.readFileSync(rep, 'utf8');
+    if (!/view === 'cmp08'/.test(rt)) {
+      bad.push('ReportsScreen draws no CMP-08 view, so the chip leads nowhere');
+    }
+    // A RETURN IS FILED BY QUARTER. The range chips on that screen are months
+    // and a year, and a CMP-08 worked out over either of those is unfilable.
+    if (/view === 'cmp08'/.test(rt) && !/quarterDates/.test(rt)) {
+      bad.push('the CMP-08 view does not work in quarters -- the only period it '
+        + 'can be filed for');
+    }
+  }
+  return bad;
+})());
+
+rule('money is written down one way, and a new shop is given one screen', (() => {
+  // WHY THIS IS A RULE.
+  //
+  // TWO THINGS, both about not making a shopkeeper learn what he does not need.
+  //
+  // The money screen opened on a single entry with "Write several at once"
+  // underneath, so the commoner job -- an evening's slips, name and figure down
+  // the page -- cost a tap to reach every time, and there were two screens to
+  // learn where one would do. The register is now the screen.
+  //
+  // And a firm was created with none of its switches set. features.js counts a
+  // missing column as ON, so a man who does not charge GST got Returns,
+  // Reports, Transfer, Expenses and Reconcile from his first minute.
+  const bad = [];
+  const m = path.join(ROOT, 'src', 'screens', 'MoneyScreen.js');
+  if (fs.existsSync(m)) {
+    const mt = fs.readFileSync(m, 'utf8');
+    if (/batch === null/.test(mt)) {
+      bad.push('MoneyScreen still has a second mode behind batch === null -- one '
+        + 'screen for writing money down, not two');
+    }
+    if (/startBatch/.test(mt)) {
+      bad.push('MoneyScreen still has startBatch, the link that opened the '
+        + 'register as a second page -- it is now the screen itself');
+    }
+    if (!/useState\(\[\{\s*key:/.test(mt)) {
+      bad.push('MoneyScreen does not open on a row ready to write -- the register '
+        + 'is the screen, so it starts with a line in it');
+    }
+  }
+  const o = path.join(ROOT, 'src', 'screens', 'OnboardScreen.js');
+  if (fs.existsSync(o)) {
+    const ot = fs.readFileSync(o, 'utf8');
+    for (const col of ['show_returns', 'show_reports', 'show_recon',
+                       'show_transfer', 'show_expenses']) {
+      if (!new RegExp(col).test(ot)) {
+        bad.push(`signup never sets ${col}, so it counts as ON and a new shop `
+          + 'sees a part of Skwik it has not asked for');
+      }
+    }
+    if (!/is_composition/.test(ot)) {
+      bad.push('signup never asks whether the shop is on composition, so the one '
+        + 'answer that decides his bills, his returns and his whole screen is '
+        + 'never put to him');
+    }
+    // THIRTY DAYS, NOT SEVEN. A shopkeeper decides this is worth paying for when
+    // he closes a month or files a CMP-08; seven days reaches neither.
+    const trial = ot.match(/getDate\(\)\s*\+\s*(\d+)/);
+    if (trial && Number(trial[1]) < 30) {
+      bad.push(`the trial is ${trial[1]} days, which ends before his first `
+        + 'month-end -- the moment he can tell whether Skwik is worth paying for');
+    }
+  }
+  return bad;
+})());
+
 // -------------------------------------------------------------------------
 console.log('');
 if (!fails.length) {
